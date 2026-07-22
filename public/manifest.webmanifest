@@ -1,0 +1,19 @@
+{
+  "name": "Quản Lí Chi Tiêu",
+  "short_name": "Quản Lí",
+  "description": "Quản lý thu chi, chia quỹ, sổ tiết kiệm và tài sản cá nhân.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090807",
+  "theme_color": "#090807",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

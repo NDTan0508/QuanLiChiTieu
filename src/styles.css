@@ -1,0 +1,995 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: #090807;
+  color: #f6efe8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(249, 115, 22, 0.16), transparent 34rem),
+    linear-gradient(145deg, #090807 0%, #12100e 46%, #090807 100%);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #3a332d;
+  border-radius: 8px;
+  background: #14110f;
+  color: #f6efe8;
+  padding: 0 12px;
+  outline: none;
+}
+
+input:focus,
+select:focus {
+  border-color: #f97316;
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.16);
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+label strong {
+  color: #f6efe8;
+  font-size: 0.92rem;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 238px 1fr;
+  min-height: 100vh;
+}
+
+.app-nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  border-right: 1px solid #241f1a;
+  background: rgba(11, 10, 9, 0.82);
+  backdrop-filter: blur(18px);
+  padding: 20px 14px;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 22px;
+  padding: 0 6px;
+}
+
+.brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 8px;
+  background: #f97316;
+  color: #090807;
+  font-weight: 900;
+}
+
+.brand strong,
+.brand small {
+  display: block;
+}
+
+.brand small {
+  color: #a59b91;
+  margin-top: 2px;
+}
+
+.nav-list {
+  display: grid;
+  gap: 7px;
+}
+
+.nav-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  border-radius: 8px;
+  background: transparent;
+  color: #b9afa5;
+  padding: 0 11px;
+  text-align: left;
+}
+
+.nav-list button:hover,
+.nav-list button.active {
+  background: #211b16;
+  color: #fff7ed;
+}
+
+.nav-list button.active {
+  box-shadow: inset 3px 0 0 #f97316;
+}
+
+.content {
+  min-width: 0;
+}
+
+.page {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 28px;
+}
+
+.page-header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.page-header h1 {
+  margin: 4px 0 0;
+  font-size: clamp(1.55rem, 3vw, 2.35rem);
+  letter-spacing: 0;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #f97316;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.month-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #2f2924;
+  border-radius: 8px;
+  background: #11100e;
+  padding: 6px;
+  white-space: nowrap;
+}
+
+.month-picker button,
+.icon-button,
+.inline-add button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: #211b16;
+  color: #f6efe8;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.metrics-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.metric,
+.panel,
+.pin-card,
+.fund-chip,
+.deposit-card {
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: rgba(18, 15, 13, 0.88);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.18);
+}
+
+.metric {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 92px;
+  padding: 18px;
+}
+
+.metric > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 8px;
+  background: #211b16;
+  color: #f97316;
+}
+
+.metric small,
+.fund-chip small,
+.panel-title small,
+.muted,
+.deposit-meta,
+.timeline small,
+.deposit-head small {
+  color: #a59b91;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 5px;
+  font-size: clamp(1.08rem, 2vw, 1.4rem);
+}
+
+.metric em {
+  display: block;
+  margin-top: 5px;
+  color: #a59b91;
+  font-size: 0.86rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.metric.highlight {
+  border-color: rgba(249, 115, 22, 0.55);
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(20, 17, 15, 0.94));
+}
+
+.metric.loss {
+  border-color: rgba(244, 63, 94, 0.5);
+}
+
+.two-column {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.two-column.compact {
+  align-items: start;
+}
+
+.panel {
+  padding: 18px;
+}
+
+.panel-title {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.panel-title h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.empty-chart {
+  display: grid;
+  height: 210px;
+  place-items: center;
+  color: #a59b91;
+}
+
+.detail-list,
+.check-list,
+.deposit-mini-list,
+.timeline,
+.expense-editor,
+.deposit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-list button,
+.check-list div,
+.deposit-mini-list div,
+.timeline div,
+.expense-row {
+  border-radius: 8px;
+  background: #14110f;
+}
+
+.detail-list button,
+.check-list div,
+.deposit-mini-list div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.detail-list button {
+  width: 100%;
+  border: 1px solid transparent;
+  color: #f6efe8;
+  text-align: left;
+}
+
+.detail-list button.selected {
+  border-color: rgba(249, 115, 22, 0.55);
+  background: rgba(249, 115, 22, 0.12);
+}
+
+.detail-list button strong {
+  margin-left: auto;
+}
+
+.detail-list button small {
+  color: #a59b91;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.detail-list span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-list span::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--dot);
+}
+
+.category-history {
+  margin-top: 14px;
+}
+
+.compact-title {
+  margin-bottom: 10px;
+}
+
+.compact-title h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.history-timeline {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.variable-summary {
+  display: grid;
+  gap: 4px;
+  color: #a59b91;
+}
+
+.variable-summary strong {
+  font-size: 1rem;
+}
+
+.history-grid {
+  margin-top: 12px;
+}
+
+.history-timeline .income span {
+  background: rgba(20, 184, 166, 0.18);
+  color: #5eead4;
+}
+
+.history-timeline .expense span {
+  background: rgba(244, 63, 94, 0.16);
+  color: #fb7185;
+}
+
+.allocation-grid,
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.asset-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.fund-chip {
+  display: grid;
+  gap: 8px;
+  padding: 15px;
+}
+
+.fund-chip strong {
+  font-size: 1.05rem;
+}
+
+.fund-chip span {
+  color: #14b8a6;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.check-list div {
+  color: #a59b91;
+}
+
+.check-list div.done {
+  color: #f6efe8;
+}
+
+.check-list svg {
+  color: #f97316;
+}
+
+.deposit-mini-list div {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  min-height: 58px;
+}
+
+.deposit-mini-list small {
+  grid-column: 2 / 4;
+  color: #a59b91;
+}
+
+.warning {
+  border-color: rgba(234, 179, 8, 0.55);
+}
+
+.danger {
+  border-color: rgba(244, 63, 94, 0.55);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.inline-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr) auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.inline-add:has(input:nth-child(2)) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.85fr) auto;
+}
+
+.primary,
+.ghost,
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border-radius: 8px;
+  padding: 0 14px;
+  font-weight: 800;
+}
+
+.primary {
+  background: #f97316;
+  color: #080706;
+}
+
+.primary.full {
+  width: 100%;
+}
+
+.ghost,
+.toggle {
+  border: 1px solid #332c26;
+  background: #171310;
+  color: #f6efe8;
+}
+
+.toggle.checked {
+  border-color: rgba(20, 184, 166, 0.5);
+  color: #99f6e4;
+}
+
+.expense-row {
+  display: grid;
+  grid-template-columns: 1fr minmax(140px, 180px) minmax(140px, 180px) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+}
+
+.expense-row > div strong,
+.expense-row > div small {
+  display: block;
+}
+
+.expense-row > div small,
+.computed {
+  color: #a59b91;
+  font-size: 0.82rem;
+}
+
+.allocation-editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.deposit-confirm {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.ok {
+  color: #14b8a6;
+}
+
+.bad,
+.form-error {
+  color: #fb7185;
+}
+
+.deposit-list {
+  margin-top: 12px;
+}
+
+.pending-stack {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pending-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(234, 179, 8, 0.55);
+  border-radius: 8px;
+  background: rgba(234, 179, 8, 0.1);
+  padding: 14px;
+}
+
+.pending-banner strong,
+.pending-banner small {
+  display: block;
+}
+
+.pending-banner small {
+  color: #facc15;
+  margin-top: 4px;
+  font-weight: 800;
+}
+
+.deposit-card {
+  padding: 16px;
+}
+
+.deposit-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.deposit-head h3 {
+  margin: 4px 0 0;
+  font-size: 1.35rem;
+}
+
+.deposit-code-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deposit-last4-inline {
+  width: 88px;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 0.8rem;
+}
+
+.status {
+  border-radius: 999px;
+  background: #211b16;
+  color: #f6efe8;
+  padding: 7px 10px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.status.active {
+  color: #99f6e4;
+}
+
+.status.early-settled {
+  color: #fecdd3;
+}
+
+.deposit-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+  font-size: 0.84rem;
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compact-date-input {
+  width: 150px;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 0.84rem;
+}
+
+.timeline > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  padding: 12px;
+}
+
+.history-row-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.history-row-body > div {
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.history-edit-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+}
+
+.history-delete-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+}
+
+.timeline > div > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  font-weight: 900;
+}
+
+.timeline .deposit {
+  background: rgba(20, 184, 166, 0.18);
+  color: #5eead4;
+}
+
+.timeline .withdraw {
+  background: rgba(244, 63, 94, 0.16);
+  color: #fb7185;
+}
+
+.timeline strong,
+.timeline small {
+  display: block;
+}
+
+.timeline small {
+  margin-top: 4px;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.market-grid div {
+  border-radius: 8px;
+  background: #14110f;
+  padding: 14px;
+}
+
+.market-grid strong,
+.market-grid small {
+  display: block;
+}
+
+.growth-tooltip {
+  min-width: 190px;
+  border: 1px solid #332c26;
+  border-radius: 10px;
+  background: rgba(12, 10, 9, 0.96);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+  padding: 12px 14px;
+}
+
+.growth-tooltip strong {
+  display: block;
+  margin-bottom: 10px;
+  color: #fff7ed;
+}
+
+.growth-tooltip span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #f6efe8;
+}
+
+.growth-tooltip span + span {
+  margin-top: 6px;
+}
+
+.growth-tooltip em {
+  color: #a59b91;
+  font-size: 0.78rem;
+  font-style: normal;
+}
+
+.growth-tooltip b {
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.pin-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 22px;
+}
+
+.pin-card {
+  width: min(390px, 100%);
+  padding: 26px;
+}
+
+.pin-card h1 {
+  margin: 14px 0 6px;
+}
+
+.pin-card p {
+  margin: 0 0 18px;
+  color: #a59b91;
+}
+
+.pin-card input {
+  margin-bottom: 10px;
+  text-align: center;
+  font-size: 1.3rem;
+  letter-spacing: 0.2rem;
+}
+
+.pin-icon {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  border-radius: 8px;
+  background: #211b16;
+  color: #f97316;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 4, 3, 0.72);
+  padding: 18px;
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  border: 1px solid #3a332d;
+  border-radius: 8px;
+  background: #12100e;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
+  padding: 18px;
+}
+
+.confirm-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.confirm-summary div {
+  border-radius: 8px;
+  background: #14110f;
+  padding: 12px;
+}
+
+.confirm-summary span,
+.confirm-summary strong {
+  display: block;
+}
+
+.confirm-summary span {
+  color: #a59b91;
+  font-size: 0.82rem;
+}
+
+.confirm-summary strong {
+  margin-top: 6px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cloud-sync-box {
+  display: grid;
+  gap: 12px;
+}
+
+.cloud-sync-box > small {
+  display: block;
+  min-height: 20px;
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    display: block;
+    padding-bottom: 72px;
+  }
+
+  .app-nav {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 10;
+    height: 68px;
+    border-top: 1px solid #2b251f;
+    border-right: 0;
+    padding: 8px;
+    overflow-x: auto;
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .nav-list {
+    display: flex;
+    gap: 6px;
+    min-width: max-content;
+  }
+
+  .nav-list button {
+    display: grid;
+    min-width: 68px;
+    min-height: 52px;
+    justify-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    font-size: 0.68rem;
+  }
+
+  .nav-list button.active {
+    box-shadow: inset 0 -3px 0 #f97316;
+  }
+
+  .page {
+    padding: 18px;
+  }
+
+  .page-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .month-picker {
+    justify-content: space-between;
+  }
+
+  .metrics-grid,
+  .two-column,
+  .allocation-grid,
+  .asset-grid,
+  .allocation-editor,
+  .deposit-confirm,
+  .deposit-meta,
+  .market-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inline-add,
+  .inline-add:has(input:nth-child(2)) {
+    grid-template-columns: 1fr;
+  }
+
+  .expense-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .history-row-body {
+    align-items: stretch;
+  }
+
+  .history-edit-button,
+  .history-delete-button {
+    width: 100%;
+  }
+
+  .modal-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .confirm-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 981px) and (max-width: 1220px) {
+  .allocation-grid,
+  .asset-grid,
+  .deposit-meta,
+  .deposit-confirm {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
