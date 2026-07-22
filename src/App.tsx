@@ -197,8 +197,8 @@ type AppState = {
   settings: SettingsState;
 };
 
-const STORAGE_KEY = "quan-li-chi-tieu-state-v2-june-2026-reset";
-const CLOUD_SYNC_KEY_STORAGE_KEY = "quan-li-chi-tieu-cloud-sync-key";
+const STORAGE_KEY = "quan-li-chi-tieu-state-v3-account-pin-reset";
+const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
 const DEFAULT_START_MONTH = "2026-06";
 const CERTIFICATE_LOT = 100_000;
 const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"];
@@ -482,7 +482,7 @@ function PinGate({
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
-  onUnlock: () => void;
+  onUnlock: (pin: string) => void;
 }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
@@ -495,10 +495,10 @@ function PinGate({
     }
     if (isSetup) {
       setState((prev) => ({ ...prev, settings: { pin, hasPin: true } }));
-      onUnlock();
+      onUnlock(pin);
       return;
     }
-    if (pin === state.settings.pin) onUnlock();
+    if (pin === state.settings.pin) onUnlock(pin);
     else setError("PIN chưa đúng.");
   };
 
@@ -508,8 +508,8 @@ function PinGate({
         <div className="pin-icon">
           <Lock size={26} />
         </div>
-        <h1>{isSetup ? "Tạo mã PIN" : "Nhập mã PIN"}</h1>
-        <p>{isSetup ? "PIN giúp dữ liệu tài chính của bạn không bị mở nhầm." : "Mở dashboard quản lý thu chi."}</p>
+        <h1>{isSetup ? "Nhập mã PIN tài khoản" : "Nhập mã PIN"}</h1>
+        <p>{isSetup ? "Dùng cùng PIN này trên laptop và iPhone để mở cùng dữ liệu." : "Mở dữ liệu tài khoản của bạn."}</p>
         <input
           inputMode="numeric"
           type="password"
@@ -2149,19 +2149,12 @@ function SettingsPage({
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   cloudSync: {
     configured: boolean;
-    syncKey: string;
     status: string;
-    onSaveKey: (key: string) => void;
-    onDisable: () => void;
     onSyncNow: () => void;
+    onChangePin: (pin: string) => void;
   };
 }) {
   const [pin, setPin] = useState("");
-  const [syncKeyDraft, setSyncKeyDraft] = useState(cloudSync.syncKey);
-
-  useEffect(() => {
-    setSyncKeyDraft(cloudSync.syncKey);
-  }, [cloudSync.syncKey]);
 
   return (
     <div className="page">
@@ -2187,7 +2180,7 @@ function SettingsPage({
             className="primary"
             onClick={() => {
               if (pin.length < 4) return;
-              setState((prev) => ({ ...prev, settings: { hasPin: true, pin } }));
+              cloudSync.onChangePin(pin);
               setPin("");
             }}
           >
@@ -2201,28 +2194,12 @@ function SettingsPage({
           </div>
           <div className="cloud-sync-box">
             <p className="muted">
-              Đồng bộ laptop và iPhone bằng Supabase. Dữ liệu được mã hóa bằng khóa đồng bộ trước khi lưu online.
+              Đồng bộ laptop và iPhone bằng Supabase. Mã PIN chính là khóa mở dữ liệu tài khoản trên mọi thiết bị.
             </p>
-            <label>
-              Khóa đồng bộ
-              <input
-                type="password"
-                value={syncKeyDraft}
-                onChange={(event) => setSyncKeyDraft(event.target.value)}
-                placeholder="Một câu khóa dài, khó đoán"
-                autoComplete="new-password"
-              />
-            </label>
-            <small className={cloudSync.configured && cloudSync.syncKey ? "ok" : "muted"}>{cloudSync.status}</small>
+            <small className={cloudSync.configured ? "ok" : "muted"}>{cloudSync.status}</small>
             <div className="card-actions">
-              <button className="primary" disabled={!cloudSync.configured || syncKeyDraft.trim().length < 12} onClick={() => cloudSync.onSaveKey(syncKeyDraft.trim())}>
-                Lưu khóa đồng bộ
-              </button>
-              <button className="ghost" disabled={!cloudSync.configured || !cloudSync.syncKey} onClick={cloudSync.onSyncNow}>
+              <button className="primary" disabled={!cloudSync.configured} onClick={cloudSync.onSyncNow}>
                 Đồng bộ ngay
-              </button>
-              <button className="ghost" disabled={!cloudSync.syncKey} onClick={cloudSync.onDisable}>
-                Tắt trên thiết bị này
               </button>
             </div>
           </div>
@@ -2234,21 +2211,30 @@ function SettingsPage({
 
 export function App() {
   const [state, setState] = useStoredState();
-  const [unlocked, setUnlocked] = useState(!state.settings.hasPin);
+  const [unlocked, setUnlocked] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
   const [month, setMonth] = useState(DEFAULT_START_MONTH);
-  const [cloudSyncKey, setCloudSyncKeyState] = useState(() => localStorage.getItem(CLOUD_SYNC_KEY_STORAGE_KEY) ?? "");
+  const [activePin, setActivePin] = useState("");
   const [cloudStatus, setCloudStatus] = useState("");
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
   const cloudConfigured = isCloudSyncConfigured();
+  const cloudAccountKey = activePin ? `${CLOUD_ACCOUNT_NAMESPACE}:${activePin}` : "";
+  const stateForCloud = (): AppState =>
+    activePin ? { ...state, settings: { hasPin: true, pin: activePin } } : state;
 
-  const setCloudSyncKey = (key: string) => {
-    if (key) localStorage.setItem(CLOUD_SYNC_KEY_STORAGE_KEY, key);
-    else localStorage.removeItem(CLOUD_SYNC_KEY_STORAGE_KEY);
+  const unlockWithPin = (pin: string) => {
+    setActivePin(pin);
     cloudLoaded.current = false;
     lastCloudSnapshot.current = "";
-    setCloudSyncKeyState(key);
+    setUnlocked(true);
+  };
+
+  const changePin = (pin: string) => {
+    setState((prev) => ({ ...prev, settings: { hasPin: true, pin } }));
+    setActivePin(pin);
+    cloudLoaded.current = false;
+    lastCloudSnapshot.current = "";
   };
 
   const syncCloudNow = async () => {
@@ -2256,14 +2242,15 @@ export function App() {
       setCloudStatus("Thiếu VITE_SUPABASE_URL hoặc VITE_SUPABASE_ANON_KEY.");
       return;
     }
-    if (!cloudSyncKey) {
-      setCloudStatus("Chưa có khóa đồng bộ.");
+    if (!cloudAccountKey) {
+      setCloudStatus("Hãy mở app bằng mã PIN trước.");
       return;
     }
     try {
       setCloudStatus("Đang đồng bộ...");
-      await saveCloudState(cloudSyncKey, state);
-      lastCloudSnapshot.current = JSON.stringify(state);
+      const nextSnapshot = stateForCloud();
+      await saveCloudState(cloudAccountKey, nextSnapshot);
+      lastCloudSnapshot.current = JSON.stringify(nextSnapshot);
       cloudLoaded.current = true;
       setCloudStatus(`Đã đồng bộ ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
     } catch {
@@ -2313,18 +2300,22 @@ export function App() {
         setCloudStatus("Thiếu cấu hình Supabase.");
         return;
       }
-      if (!cloudSyncKey) {
-        setCloudStatus("Chưa bật đồng bộ online.");
+      if (!cloudAccountKey) {
+        setCloudStatus("Hãy mở app bằng mã PIN trước.");
         return;
       }
 
       try {
         setCloudStatus("Đang tải dữ liệu cloud...");
-        const cloudState = await loadCloudState<AppState>(cloudSyncKey);
+        const cloudState = await loadCloudState<AppState>(cloudAccountKey);
         if (cancelled) return;
 
         if (cloudState) {
-          const nextState = normalizeState({ ...initialState, ...cloudState });
+          const nextState = normalizeState({
+            ...initialState,
+            ...cloudState,
+            settings: { ...initialState.settings, ...cloudState.settings, hasPin: true, pin: activePin },
+          });
           lastCloudSnapshot.current = JSON.stringify(nextState);
           cloudLoaded.current = true;
           setState(nextState);
@@ -2332,15 +2323,16 @@ export function App() {
           return;
         }
 
-        await saveCloudState(cloudSyncKey, state);
+        const nextSnapshot = stateForCloud();
+        await saveCloudState(cloudAccountKey, nextSnapshot);
         if (cancelled) return;
-        lastCloudSnapshot.current = JSON.stringify(state);
+        lastCloudSnapshot.current = JSON.stringify(nextSnapshot);
         cloudLoaded.current = true;
         setCloudStatus("Đã tạo bản đồng bộ đầu tiên.");
       } catch {
         if (!cancelled) {
           cloudLoaded.current = false;
-          setCloudStatus("Không mở được dữ liệu cloud. Kiểm tra khóa đồng bộ hoặc cấu hình Supabase.");
+          setCloudStatus("Không mở được dữ liệu cloud. Kiểm tra mã PIN hoặc cấu hình Supabase.");
         }
       }
     }
@@ -2349,18 +2341,19 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [cloudConfigured, cloudSyncKey]);
+  }, [cloudConfigured, cloudAccountKey]);
 
   useEffect(() => {
-    if (!cloudConfigured || !cloudSyncKey || !cloudLoaded.current) return;
+    if (!cloudConfigured || !cloudAccountKey || !cloudLoaded.current) return;
 
-    const snapshot = JSON.stringify(state);
+    const nextSnapshot = stateForCloud();
+    const snapshot = JSON.stringify(nextSnapshot);
     if (snapshot === lastCloudSnapshot.current) return;
 
     setCloudStatus("Đang đồng bộ...");
     const timer = window.setTimeout(async () => {
       try {
-        await saveCloudState(cloudSyncKey, state);
+        await saveCloudState(cloudAccountKey, nextSnapshot);
         lastCloudSnapshot.current = snapshot;
         setCloudStatus(`Đã đồng bộ ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
       } catch {
@@ -2369,9 +2362,9 @@ export function App() {
     }, 1400);
 
     return () => window.clearTimeout(timer);
-  }, [cloudConfigured, cloudSyncKey, state]);
+  }, [cloudConfigured, cloudAccountKey, state]);
 
-  if (!unlocked) return <PinGate state={state} setState={setState} onUnlock={() => setUnlocked(true)} />;
+  if (!unlocked) return <PinGate state={state} setState={setState} onUnlock={unlockWithPin} />;
 
   return (
     <div className="app-shell">
@@ -2391,11 +2384,9 @@ export function App() {
             setState={setState}
             cloudSync={{
               configured: cloudConfigured,
-              syncKey: cloudSyncKey,
               status: cloudStatus,
-              onSaveKey: setCloudSyncKey,
-              onDisable: () => setCloudSyncKey(""),
               onSyncNow: syncCloudNow,
+              onChangePin: changePin,
             }}
           />
         )}
