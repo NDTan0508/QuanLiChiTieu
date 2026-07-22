@@ -33,7 +33,7 @@ import {
   Shield,
   WalletCards,
 } from "lucide-react";
-import { isCloudSyncConfigured, loadCloudState, saveCloudState } from "./cloudSync";
+import { deleteCloudState, isCloudSyncConfigured, loadCloudState, saveCloudState } from "./cloudSync";
 
 type Page =
   | "dashboard"
@@ -250,6 +250,11 @@ const formatUsd = (value: number) =>
   `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`;
 
 const parseMoney = (value: string) => Number(value.replace(/[^\d]/g, "")) || 0;
+const cloudAccountKeyForPin = (pin: string) => `${CLOUD_ACCOUNT_NAMESPACE}:${pin}`;
+const stateForAccountPin = (state: AppState, pin: string): AppState => ({
+  ...state,
+  settings: { hasPin: true, pin },
+});
 
 const interestFor = (deposit: Pick<BankDeposit, "principal" | "rate" | "termMonths">) =>
   Math.round((deposit.principal * deposit.rate * deposit.termMonths) / 100 / 12);
@@ -478,27 +483,38 @@ function AppNav({
 function PinGate({
   state,
   setState,
+  cloudConfigured,
   onUnlock,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
-  onUnlock: (pin: string) => void;
+  cloudConfigured: boolean;
+  onUnlock: (pin: string) => Promise<string | null>;
 }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const isSetup = !state.settings.hasPin;
 
-  const submit = () => {
+  const submit = async () => {
     if (pin.length < 4) {
       setError("PIN cần tối thiểu 4 số.");
       return;
     }
-    if (isSetup) {
-      setState((prev) => ({ ...prev, settings: { pin, hasPin: true } }));
-      onUnlock(pin);
+    if (cloudConfigured) {
+      setLoading(true);
+      setError("");
+      const loginError = await onUnlock(pin);
+      setLoading(false);
+      if (loginError) setError(loginError);
       return;
     }
-    if (pin === state.settings.pin) onUnlock(pin);
+    if (isSetup) {
+      setState((prev) => ({ ...prev, settings: { pin, hasPin: true } }));
+      await onUnlock(pin);
+      return;
+    }
+    if (pin === state.settings.pin) await onUnlock(pin);
     else setError("PIN chưa đúng.");
   };
 
@@ -508,19 +524,23 @@ function PinGate({
         <div className="pin-icon">
           <Lock size={26} />
         </div>
-        <h1>{isSetup ? "Nhập mã PIN tài khoản" : "Nhập mã PIN"}</h1>
-        <p>{isSetup ? "Dùng cùng PIN này trên laptop và iPhone để mở cùng dữ liệu." : "Mở dữ liệu tài khoản của bạn."}</p>
+        <h1>Nhập mã PIN</h1>
+        <p>Mở dữ liệu tài khoản của bạn. Tạo hoặc đổi PIN tại /admin.</p>
         <input
           inputMode="numeric"
           type="password"
           value={pin}
           onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
           placeholder="Nhập PIN"
+          onKeyDown={(event) => {
+            if (event.key === "Enter") submit();
+          }}
         />
         {error && <span className="form-error">{error}</span>}
-        <button className="primary full" onClick={submit}>
-          {isSetup ? "Lưu PIN" : "Mở app"}
+        <button className="primary full" disabled={loading} onClick={submit}>
+          {loading ? "Đang mở..." : "Mở app"}
         </button>
+        <a className="admin-link" href="/admin">Tạo hoặc đổi PIN</a>
       </section>
     </main>
   );
@@ -2140,6 +2160,151 @@ function GrowthTooltip({ active, payload }: { active?: boolean; payload?: Array<
   );
 }
 
+function AdminPage() {
+  const cloudConfigured = isCloudSyncConfigured();
+  const [newPin, setNewPin] = useState("");
+  const [oldPin, setOldPin] = useState("");
+  const [replacementPin, setReplacementPin] = useState("");
+  const [status, setStatus] = useState(cloudConfigured ? "Sẵn sàng quản lý tài khoản PIN." : "Thiếu cấu hình Supabase.");
+  const [loading, setLoading] = useState(false);
+
+  const createAccount = async () => {
+    if (!cloudConfigured) {
+      setStatus("Thiếu VITE_SUPABASE_URL hoặc VITE_SUPABASE_ANON_KEY.");
+      return;
+    }
+    if (newPin.length < 4) {
+      setStatus("PIN mới cần tối thiểu 4 số.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setStatus("Đang kiểm tra tài khoản...");
+      const accountKey = cloudAccountKeyForPin(newPin);
+      const existing = await loadCloudState<AppState>(accountKey);
+      if (existing) {
+        setStatus("PIN này đã có tài khoản. Hãy chọn PIN khác hoặc đổi PIN.");
+        return;
+      }
+
+      await saveCloudState(accountKey, stateForAccountPin(initialState, newPin));
+      setNewPin("");
+      setStatus("Đã tạo tài khoản mới. Bạn có thể quay lại app và đăng nhập bằng PIN này.");
+    } catch {
+      setStatus("Không tạo được tài khoản. Kiểm tra Supabase hoặc kết nối mạng.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const changeAccountPin = async () => {
+    if (!cloudConfigured) {
+      setStatus("Thiếu VITE_SUPABASE_URL hoặc VITE_SUPABASE_ANON_KEY.");
+      return;
+    }
+    if (oldPin.length < 4 || replacementPin.length < 4) {
+      setStatus("PIN cũ và PIN mới cần tối thiểu 4 số.");
+      return;
+    }
+    if (oldPin === replacementPin) {
+      setStatus("PIN mới phải khác PIN cũ.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setStatus("Đang tải dữ liệu tài khoản cũ...");
+      const oldKey = cloudAccountKeyForPin(oldPin);
+      const oldState = await loadCloudState<AppState>(oldKey);
+      if (!oldState) {
+        setStatus("Không tìm thấy tài khoản với PIN cũ.");
+        return;
+      }
+
+      const nextKey = cloudAccountKeyForPin(replacementPin);
+      const existingNext = await loadCloudState<AppState>(nextKey);
+      if (existingNext) {
+        setStatus("PIN mới đã có tài khoản khác. Hãy chọn PIN khác.");
+        return;
+      }
+
+      const nextState = normalizeState({
+        ...initialState,
+        ...oldState,
+        settings: { ...initialState.settings, ...oldState.settings, hasPin: true, pin: replacementPin },
+      });
+      await saveCloudState(nextKey, nextState);
+      await deleteCloudState(oldKey);
+      setOldPin("");
+      setReplacementPin("");
+      setStatus("Đã đổi PIN. Từ giờ hãy đăng nhập bằng PIN mới.");
+    } catch {
+      setStatus("Không đổi được PIN. Nếu bạn đã tạo bảng trước đó, hãy chạy lại supabase-schema.sql rồi thử lại.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="pin-screen">
+      <section className="pin-card admin-card">
+        <div className="pin-icon">
+          <Settings size={26} />
+        </div>
+        <h1>Admin tài khoản</h1>
+        <p>Tạo tài khoản PIN mới hoặc đổi PIN cho tài khoản hiện có.</p>
+
+        <div className="admin-stack">
+          <article>
+            <h2>Tạo tài khoản</h2>
+            <label>
+              PIN mới
+              <input
+                type="password"
+                inputMode="numeric"
+                value={newPin}
+                onChange={(event) => setNewPin(event.target.value.replace(/\D/g, ""))}
+              />
+            </label>
+            <button className="primary full" disabled={loading || !cloudConfigured} onClick={createAccount}>
+              Tạo tài khoản
+            </button>
+          </article>
+
+          <article>
+            <h2>Đổi PIN</h2>
+            <label>
+              PIN cũ
+              <input
+                type="password"
+                inputMode="numeric"
+                value={oldPin}
+                onChange={(event) => setOldPin(event.target.value.replace(/\D/g, ""))}
+              />
+            </label>
+            <label>
+              PIN mới
+              <input
+                type="password"
+                inputMode="numeric"
+                value={replacementPin}
+                onChange={(event) => setReplacementPin(event.target.value.replace(/\D/g, ""))}
+              />
+            </label>
+            <button className="primary full" disabled={loading || !cloudConfigured} onClick={changeAccountPin}>
+              Đổi PIN
+            </button>
+          </article>
+        </div>
+
+        <small className={cloudConfigured ? "ok" : "form-error"}>{status}</small>
+        <a className="admin-link" href="/">Về app</a>
+      </section>
+    </main>
+  );
+}
+
 function SettingsPage({
   state,
   setState,
@@ -2219,22 +2384,71 @@ export function App() {
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
   const cloudConfigured = isCloudSyncConfigured();
-  const cloudAccountKey = activePin ? `${CLOUD_ACCOUNT_NAMESPACE}:${activePin}` : "";
-  const stateForCloud = (): AppState =>
-    activePin ? { ...state, settings: { hasPin: true, pin: activePin } } : state;
+  const cloudAccountKey = activePin ? cloudAccountKeyForPin(activePin) : "";
+  const stateForCloud = (): AppState => (activePin ? stateForAccountPin(state, activePin) : state);
 
-  const unlockWithPin = (pin: string) => {
-    setActivePin(pin);
-    cloudLoaded.current = false;
-    lastCloudSnapshot.current = "";
-    setUnlocked(true);
+  const unlockWithPin = async (pin: string) => {
+    if (!cloudConfigured) {
+      if (!state.settings.hasPin) {
+        setState((prev) => ({ ...prev, settings: { pin, hasPin: true } }));
+        setActivePin(pin);
+        setUnlocked(true);
+        return null;
+      }
+      if (pin !== state.settings.pin) return "PIN chưa đúng.";
+      setActivePin(pin);
+      setUnlocked(true);
+      return null;
+    }
+
+    try {
+      setCloudStatus("Đang mở tài khoản...");
+      const accountKey = cloudAccountKeyForPin(pin);
+      const cloudState = await loadCloudState<AppState>(accountKey);
+      if (!cloudState) return "Tài khoản chưa tồn tại. Vào /admin để tạo PIN.";
+
+      const nextState = normalizeState({
+        ...initialState,
+        ...cloudState,
+        settings: { ...initialState.settings, ...cloudState.settings, hasPin: true, pin },
+      });
+      setState(nextState);
+      setActivePin(pin);
+      lastCloudSnapshot.current = JSON.stringify(nextState);
+      cloudLoaded.current = true;
+      setCloudStatus("Đã mở dữ liệu cloud.");
+      setUnlocked(true);
+      return null;
+    } catch {
+      cloudLoaded.current = false;
+      setCloudStatus("Không mở được dữ liệu cloud.");
+      return "Không mở được tài khoản. Kiểm tra PIN, Supabase hoặc mạng.";
+    }
   };
 
-  const changePin = (pin: string) => {
-    setState((prev) => ({ ...prev, settings: { hasPin: true, pin } }));
+  const changePin = async (pin: string) => {
+    if (!activePin) return;
+    const previousKey = cloudAccountKeyForPin(activePin);
+    const nextKey = cloudAccountKeyForPin(pin);
+    const nextState = stateForAccountPin(state, pin);
+    setCloudStatus("Đang đổi PIN...");
+    setState(nextState);
     setActivePin(pin);
-    cloudLoaded.current = false;
-    lastCloudSnapshot.current = "";
+    lastCloudSnapshot.current = JSON.stringify(nextState);
+    cloudLoaded.current = true;
+
+    if (!cloudConfigured) {
+      setCloudStatus("Đã đổi PIN trên thiết bị này.");
+      return;
+    }
+
+    try {
+      await saveCloudState(nextKey, nextState);
+      if (previousKey !== nextKey) await deleteCloudState(previousKey);
+      setCloudStatus("Đã đổi PIN và đồng bộ cloud.");
+    } catch {
+      setCloudStatus("Không đổi được PIN cloud. Vào /admin để đổi PIN lại.");
+    }
   };
 
   const syncCloudNow = async () => {
@@ -2293,57 +2507,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadSnapshot() {
-      if (!cloudConfigured) {
-        setCloudStatus("Thiếu cấu hình Supabase.");
-        return;
-      }
-      if (!cloudAccountKey) {
-        setCloudStatus("Hãy mở app bằng mã PIN trước.");
-        return;
-      }
-
-      try {
-        setCloudStatus("Đang tải dữ liệu cloud...");
-        const cloudState = await loadCloudState<AppState>(cloudAccountKey);
-        if (cancelled) return;
-
-        if (cloudState) {
-          const nextState = normalizeState({
-            ...initialState,
-            ...cloudState,
-            settings: { ...initialState.settings, ...cloudState.settings, hasPin: true, pin: activePin },
-          });
-          lastCloudSnapshot.current = JSON.stringify(nextState);
-          cloudLoaded.current = true;
-          setState(nextState);
-          setCloudStatus("Đã tải dữ liệu cloud.");
-          return;
-        }
-
-        const nextSnapshot = stateForCloud();
-        await saveCloudState(cloudAccountKey, nextSnapshot);
-        if (cancelled) return;
-        lastCloudSnapshot.current = JSON.stringify(nextSnapshot);
-        cloudLoaded.current = true;
-        setCloudStatus("Đã tạo bản đồng bộ đầu tiên.");
-      } catch {
-        if (!cancelled) {
-          cloudLoaded.current = false;
-          setCloudStatus("Không mở được dữ liệu cloud. Kiểm tra mã PIN hoặc cấu hình Supabase.");
-        }
-      }
-    }
-
-    loadSnapshot();
-    return () => {
-      cancelled = true;
-    };
-  }, [cloudConfigured, cloudAccountKey]);
-
-  useEffect(() => {
     if (!cloudConfigured || !cloudAccountKey || !cloudLoaded.current) return;
 
     const nextSnapshot = stateForCloud();
@@ -2364,7 +2527,9 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [cloudConfigured, cloudAccountKey, state]);
 
-  if (!unlocked) return <PinGate state={state} setState={setState} onUnlock={unlockWithPin} />;
+  if (window.location.pathname === "/admin") return <AdminPage />;
+
+  if (!unlocked) return <PinGate state={state} setState={setState} cloudConfigured={cloudConfigured} onUnlock={unlockWithPin} />;
 
   return (
     <div className="app-shell">

@@ -28,7 +28,7 @@ Sau đó chạy:
 npm run dev
 ```
 
-Mở app và nhập mã PIN tài khoản. Cùng một PIN sẽ mở cùng một bộ dữ liệu trên laptop và iPhone.
+Mở `/admin` trước để tạo tài khoản PIN đầu tiên. Sau đó quay lại `/` và đăng nhập bằng PIN đó.
 
 ## 3. Deploy Vercel
 
@@ -47,15 +47,19 @@ Mở app và nhập mã PIN tài khoản. Cùng một PIN sẽ mở cùng một 
 2. Bấm Share.
 3. Chọn `Add to Home Screen`.
 4. Mở app từ icon ngoài màn hình chính.
-5. Nhập cùng mã PIN tài khoản đã dùng trên laptop.
+5. Nếu chưa có tài khoản, mở `/admin` trên link app để tạo PIN.
+6. Quay lại `/` và nhập cùng mã PIN tài khoản đã dùng trên laptop.
 
 ## 5. Quy tắc đồng bộ
 
 - Mã PIN chính là khóa tài khoản và khóa mã hóa dữ liệu.
+- Tài khoản mới được tạo tại `/admin`.
+- Đổi PIN tài khoản tại `/admin`, hoặc trong `Cài đặt` sau khi đã đăng nhập.
 - App tải dữ liệu cloud sau khi nhập PIN.
 - App tự lưu lên cloud sau khi dữ liệu thay đổi.
 - Khi hai thiết bị cùng sửa gần như đồng thời, bản lưu sau cùng sẽ thắng.
-- Nếu nhập PIN khác, app sẽ mở một bộ dữ liệu khác.
+- Nếu nhập PIN khác đã được tạo ở `/admin`, app sẽ mở bộ dữ liệu của PIN đó.
+- Nếu PIN chưa được tạo, app sẽ yêu cầu vào `/admin`.
 
 ## 6. Reset dữ liệu
 

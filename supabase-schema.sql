@@ -9,6 +9,7 @@ alter table public.app_snapshots enable row level security;
 drop policy if exists "Read encrypted snapshots" on public.app_snapshots;
 drop policy if exists "Create encrypted snapshots" on public.app_snapshots;
 drop policy if exists "Update encrypted snapshots" on public.app_snapshots;
+drop policy if exists "Delete encrypted snapshots" on public.app_snapshots;
 
 create policy "Read encrypted snapshots"
 on public.app_snapshots
@@ -28,3 +29,9 @@ for update
 to anon
 using (true)
 with check (true);
+
+create policy "Delete encrypted snapshots"
+on public.app_snapshots
+for delete
+to anon
+using (true);

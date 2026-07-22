@@ -799,6 +799,10 @@ label strong {
   padding: 26px;
 }
 
+.pin-card.admin-card {
+  width: min(560px, 100%);
+}
+
 .pin-card h1 {
   margin: 14px 0 6px;
 }
@@ -823,6 +827,34 @@ label strong {
   border-radius: 8px;
   background: #211b16;
   color: #f97316;
+}
+
+.admin-stack {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0 12px;
+}
+
+.admin-stack article {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: #14110f;
+  padding: 14px;
+}
+
+.admin-stack h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.admin-link {
+  display: inline-flex;
+  margin-top: 14px;
+  color: #f97316;
+  font-weight: 800;
+  text-decoration: none;
 }
 
 .modal-backdrop {

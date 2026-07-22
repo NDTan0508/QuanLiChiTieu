@@ -58,6 +58,19 @@ export async function saveCloudState(syncKey: string, state: unknown) {
   if (!response.ok) throw new Error("Không lưu được dữ liệu cloud.");
 }
 
+export async function deleteCloudState(syncKey: string) {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thiếu cấu hình Supabase.");
+
+  const id = await syncKeyId(syncKey);
+  const response = await fetch(`${config.url}/rest/v1/app_snapshots?id=eq.${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: supabaseHeaders(config),
+  });
+
+  if (!response.ok) throw new Error("Không xóa được dữ liệu cloud cũ.");
+}
+
 function getSupabaseConfig() {
   const url = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "");
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
