@@ -549,6 +549,31 @@ label strong {
   margin-bottom: 14px;
 }
 
+.allocation-title-meta,
+.allocation-field {
+  display: grid;
+  gap: 7px;
+}
+
+.allocation-title-meta {
+  justify-items: end;
+  text-align: right;
+}
+
+.allocation-field {
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+.allocation-field span {
+  min-height: 1rem;
+}
+
+.allocation-field .amount-input {
+  color: #fff7ed;
+  font-weight: 800;
+}
+
 .deposit-confirm {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr)) auto;

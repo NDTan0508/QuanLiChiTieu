@@ -149,6 +149,9 @@ type AllocationAmounts = {
   emergencyRemainder: number;
 };
 
+type AllocationPercentKey = "btcPercent" | "stockPercent" | "savingPercent" | "emergencyPercent";
+type AllocationAmountKey = "btcAmount" | "stockAmount" | "savingAmount" | "emergencyAmount";
+
 type IncomeSummaryRow = {
   id: string;
   name: string;
@@ -267,6 +270,9 @@ const interestFor = (deposit: Pick<BankDeposit, "principal" | "rate" | "termMont
 const roundDownToCertificateLot = (amount: number) =>
   Math.floor(Math.max(amount, 0) / CERTIFICATE_LOT) * CERTIFICATE_LOT;
 
+const allocationAmountOrDefault = (amount: number | undefined, fallback: number) =>
+  typeof amount === "number" && Number.isFinite(amount) ? Math.max(amount, 0) : fallback;
+
 function normalizeState(state: AppState): AppState {
   const expenseCategories = state.expenseCategories.map((category) => {
     if (category.id === "chi-tieu") {
@@ -302,10 +308,10 @@ function calculateAllocationAmounts(totalSaving: number, allocation: Allocation)
   const emergencyRemainder = rawEmergency - emergency;
 
   return {
-    btc: rawBtc + savingRemainder + emergencyRemainder,
-    stock: rawStock,
-    saving,
-    emergency,
+    btc: allocationAmountOrDefault(allocation.btcAmount, rawBtc + savingRemainder + emergencyRemainder),
+    stock: allocationAmountOrDefault(allocation.stockAmount, rawStock),
+    saving: allocationAmountOrDefault(allocation.savingAmount, saving),
+    emergency: allocationAmountOrDefault(allocation.emergencyAmount, emergency),
     savingRemainder,
     emergencyRemainder,
   };
@@ -898,9 +904,11 @@ function MoneyPage({
     note: "Chia quỹ cuối tháng",
   });
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [allocationAmountInputs, setAllocationAmountInputs] = useState<Partial<Record<AllocationAmountKey, string>>>({});
 
   useEffect(() => {
     setDepositForm((prev) => (prev.month === month ? prev : { ...prev, month }));
+    setAllocationAmountInputs({});
   }, [month]);
 
   useEffect(() => {
@@ -1022,6 +1030,25 @@ function MoneyPage({
     });
   };
 
+  const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
+    setAllocationAmountInputs((prev) => ({ ...prev, [key]: value }));
+    updateAllocation({ [key]: value.trim() === "" ? undefined : parseMoney(value) } as Partial<Allocation>);
+  };
+
+  const commitAllocationAmount = (key: AllocationAmountKey) => {
+    setAllocationAmountInputs((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      const value = next[key] ?? "";
+      if (value.trim() === "") {
+        delete next[key];
+      } else {
+        next[key] = parseMoney(value).toLocaleString("vi-VN");
+      }
+      return next;
+    });
+  };
+
   const addIncome = () => {
     const amount = parseMoney(incomeForm.amount);
     if (!amount || !incomeForm.categoryId) return;
@@ -1140,6 +1167,23 @@ function MoneyPage({
     summary.allocation.stockPercent +
     summary.allocation.savingPercent +
     summary.allocation.emergencyPercent;
+  const allocationAmountRows: Array<{
+    percentKey: AllocationPercentKey;
+    amountKey: AllocationAmountKey;
+    label: string;
+    amount: number;
+  }> = [
+    { percentKey: "btcPercent", amountKey: "btcAmount", label: "BTC", amount: summary.allocationAmounts.btc },
+    { percentKey: "stockPercent", amountKey: "stockAmount", label: "CK", amount: summary.allocationAmounts.stock },
+    { percentKey: "savingPercent", amountKey: "savingAmount", label: "Quỹ tiết kiệm", amount: summary.allocationAmounts.saving },
+    { percentKey: "emergencyPercent", amountKey: "emergencyAmount", label: "Dự phòng", amount: summary.allocationAmounts.emergency },
+  ];
+  const allocationAmountTotal = allocationAmountRows.reduce((sum, item) => sum + Math.round(item.amount), 0);
+  const availableAllocationAmount = Math.round(Math.max(summary.saving, 0));
+  const amountTotalMatchesSaving = Math.abs(allocationAmountTotal - availableAllocationAmount) <= 1;
+  const hasCustomAllocationAmounts = allocationAmountRows.some(
+    (item) => typeof summary.allocation[item.amountKey] === "number"
+  );
 
   return (
     <div className="page">
@@ -1392,26 +1436,36 @@ function MoneyPage({
       <section className="panel">
         <div className="panel-title">
           <h2>Chia quỹ cuối tháng</h2>
-          <small className={percentTotal === 100 ? "ok" : "bad"}>Tổng tỷ lệ {percentTotal}%</small>
+          <div className="allocation-title-meta">
+            <small className={percentTotal === 100 ? "ok" : "bad"}>Tổng tỷ lệ {percentTotal}%</small>
+            <small className={amountTotalMatchesSaving ? "ok" : "bad"}>
+              Tổng tiền {formatVnd(allocationAmountTotal)} / {formatVnd(availableAllocationAmount)}
+            </small>
+          </div>
         </div>
         <div className="allocation-editor">
-          {[
-            ["btcPercent", "BTC", summary.allocationAmounts.btc],
-            ["stockPercent", "CK", summary.allocationAmounts.stock],
-            ["savingPercent", "Quỹ tiết kiệm", summary.allocationAmounts.saving],
-            ["emergencyPercent", "Dự phòng", summary.allocationAmounts.emergency],
-          ].map(([key, label, amount]) => (
-            <label key={key as string}>
-              {label as string}
+          {allocationAmountRows.map((item) => (
+            <div className="allocation-field" key={item.percentKey}>
+              <span>{item.label}</span>
               <input
                 type="number"
                 min="0"
                 max="100"
-                value={summary.allocation[key as keyof Allocation] as number}
-                onChange={(event) => updateAllocation({ [key as string]: Number(event.target.value) } as Partial<Allocation>)}
+                value={summary.allocation[item.percentKey]}
+                onChange={(event) => updateAllocation({ [item.percentKey]: Number(event.target.value) } as Partial<Allocation>)}
+                aria-label={`${item.label} tỷ lệ phần trăm`}
+                placeholder="%"
               />
-              <strong>{formatVnd(Number(amount))}</strong>
-            </label>
+              <input
+                className="amount-input"
+                inputMode="numeric"
+                value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")}
+                onChange={(event) => updateAllocationAmount(item.amountKey, event.target.value)}
+                onBlur={() => commitAllocationAmount(item.amountKey)}
+                aria-label={`${item.label} số tiền`}
+                placeholder="Số tiền"
+              />
+            </div>
           ))}
         </div>
         <div className="deposit-confirm">
@@ -1439,7 +1493,7 @@ function MoneyPage({
             <p className="muted">
               App sẽ ghi giao dịch vào BTC/CK. Quỹ tiết kiệm và Dự phòng sẽ được đánh dấu chờ tạo sổ ở trang riêng.
             </p>
-            {(summary.allocationAmounts.savingRemainder > 0 || summary.allocationAmounts.emergencyRemainder > 0) && (
+            {!hasCustomAllocationAmounts && (summary.allocationAmounts.savingRemainder > 0 || summary.allocationAmounts.emergencyRemainder > 0) && (
               <p className="muted">
                 Số lẻ sau khi làm tròn bội số {formatVnd(CERTIFICATE_LOT)} được cộng vào BTC.
               </p>
