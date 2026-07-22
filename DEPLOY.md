@@ -13,6 +13,14 @@ App chạy online như PWA và đồng bộ dữ liệu giữa laptop/iPhone b�
 
 Lưu ý: dữ liệu được mã hóa trong trình duyệt bằng mã PIN tài khoản. Không dùng PIN quá ngắn hoặc dễ đoán.
 
+`/admin` có mật khẩu riêng. Mật khẩu admin mặc định là:
+
+```text
+ndt58@Valley
+```
+
+Để đổi mật khẩu admin trong Supabase, đổi trường `password_hash` của dòng `id = 'default'` trong bảng `app_admin_settings` thành SHA-256 hash của mật khẩu mới.
+
 ## 2. Chạy local với cloud sync
 
 Tạo file `.env.local` từ `.env.example`:
@@ -28,7 +36,7 @@ Sau đó chạy:
 npm run dev
 ```
 
-Mở `/admin` trước để tạo tài khoản PIN đầu tiên. Sau đó quay lại `/` và đăng nhập bằng PIN đó.
+Mở `/admin` trước, nhập mật khẩu admin, rồi tạo tài khoản PIN đầu tiên. Sau đó quay lại `/` và đăng nhập bằng PIN đó.
 
 ## 3. Deploy Vercel
 
@@ -55,6 +63,7 @@ Mở `/admin` trước để tạo tài khoản PIN đầu tiên. Sau đó quay 
 - Mã PIN chính là khóa tài khoản và khóa mã hóa dữ liệu.
 - Tài khoản mới được tạo tại `/admin`.
 - Đổi PIN tài khoản tại `/admin`, hoặc trong `Cài đặt` sau khi đã đăng nhập.
+- `/admin` yêu cầu mật khẩu admin trước khi tạo hoặc đổi PIN.
 - App tải dữ liệu cloud sau khi nhập PIN.
 - App tự lưu lên cloud sau khi dữ liệu thay đổi.
 - Khi hai thiết bị cùng sửa gần như đồng thời, bản lưu sau cùng sẽ thắng.

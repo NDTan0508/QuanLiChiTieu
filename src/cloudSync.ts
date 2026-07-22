@@ -10,6 +10,10 @@ type SnapshotRow = {
   updated_at?: string;
 };
 
+type AdminSettingsRow = {
+  password_hash: string;
+};
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -69,6 +73,20 @@ export async function deleteCloudState(syncKey: string) {
   });
 
   if (!response.ok) throw new Error("Không xóa được dữ liệu cloud cũ.");
+}
+
+export async function loadAdminPasswordHash(fallbackHash: string) {
+  const config = getSupabaseConfig();
+  if (!config) return fallbackHash;
+
+  const response = await fetch(`${config.url}/rest/v1/app_admin_settings?id=eq.default&select=password_hash`, {
+    headers: supabaseHeaders(config),
+  });
+
+  if (!response.ok) return fallbackHash;
+
+  const rows = (await response.json()) as AdminSettingsRow[];
+  return rows[0]?.password_hash || fallbackHash;
 }
 
 function getSupabaseConfig() {

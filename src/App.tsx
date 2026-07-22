@@ -33,7 +33,7 @@ import {
   Shield,
   WalletCards,
 } from "lucide-react";
-import { deleteCloudState, isCloudSyncConfigured, loadCloudState, saveCloudState } from "./cloudSync";
+import { deleteCloudState, isCloudSyncConfigured, loadAdminPasswordHash, loadCloudState, saveCloudState } from "./cloudSync";
 
 type Page =
   | "dashboard"
@@ -199,6 +199,7 @@ type AppState = {
 
 const STORAGE_KEY = "quan-li-chi-tieu-state-v3-account-pin-reset";
 const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
+const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
 const DEFAULT_START_MONTH = "2026-06";
 const CERTIFICATE_LOT = 100_000;
 const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"];
@@ -255,6 +256,10 @@ const stateForAccountPin = (state: AppState, pin: string): AppState => ({
   ...state,
   settings: { hasPin: true, pin },
 });
+const sha256Hex = async (value: string) => {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 const interestFor = (deposit: Pick<BankDeposit, "principal" | "rate" | "termMonths">) =>
   Math.round((deposit.principal * deposit.rate * deposit.termMonths) / 100 / 12);
@@ -2162,11 +2167,39 @@ function GrowthTooltip({ active, payload }: { active?: boolean; payload?: Array<
 
 function AdminPage() {
   const cloudConfigured = isCloudSyncConfigured();
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [newPin, setNewPin] = useState("");
   const [oldPin, setOldPin] = useState("");
   const [replacementPin, setReplacementPin] = useState("");
-  const [status, setStatus] = useState(cloudConfigured ? "Sẵn sàng quản lý tài khoản PIN." : "Thiếu cấu hình Supabase.");
+  const [status, setStatus] = useState(cloudConfigured ? "Nhập mật khẩu admin để tiếp tục." : "Thiếu cấu hình Supabase.");
   const [loading, setLoading] = useState(false);
+
+  const unlockAdmin = async () => {
+    if (!adminPassword) {
+      setStatus("Nhập mật khẩu admin.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setStatus("Đang kiểm tra mật khẩu admin...");
+      const expectedHash = await loadAdminPasswordHash(DEFAULT_ADMIN_PASSWORD_HASH);
+      const passwordHash = await sha256Hex(adminPassword);
+      if (passwordHash !== expectedHash) {
+        setStatus("Mật khẩu admin chưa đúng.");
+        return;
+      }
+
+      setAdminUnlocked(true);
+      setAdminPassword("");
+      setStatus("Sẵn sàng quản lý tài khoản PIN.");
+    } catch {
+      setStatus("Không kiểm tra được mật khẩu admin.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const createAccount = async () => {
     if (!cloudConfigured) {
@@ -2253,11 +2286,32 @@ function AdminPage() {
           <Settings size={26} />
         </div>
         <h1>Admin tài khoản</h1>
-        <p>Tạo tài khoản PIN mới hoặc đổi PIN cho tài khoản hiện có.</p>
+        <p>{adminUnlocked ? "Tạo tài khoản PIN mới hoặc đổi PIN cho tài khoản hiện có." : "Đăng nhập admin để quản lý tài khoản PIN."}</p>
 
-        <div className="admin-stack">
-          <article>
-            <h2>Tạo tài khoản</h2>
+        {!adminUnlocked ? (
+          <div className="admin-stack">
+            <article>
+              <h2>Đăng nhập admin</h2>
+              <label>
+                Mật khẩu admin
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(event) => setAdminPassword(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") unlockAdmin();
+                  }}
+                />
+              </label>
+              <button className="primary full" disabled={loading} onClick={unlockAdmin}>
+                {loading ? "Đang kiểm tra..." : "Đăng nhập admin"}
+              </button>
+            </article>
+          </div>
+        ) : (
+          <div className="admin-stack">
+            <article>
+              <h2>Tạo tài khoản</h2>
             <label>
               PIN mới
               <input
@@ -2270,10 +2324,10 @@ function AdminPage() {
             <button className="primary full" disabled={loading || !cloudConfigured} onClick={createAccount}>
               Tạo tài khoản
             </button>
-          </article>
+            </article>
 
-          <article>
-            <h2>Đổi PIN</h2>
+            <article>
+              <h2>Đổi PIN</h2>
             <label>
               PIN cũ
               <input
@@ -2295,8 +2349,9 @@ function AdminPage() {
             <button className="primary full" disabled={loading || !cloudConfigured} onClick={changeAccountPin}>
               Đổi PIN
             </button>
-          </article>
-        </div>
+            </article>
+          </div>
+        )}
 
         <small className={cloudConfigured ? "ok" : "form-error"}>{status}</small>
         <a className="admin-link" href="/">Về app</a>

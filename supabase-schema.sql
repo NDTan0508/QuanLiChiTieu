@@ -35,3 +35,23 @@ on public.app_snapshots
 for delete
 to anon
 using (true);
+
+create table if not exists public.app_admin_settings (
+  id text primary key,
+  password_hash text not null,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.app_admin_settings (id, password_hash)
+values ('default', '83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063')
+on conflict (id) do nothing;
+
+alter table public.app_admin_settings enable row level security;
+
+drop policy if exists "Read admin settings" on public.app_admin_settings;
+
+create policy "Read admin settings"
+on public.app_admin_settings
+for select
+to anon
+using (true);
