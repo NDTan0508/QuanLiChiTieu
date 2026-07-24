@@ -1118,7 +1118,7 @@ function UnifiedDashboardPage({
                   <span>{category.name}</span>
                   <strong>{formatVnd(record.amount)}</strong>
                   <button className="row-icon-button" title="Sửa số tiền tháng này" onClick={() => setEditingFixed({ categoryId: category.id, amount: record.amount.toLocaleString("vi-VN") })} type="button">
-                    <Pencil size={15} />
+                    <Pencil size={16} />
                   </button>
                   <button className="row-icon-button danger-text" title="Xóa mục" onClick={() => deleteExpenseCategory(category)} type="button">
                     <X size={16} />

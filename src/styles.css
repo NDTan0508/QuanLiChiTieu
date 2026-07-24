@@ -116,19 +116,26 @@ label strong {
 
 .nav-list {
   display: grid;
-  gap: 7px;
+  width: 100%;
 }
 
 .nav-list button {
+  flex: 1; /* Chia đều */
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  min-height: 42px;
-  border-radius: 8px;
+  justify-content: center;
+
+  gap: 4px;
+  min-height: 64px;
+
+  border: none;
   background: transparent;
   color: #b9afa5;
-  padding: 0 11px;
-  text-align: left;
+  cursor: pointer;
+
+  border-radius: 8px;
+  transition: all .2s ease;
 }
 
 .nav-list button:hover,
@@ -138,7 +145,12 @@ label strong {
 }
 
 .nav-list button.active {
-  box-shadow: inset 3px 0 0 #f97316;
+  box-shadow: inset 0 -3px 0 #f97316;
+}
+
+.nav-list button span {
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .content {
