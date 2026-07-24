@@ -22,6 +22,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Coins,
+  Pencil,
   Landmark,
   LayoutDashboard,
   LineChart,
@@ -30,21 +31,15 @@ import {
   Plus,
   Save,
   Settings,
-  Shield,
-  WalletCards,
+  X,
 } from "lucide-react";
 import { deleteCloudState, isCloudSyncConfigured, loadAdminPasswordHash, loadCloudState, saveCloudState } from "./cloudSync";
 
 type Page =
   | "dashboard"
-  | "money"
-  | "btc"
-  | "stock"
-  | "saving"
-  | "emergency"
-  | "sol"
-  | "reports"
-  | "settings";
+  | "investment"
+  | "mbb"
+  | "reports";
 
 type IncomeCategory = {
   id: string;
@@ -64,7 +59,7 @@ type IncomeTransaction = {
 type ExpenseCategory = {
   id: string;
   name: string;
-  kind: "envelope" | "fixed" | "variable";
+  kind: "fixed" | "variable";
   defaultAmount: number;
 };
 
@@ -99,9 +94,14 @@ type Allocation = {
   savingAmount?: number;
   emergencyAmount?: number;
   totalSavingAtConfirm?: number;
+  savingDepositRequestedAt?: string;
+  emergencyDepositRequestedAt?: string;
+  savingDepositCreatedAt?: string;
+  emergencyDepositCreatedAt?: string;
 };
 
 type FundKey = "btc" | "stock";
+type InvestmentTab = FundKey | "sol";
 
 type FundTransaction = {
   id: string;
@@ -114,6 +114,7 @@ type FundTransaction = {
 };
 
 type DepositFund = "saving" | "emergency";
+type DepositFilter = "all" | DepositFund;
 type DepositStatus =
   | "active"
   | "rolled-principal"
@@ -274,14 +275,15 @@ const allocationAmountOrDefault = (amount: number | undefined, fallback: number)
   typeof amount === "number" && Number.isFinite(amount) ? Math.max(amount, 0) : fallback;
 
 function normalizeState(state: AppState): AppState {
-  const expenseCategories = state.expenseCategories.map((category) => {
+  const expenseCategories = state.expenseCategories.map((category: ExpenseCategory & { kind?: string }) => {
+    const migratedKind: ExpenseCategory["kind"] = category.kind === "variable" ? "variable" : "fixed";
     if (category.id === "chi-tieu") {
-      return { ...category, kind: "envelope" as const, defaultAmount: 3_000_000 };
+      return { ...category, kind: "fixed" as const, defaultAmount: category.defaultAmount || 3_000_000 };
     }
     if (category.id === "phat-sinh") {
       return { ...category, kind: "variable" as const, defaultAmount: 0 };
     }
-    return category;
+    return { ...category, kind: migratedKind, defaultAmount: category.defaultAmount ?? 0 };
   });
 
   const bankDeposits = state.bankDeposits.map((deposit) => ({
@@ -325,7 +327,7 @@ const initialState: AppState = {
   ],
   incomeTransactions: [],
   expenseCategories: [
-    { id: "chi-tieu", name: "Chi tiêu", kind: "envelope", defaultAmount: 3000000 },
+    { id: "chi-tieu", name: "Chi tiêu", kind: "fixed", defaultAmount: 3000000 },
     { id: "phat-sinh", name: "Phát sinh", kind: "variable", defaultAmount: 0 },
     { id: "me", name: "Mẹ", kind: "fixed", defaultAmount: 3000000 },
     { id: "du-lich", name: "Du lịch", kind: "fixed", defaultAmount: 1500000 },
@@ -392,7 +394,7 @@ function getMonthlyExpense(state: AppState, category: ExpenseCategory, month: st
       id: uid(),
       categoryId: category.id,
       month,
-      startAmount: category.kind === "envelope" ? category.defaultAmount : 0,
+      startAmount: 0,
       endAmount: 0,
       amount: category.defaultAmount,
       checked: false,
@@ -415,14 +417,7 @@ function monthlySummary(state: AppState, month: string) {
       .filter((item) => item.month === month && item.categoryId === category.id)
       .sort((left, right) => right.date.localeCompare(left.date));
     const entries = transactions.reduce((sum, item) => sum + item.amount, 0);
-    const base =
-      category.kind === "envelope"
-        ? Math.max(record.startAmount - record.endAmount, 0)
-        : category.kind === "fixed"
-          ? record.checked
-            ? record.amount
-            : 0
-          : 0;
+    const base = category.kind === "fixed" && record.checked ? record.amount : 0;
     return {
       id: category.id,
       name: category.name,
@@ -446,6 +441,11 @@ function activePrincipal(deposit: BankDeposit) {
   return 0;
 }
 
+const depositCreatedField = (fund: DepositFund) =>
+  fund === "saving" ? "savingDepositCreatedAt" : "emergencyDepositCreatedAt";
+const depositRequestedField = (fund: DepositFund) =>
+  fund === "saving" ? "savingDepositRequestedAt" : "emergencyDepositRequestedAt";
+
 function AppNav({
   page,
   setPage,
@@ -455,14 +455,9 @@ function AppNav({
 }) {
   const items: Array<{ id: Page; label: string; icon: JSX.Element }> = [
     { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} /> },
-    { id: "money", label: "Thu/Chi", icon: <WalletCards size={18} /> },
-    { id: "btc", label: "BTC", icon: <Bitcoin size={18} /> },
-    { id: "stock", label: "CK", icon: <LineChart size={18} /> },
-    { id: "saving", label: "Tiết kiệm", icon: <Landmark size={18} /> },
-    { id: "emergency", label: "Dự phòng", icon: <Shield size={18} /> },
-    { id: "sol", label: "SOL", icon: <Coins size={18} /> },
+    { id: "investment", label: "Đầu tư", icon: <LineChart size={18} /> },
+    { id: "mbb", label: "Sổ MBB", icon: <Landmark size={18} /> },
     { id: "reports", label: "Báo cáo", icon: <BarChart3 size={18} /> },
-    { id: "settings", label: "Cài đặt", icon: <Settings size={18} /> },
   ];
 
   return (
@@ -563,6 +558,15 @@ function MonthPicker({ month, setMonth }: { month: string; setMonth: (month: str
       <button title="Tháng trước" onClick={() => setMonth(shiftMonth(month, -1))}>
         <ChevronLeft size={18} />
       </button>
+      <input
+        className="month-picker-input"
+        type="month"
+        value={month}
+        onChange={(event) => {
+          if (event.target.value) setMonth(event.target.value);
+        }}
+        aria-label="Chọn tháng"
+      />
       <strong>Tháng {formatMonth(month)}</strong>
       <button title="Tháng sau" onClick={() => setMonth(shiftMonth(month, 1))}>
         <ChevronRight size={18} />
@@ -698,7 +702,7 @@ function DashboardPage({
       <section className="panel">
         <div className="panel-title">
           <h2>Tiền được chia</h2>
-          <button className="ghost" onClick={() => setPage("money")}>
+          <button className="ghost" onClick={() => setPage("dashboard")}>
             Chỉnh
           </button>
         </div>
@@ -735,7 +739,7 @@ function DashboardPage({
         <article className="panel">
           <div className="panel-title">
             <h2>Sổ sắp đáo hạn</h2>
-            <button className="ghost" onClick={() => setPage("saving")}>
+            <button className="ghost" onClick={() => setPage("mbb")}>
               Xem
             </button>
           </div>
@@ -755,6 +759,512 @@ function DashboardPage({
           )}
         </article>
       </section>
+    </div>
+  );
+}
+
+type NewExpenseKind = Exclude<ExpenseCategory["kind"], "envelope">;
+
+function UnifiedDashboardPage({
+  state,
+  setState,
+  month,
+  setMonth,
+  setPage,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  month: string;
+  setMonth: (month: string) => void;
+  setPage: (page: Page) => void;
+}) {
+  const summary = monthlySummary(state, month);
+  const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+  const [entryModal, setEntryModal] = useState<"income" | "expense" | null>(null);
+  const [showNewIncomeCategory, setShowNewIncomeCategory] = useState(false);
+  const [showNewExpenseCategory, setShowNewExpenseCategory] = useState(false);
+  const [allocationEditing, setAllocationEditing] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [allocationAmountInputs, setAllocationAmountInputs] = useState<Partial<Record<AllocationAmountKey, string>>>({});
+  const [editingFixed, setEditingFixed] = useState<{ categoryId: string; amount: string } | null>(null);
+  const [editingTransaction, setEditingTransaction] = useState<
+    | { kind: "income"; id: string; categoryId: string; amount: string; date: string; note: string }
+    | { kind: "expense"; id: string; categoryId: string; amount: string; date: string; note: string }
+    | null
+  >(null);
+  const [incomeForm, setIncomeForm] = useState({
+    categoryId: state.incomeCategories.find((category) => category.id === "other-income")?.id ?? state.incomeCategories[0]?.id ?? "",
+    amount: "",
+    date: today(),
+    note: "",
+  });
+  const [expenseEntry, setExpenseEntry] = useState({
+    categoryId: state.expenseCategories.find((category) => category.id === "phat-sinh")?.id ?? state.expenseCategories[0]?.id ?? "",
+    amount: "",
+    date: today(),
+    note: "",
+  });
+  const [newIncome, setNewIncome] = useState({ name: "", kind: "variable" as IncomeCategory["kind"] });
+  const [newExpense, setNewExpense] = useState({ name: "", kind: "variable" as NewExpenseKind, amount: "" });
+  const [depositForm, setDepositForm] = useState({ month, note: "Chia quỹ cuối tháng" });
+
+  useEffect(() => {
+    setDepositForm((prev) => (prev.month === month ? prev : { ...prev, month }));
+    setAllocationAmountInputs({});
+  }, [month]);
+
+  useEffect(() => {
+    setSelectedIncomeId((current) => {
+      if (current && summary.incomeRows.some((row) => row.id === current)) return current;
+      return summary.incomeRows.find((row) => row.value > 0)?.id ?? summary.incomeRows[0]?.id ?? null;
+    });
+    setSelectedExpenseId((current) => {
+      if (current && summary.expenseRows.some((row) => row.id === current)) return current;
+      return summary.expenseRows.find((row) => row.id === "phat-sinh" && row.value > 0)?.id ?? summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
+    });
+  }, [month, summary.expenseRows, summary.incomeRows]);
+
+  const dueSoon = state.bankDeposits
+    .filter((item) => item.status === "active")
+    .map((item) => ({ ...item, dueDays: daysUntil(item.maturityDate) }))
+    .filter((item) => item.dueDays <= 30)
+    .sort((a, b) => a.dueDays - b.dueDays)
+    .slice(0, 3);
+  const selectedIncome = summary.incomeRows.find((row) => row.id === selectedIncomeId) ?? null;
+  const selectedExpense = summary.expenseRows.find((row) => row.id === selectedExpenseId) ?? null;
+  const fixedCategories = state.expenseCategories.filter((category) => category.kind === "fixed");
+  const percentTotal =
+    summary.allocation.btcPercent +
+    summary.allocation.stockPercent +
+    summary.allocation.savingPercent +
+    summary.allocation.emergencyPercent;
+  const allocationAmountRows: Array<{ percentKey: AllocationPercentKey; amountKey: AllocationAmountKey; label: string; amount: number }> = [
+    { percentKey: "btcPercent", amountKey: "btcAmount", label: "BTC", amount: summary.allocationAmounts.btc },
+    { percentKey: "stockPercent", amountKey: "stockAmount", label: "CK", amount: summary.allocationAmounts.stock },
+    { percentKey: "savingPercent", amountKey: "savingAmount", label: "Quỹ tiết kiệm", amount: summary.allocationAmounts.saving },
+    { percentKey: "emergencyPercent", amountKey: "emergencyAmount", label: "Dự phòng", amount: summary.allocationAmounts.emergency },
+  ];
+  const allocationAmountTotal = allocationAmountRows.reduce((sum, item) => sum + Math.round(item.amount), 0);
+  const availableAllocationAmount = Math.round(Math.max(summary.saving, 0));
+  const amountTotalMatchesSaving = Math.abs(allocationAmountTotal - availableAllocationAmount) <= 1;
+  const hasCustomAllocationAmounts = allocationAmountRows.some((item) => typeof summary.allocation[item.amountKey] === "number");
+  const monthAlreadyConfirmed = Boolean(summary.allocation.confirmedAt);
+
+  const updateMonthlyExpense = (category: ExpenseCategory, patch: Partial<MonthlyExpense>) => {
+    setState((prev) => {
+      const existing = prev.monthlyExpenses.find((item) => item.categoryId === category.id && item.month === month);
+      const next = existing ? { ...existing, ...patch } : { ...getMonthlyExpense(prev, category, month), ...patch };
+      return {
+        ...prev,
+        monthlyExpenses: existing ? prev.monthlyExpenses.map((item) => (item.id === existing.id ? next : item)) : [...prev.monthlyExpenses, next],
+      };
+    });
+  };
+
+  const updateAllocation = (patch: Partial<Allocation>) => {
+    setState((prev) => {
+      const existing = prev.allocations.find((item) => item.month === month);
+      const next = { ...getAllocation(prev, month), ...patch };
+      return {
+        ...prev,
+        allocations: existing ? prev.allocations.map((item) => (item.month === month ? next : item)) : [...prev.allocations, next],
+      };
+    });
+  };
+
+  const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
+    setAllocationAmountInputs((prev) => ({ ...prev, [key]: value }));
+    updateAllocation({ [key]: value.trim() === "" ? undefined : parseMoney(value) } as Partial<Allocation>);
+  };
+
+  const commitAllocationAmount = (key: AllocationAmountKey) => {
+    setAllocationAmountInputs((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      const value = next[key] ?? "";
+      if (value.trim() === "") delete next[key];
+      else next[key] = parseMoney(value).toLocaleString("vi-VN");
+      return next;
+    });
+  };
+
+  const addIncome = () => {
+    const amount = parseMoney(incomeForm.amount);
+    if (!amount || !incomeForm.categoryId || !incomeForm.date) return;
+    setState((prev) => ({
+      ...prev,
+      incomeTransactions: [...prev.incomeTransactions, { id: uid(), categoryId: incomeForm.categoryId, amount, date: incomeForm.date, month: monthFromDate(incomeForm.date), note: incomeForm.note }],
+    }));
+    setSelectedIncomeId(incomeForm.categoryId);
+    setIncomeForm((prev) => ({ ...prev, amount: "", note: "" }));
+    setEntryModal(null);
+  };
+
+  const addExpenseEntry = () => {
+    const amount = parseMoney(expenseEntry.amount);
+    if (!amount || !expenseEntry.categoryId || !expenseEntry.date) return;
+    setState((prev) => ({
+      ...prev,
+      expenseEntries: [...prev.expenseEntries, { id: uid(), categoryId: expenseEntry.categoryId, amount, date: expenseEntry.date, month: monthFromDate(expenseEntry.date), note: expenseEntry.note }],
+    }));
+    setSelectedExpenseId(expenseEntry.categoryId);
+    setExpenseEntry((prev) => ({ ...prev, amount: "", note: "" }));
+    setEntryModal(null);
+  };
+
+  const addIncomeCategory = () => {
+    if (!newIncome.name.trim()) return;
+    const category = { id: uid(), name: newIncome.name.trim(), kind: newIncome.kind };
+    setState((prev) => ({ ...prev, incomeCategories: [...prev.incomeCategories, category] }));
+    setIncomeForm((prev) => ({ ...prev, categoryId: category.id }));
+    setNewIncome({ name: "", kind: "variable" });
+    setShowNewIncomeCategory(false);
+  };
+
+  const addExpenseCategory = () => {
+    if (!newExpense.name.trim()) return;
+    const category: ExpenseCategory = { id: uid(), name: newExpense.name.trim(), kind: newExpense.kind, defaultAmount: newExpense.kind === "fixed" ? parseMoney(newExpense.amount) : 0 };
+    setState((prev) => ({ ...prev, expenseCategories: [...prev.expenseCategories, category] }));
+    setExpenseEntry((prev) => ({ ...prev, categoryId: category.id }));
+    setSelectedExpenseId(category.id);
+    setNewExpense({ name: "", kind: "variable", amount: "" });
+    setShowNewExpenseCategory(false);
+  };
+
+  const openIncomeEdit = (transaction: IncomeTransaction) => {
+    setEditingTransaction({ kind: "income", id: transaction.id, categoryId: transaction.categoryId, amount: transaction.amount.toLocaleString("vi-VN"), date: transaction.date, note: transaction.note });
+  };
+
+  const openExpenseEdit = (transaction: ExpenseEntry) => {
+    setEditingTransaction({ kind: "expense", id: transaction.id, categoryId: transaction.categoryId, amount: transaction.amount.toLocaleString("vi-VN"), date: transaction.date, note: transaction.note });
+  };
+
+  const saveEditingTransaction = () => {
+    if (!editingTransaction) return;
+    const amount = parseMoney(editingTransaction.amount);
+    if (!amount || !editingTransaction.date) return;
+    setState((prev) => {
+      if (editingTransaction.kind === "income") {
+        return {
+          ...prev,
+          incomeTransactions: prev.incomeTransactions.map((item) => item.id === editingTransaction.id ? { ...item, categoryId: editingTransaction.categoryId, amount, date: editingTransaction.date, month: monthFromDate(editingTransaction.date), note: editingTransaction.note } : item),
+        };
+      }
+      return {
+        ...prev,
+        expenseEntries: prev.expenseEntries.map((item) => item.id === editingTransaction.id ? { ...item, categoryId: editingTransaction.categoryId, amount, date: editingTransaction.date, month: monthFromDate(editingTransaction.date), note: editingTransaction.note } : item),
+      };
+    });
+    setEditingTransaction(null);
+  };
+
+  const deleteIncomeTransaction = (transaction: { id: string }) => {
+    if (!window.confirm("Xóa khoản thu này?")) return;
+    setState((prev) => ({ ...prev, incomeTransactions: prev.incomeTransactions.filter((item) => item.id !== transaction.id) }));
+  };
+
+  const deleteExpenseTransaction = (transaction: { id: string }) => {
+    if (!window.confirm("Xóa khoản chi này?")) return;
+    setState((prev) => ({ ...prev, expenseEntries: prev.expenseEntries.filter((item) => item.id !== transaction.id) }));
+  };
+
+  const deleteExpenseCategory = (category: ExpenseCategory) => {
+    if (!window.confirm(`Xóa mục ${category.name}?`)) return;
+    setState((prev) => ({
+      ...prev,
+      expenseCategories: prev.expenseCategories.filter((item) => item.id !== category.id),
+      monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== category.id),
+      expenseEntries: prev.expenseEntries.filter((item) => item.categoryId !== category.id),
+    }));
+    if (selectedExpenseId === category.id) setSelectedExpenseId(null);
+  };
+
+  const saveFixedAmount = () => {
+    if (!editingFixed) return;
+    const category = state.expenseCategories.find((item) => item.id === editingFixed.categoryId);
+    if (!category) return;
+    updateMonthlyExpense(category, { amount: parseMoney(editingFixed.amount) });
+    setEditingFixed(null);
+  };
+
+  const confirmAllocation = () => {
+    const existingAllocation = state.allocations.find((item) => item.month === month);
+    if (existingAllocation?.confirmedAt || percentTotal !== 100 || summary.saving <= 0) return;
+    const confirmedAllocation: Allocation = {
+      ...summary.allocation,
+      confirmedAt: new Date().toISOString(),
+      btcAmount: Math.round(summary.allocationAmounts.btc),
+      stockAmount: Math.round(summary.allocationAmounts.stock),
+      savingAmount: Math.round(summary.allocationAmounts.saving),
+      emergencyAmount: Math.round(summary.allocationAmounts.emergency),
+      totalSavingAtConfirm: Math.round(summary.saving),
+    };
+    if ((confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
+    if ((confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
+    setState((prev) => ({
+      ...prev,
+      allocations: prev.allocations.some((item) => item.month === month) ? prev.allocations.map((item) => (item.month === month ? confirmedAllocation : item)) : [...prev.allocations, confirmedAllocation],
+      fundTransactions: [
+        ...prev.fundTransactions,
+        { id: uid(), fund: "btc", type: "deposit", amount: confirmedAllocation.btcAmount ?? 0, date: `${depositForm.month}-01`, month, note: depositForm.note },
+        { id: uid(), fund: "stock", type: "deposit", amount: confirmedAllocation.stockAmount ?? 0, date: `${depositForm.month}-01`, month, note: depositForm.note },
+      ],
+    }));
+    setConfirmOpen(false);
+  };
+
+  return (
+    <div className="page">
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Dashboard</p>
+          <h1>Tháng {formatMonth(month)}</h1>
+        </div>
+        <MonthPicker month={month} setMonth={setMonth} />
+      </header>
+
+      <section className="metrics-grid">
+        <MetricCard label="Thu nhập" value={formatVnd(summary.income)} icon={<BadgeDollarSign size={20} />} />
+        <MetricCard label="Chi tiêu" value={formatVnd(summary.expense)} icon={<ArrowDownCircle size={20} />} />
+        <MetricCard label="Tiết kiệm tháng" value={formatVnd(summary.saving)} icon={<PiggyBank size={20} />} tone="highlight" />
+      </section>
+
+      <section className="two-column">
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Thu nhập</h2>
+            <button className="icon-button" title="Thêm thu nhập" onClick={() => setEntryModal("income")}>
+              <Plus size={18} />
+            </button>
+          </div>
+          <BreakdownPie data={summary.incomeRows} />
+          <DetailList rows={summary.incomeRows} selectedId={selectedIncomeId} onSelect={setSelectedIncomeId} />
+          <CategoryHistoryPanel title={selectedIncome?.name ?? "Thu nhập"} rows={selectedIncome?.transactions ?? []} emptyText="Chưa có khoản thu nào trong tháng này." itemTone="income" onEdit={(item) => openIncomeEdit(item as IncomeTransaction)} onDelete={deleteIncomeTransaction} />
+        </article>
+
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Chi tiêu</h2>
+            <button className="icon-button" title="Thêm khoản chi" onClick={() => setEntryModal("expense")}>
+              <Plus size={18} />
+            </button>
+          </div>
+          <BreakdownPie data={summary.expenseRows} />
+          <DetailList rows={summary.expenseRows} selectedId={selectedExpenseId} onSelect={setSelectedExpenseId} />
+          <CategoryHistoryPanel title={selectedExpense?.name ?? "Chi tiêu"} rows={selectedExpense?.transactions ?? []} emptyText="Chưa có khoản phát sinh nào trong tháng này." itemTone="expense" onEdit={(item) => openExpenseEdit(item as ExpenseEntry)} onDelete={deleteExpenseTransaction} />
+        </article>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Tiền được chia</h2>
+          <button className="icon-button" title="Chỉnh chia quỹ" onClick={() => setAllocationEditing((current) => !current)}>
+            <Pencil size={17} />
+          </button>
+        </div>
+        <div className="allocation-grid">
+          <FundChip label="BTC" value={summary.allocationAmounts.btc} percent={summary.allocation.btcPercent} />
+          <FundChip label="CK" value={summary.allocationAmounts.stock} percent={summary.allocation.stockPercent} />
+          <FundChip label="Quỹ tiết kiệm" value={summary.allocationAmounts.saving} percent={summary.allocation.savingPercent} />
+          <FundChip label="Dự phòng" value={summary.allocationAmounts.emergency} percent={summary.allocation.emergencyPercent} />
+        </div>
+        {allocationEditing && (
+          <div className="allocation-inline">
+            <div className="panel-title compact-title">
+              <h3>Chỉnh chia quỹ</h3>
+              <div className="allocation-title-meta">
+                <small className={percentTotal === 100 ? "ok" : "bad"}>Tỷ lệ: {percentTotal}%</small>
+                <small className={amountTotalMatchesSaving ? "ok" : "bad"}>Tổng tiền: {formatVnd(allocationAmountTotal)} / {formatVnd(availableAllocationAmount)}</small>
+              </div>
+            </div>
+            <div className="allocation-editor">
+              {allocationAmountRows.map((item) => (
+                <div className="allocation-field" key={item.percentKey}>
+                  <span>{item.label}</span>
+                  <input type="number" min="0" max="100" value={summary.allocation[item.percentKey]} onChange={(event) => updateAllocation({ [item.percentKey]: Number(event.target.value) } as Partial<Allocation>)} aria-label={`${item.label} tỷ lệ phần trăm`} placeholder="%" />
+                  <input className="amount-input" inputMode="numeric" value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")} onChange={(event) => updateAllocationAmount(item.amountKey, event.target.value)} onBlur={() => commitAllocationAmount(item.amountKey)} aria-label={`${item.label} số tiền`} placeholder="Số tiền" />
+                </div>
+              ))}
+            </div>
+            <div className="deposit-confirm">
+              <label>
+                Tháng chia quỹ
+                <input type="month" value={depositForm.month} onChange={(event) => setDepositForm({ ...depositForm, month: event.target.value })} />
+              </label>
+              <button className="primary" onClick={() => setConfirmOpen(true)} disabled={percentTotal !== 100 || summary.saving <= 0 || monthAlreadyConfirmed}>
+                <CheckCircle2 size={17} /> Xác nhận chia quỹ
+              </button>
+              {monthAlreadyConfirmed && <small className="ok">Tháng này đã xác nhận chia quỹ.</small>}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="two-column compact">
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Checklist khoản cố định</h2>
+            <small>Tick mới tính vào chi tiêu</small>
+          </div>
+          <div className="check-list">
+            {fixedCategories.map((category) => {
+              const record = getMonthlyExpense(state, category, month);
+              return (
+                <div key={category.id} className={record.checked ? "done fixed-check-row" : "fixed-check-row"}>
+                  <button className={record.checked ? "check-icon checked" : "check-icon"} title={record.checked ? "Bỏ tick khoản cố định" : "Tick khoản cố định"} onClick={() => updateMonthlyExpense(category, { checked: !record.checked })} type="button">
+                    <CheckCircle2 size={18} />
+                  </button>
+                  <span>{category.name}</span>
+                  <strong>{formatVnd(record.amount)}</strong>
+                  <button className="row-icon-button" title="Sửa số tiền tháng này" onClick={() => setEditingFixed({ categoryId: category.id, amount: record.amount.toLocaleString("vi-VN") })} type="button">
+                    <Pencil size={15} />
+                  </button>
+                  <button className="row-icon-button danger-text" title="Xóa mục" onClick={() => deleteExpenseCategory(category)} type="button">
+                    <X size={16} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Sổ sắp đáo hạn</h2>
+            <button className="ghost" onClick={() => setPage("mbb")}>Xem</button>
+          </div>
+          {dueSoon.length === 0 ? (
+            <p className="muted">Chưa có sổ nào cần xử lý trong 30 ngày tới.</p>
+          ) : (
+            <div className="deposit-mini-list">
+              {dueSoon.map((item) => (
+                <div className={item.dueDays <= 7 ? "danger" : "warning"} key={item.id}>
+                  <CalendarClock size={18} />
+                  <span>{item.fund === "saving" ? "Quỹ tiết kiệm" : "Quỹ dự phòng"}</span>
+                  <strong>{formatVnd(item.principal)}</strong>
+                  <small>{item.dueDays <= 0 ? "Đã đáo hạn" : `${item.dueDays} ngày nữa`}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+      </section>
+
+      {entryModal === "income" && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="income-modal-title">
+          <section className="modal-card">
+            <div className="panel-title">
+              <h2 id="income-modal-title">Thêm thu nhập</h2>
+              <button className="icon-button" title="Đóng" onClick={() => setEntryModal(null)}><X size={17} /></button>
+            </div>
+            <div className="form-grid">
+              <label>Mục thu<select value={incomeForm.categoryId} onChange={(event) => setIncomeForm({ ...incomeForm, categoryId: event.target.value })}>{state.incomeCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
+              <label>Số tiền<input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: event.target.value })} placeholder="9.000.000" /></label>
+              <label>Ngày<input type="date" value={incomeForm.date} onChange={(event) => setIncomeForm({ ...incomeForm, date: event.target.value })} /></label>
+              <label>Ghi chú<input value={incomeForm.note} onChange={(event) => setIncomeForm({ ...incomeForm, note: event.target.value })} placeholder="Fishing, job..." /></label>
+            </div>
+            <button className="primary full" onClick={addIncome}><Plus size={17} /> Thêm thu nhập</button>
+            {!showNewIncomeCategory ? (
+              <button className="ghost full" onClick={() => setShowNewIncomeCategory(true)}><Plus size={17} /> Thêm mục mới</button>
+            ) : (
+              <div className="inline-add modal-inline-add">
+                <input value={newIncome.name} onChange={(event) => setNewIncome({ ...newIncome, name: event.target.value })} placeholder="Mục thu nhập mới" />
+                <select value={newIncome.kind} onChange={(event) => setNewIncome({ ...newIncome, kind: event.target.value as IncomeCategory["kind"] })}><option value="variable">Phát sinh</option><option value="fixed">Cố định</option></select>
+                <button onClick={addIncomeCategory} title="Thêm mục"><Plus size={17} /></button>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {entryModal === "expense" && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="expense-modal-title">
+          <section className="modal-card">
+            <div className="panel-title">
+              <h2 id="expense-modal-title">Thêm khoản chi</h2>
+              <button className="icon-button" title="Đóng" onClick={() => setEntryModal(null)}><X size={17} /></button>
+            </div>
+            <div className="form-grid">
+              <label>Mục chi<select value={expenseEntry.categoryId} onChange={(event) => setExpenseEntry({ ...expenseEntry, categoryId: event.target.value })}>{state.expenseCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
+              <label>Số tiền<input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: event.target.value })} placeholder="500.000" /></label>
+              <label>Ngày<input type="date" value={expenseEntry.date} onChange={(event) => setExpenseEntry({ ...expenseEntry, date: event.target.value })} /></label>
+              <label>Ghi chú<input value={expenseEntry.note} onChange={(event) => setExpenseEntry({ ...expenseEntry, note: event.target.value })} placeholder="Sửa xe, mua đồ..." /></label>
+            </div>
+            <button className="primary full" onClick={addExpenseEntry}><Plus size={17} /> Thêm khoản chi</button>
+            {!showNewExpenseCategory ? (
+              <button className="ghost full" onClick={() => setShowNewExpenseCategory(true)}><Plus size={17} /> Thêm mục mới</button>
+            ) : (
+              <div className="inline-add modal-inline-add">
+                <input value={newExpense.name} onChange={(event) => setNewExpense({ ...newExpense, name: event.target.value })} placeholder="Mục chi mới" />
+                {newExpense.kind === "fixed" && <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: event.target.value })} placeholder="Số tiền mặc định" />}
+                <select value={newExpense.kind} onChange={(event) => setNewExpense({ ...newExpense, kind: event.target.value as NewExpenseKind })}><option value="variable">Phát sinh</option><option value="fixed">Cố định</option></select>
+                <button onClick={addExpenseCategory} title="Thêm mục"><Plus size={17} /></button>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {editingFixed && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="fixed-edit-title">
+          <section className="modal-card">
+            <div className="panel-title">
+              <h2 id="fixed-edit-title">Sửa khoản cố định</h2>
+              <button className="icon-button" title="Đóng" onClick={() => setEditingFixed(null)}><X size={17} /></button>
+            </div>
+            <label>Số tiền tháng này<input value={editingFixed.amount} onChange={(event) => setEditingFixed({ ...editingFixed, amount: event.target.value })} /></label>
+            <div className="modal-actions">
+              <button className="ghost" onClick={() => setEditingFixed(null)}>Hủy</button>
+              <button className="primary" onClick={saveFixedAmount}><Save size={17} /> Lưu</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {editingTransaction && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="edit-transaction-title">
+          <section className="modal-card">
+            <div className="panel-title">
+              <h2 id="edit-transaction-title">Điều chỉnh {editingTransaction.kind === "income" ? "thu nhập" : "chi tiêu"}</h2>
+              <button className="icon-button" title="Đóng" onClick={() => setEditingTransaction(null)}><X size={17} /></button>
+            </div>
+            <div className="form-grid">
+              <label>Mục<select value={editingTransaction.categoryId} onChange={(event) => setEditingTransaction({ ...editingTransaction, categoryId: event.target.value })}>{(editingTransaction.kind === "income" ? state.incomeCategories : state.expenseCategories).map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
+              <label>Số tiền<input value={editingTransaction.amount} onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: event.target.value })} /></label>
+              <label>Ngày<input type="date" value={editingTransaction.date} onChange={(event) => setEditingTransaction({ ...editingTransaction, date: event.target.value })} /></label>
+              <label>Ghi chú<input value={editingTransaction.note} onChange={(event) => setEditingTransaction({ ...editingTransaction, note: event.target.value })} /></label>
+            </div>
+            <div className="modal-actions">
+              <button className="ghost" onClick={() => setEditingTransaction(null)}>Hủy</button>
+              <button className="primary" onClick={saveEditingTransaction}><Save size={17} /> Lưu điều chỉnh</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {confirmOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="allocation-confirm-title">
+          <section className="modal-card">
+            <div className="panel-title">
+              <h2 id="allocation-confirm-title">Xác nhận chia quỹ</h2>
+              <small>Tháng {formatMonth(month)}</small>
+            </div>
+            <p className="muted">App sẽ ghi giao dịch vào BTC/CK. Quỹ tiết kiệm và Dự phòng sẽ được đánh dấu chờ tạo sổ ở trang riêng.</p>
+            {!hasCustomAllocationAmounts && (summary.allocationAmounts.savingRemainder > 0 || summary.allocationAmounts.emergencyRemainder > 0) && <p className="muted">Số lẻ sau khi làm tròn bội số {formatVnd(CERTIFICATE_LOT)} được cộng vào BTC.</p>}
+            <div className="confirm-summary">
+              <div><span>BTC</span><strong>{formatVnd(summary.allocationAmounts.btc)}</strong></div>
+              <div><span>CK</span><strong>{formatVnd(summary.allocationAmounts.stock)}</strong></div>
+              <div><span>Quỹ tiết kiệm</span><strong>{formatVnd(summary.allocationAmounts.saving)}</strong></div>
+              <div><span>Dự phòng</span><strong>{formatVnd(summary.allocationAmounts.emergency)}</strong></div>
+            </div>
+            <div className="modal-actions">
+              <button className="ghost" onClick={() => setConfirmOpen(false)}>Hủy</button>
+              <button className="primary" onClick={confirmAllocation}><CheckCircle2 size={17} /> Đồng ý chia quỹ</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -797,11 +1307,11 @@ function CategoryHistoryPanel({
   onDelete,
 }: {
   title: string;
-  rows: Array<{ id: string; amount: number; date: string; note: string }>;
+  rows: Array<{ id: string; categoryId?: string; amount: number; date: string; note: string }>;
   emptyText: string;
   itemTone: "income" | "expense";
-  onEdit?: (item: { id: string; amount: number; date: string; note: string }) => void;
-  onDelete?: (item: { id: string; amount: number; date: string; note: string }) => void;
+  onEdit?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string }) => void;
+  onDelete?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string }) => void;
 }) {
   return (
     <div className="category-history">
@@ -824,13 +1334,13 @@ function CategoryHistoryPanel({
                   </small>
                 </div>
                 {onEdit && (
-                  <button className="ghost history-edit-button" onClick={() => onEdit(item)} type="button">
-                    Sửa
+                  <button className="row-icon-button history-edit-button" onClick={() => onEdit(item)} title="Sửa giao dịch" type="button">
+                    <Pencil size={15} />
                   </button>
                 )}
                 {onDelete && (
-                  <button className="ghost history-delete-button" onClick={() => onDelete(item)} type="button">
-                    Xóa
+                  <button className="row-icon-button history-delete-button danger-text" onClick={() => onDelete(item)} title="Xóa giao dịch" type="button">
+                    <X size={16} />
                   </button>
                 )}
               </div>
@@ -845,9 +1355,10 @@ function CategoryHistoryPanel({
 function FundChip({ label, value, percent }: { label: string; value: number; percent: number }) {
   return (
     <div className="fund-chip">
-      <small>{label}</small>
+      <small>
+        {label} <b>{percent}%</b>
+      </small>
       <strong>{formatVnd(value)}</strong>
-      <span>{percent}%</span>
     </div>
   );
 }
@@ -1129,6 +1640,8 @@ function MoneyPage({
       emergencyAmount: Math.round(summary.allocationAmounts.emergency),
       totalSavingAtConfirm: Math.round(summary.saving),
     };
+    if ((confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
+    if ((confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
 
     setState((prev) => ({
       ...prev,
@@ -1289,7 +1802,6 @@ function MoneyPage({
             <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: event.target.value })} placeholder="Số tiền" />
             <select value={newExpense.kind} onChange={(event) => setNewExpense({ ...newExpense, kind: event.target.value as ExpenseCategory["kind"] })}>
               <option value="fixed">Cố định</option>
-              <option value="envelope">Đầu/cuối</option>
               <option value="variable">Một lần</option>
             </select>
             <button onClick={addExpenseCategory} title="Thêm mục">
@@ -1312,21 +1824,9 @@ function MoneyPage({
               <div className="expense-row" key={category.id}>
                 <div>
                   <strong>{category.name}</strong>
-                  <small>{category.kind === "envelope" ? "Đầu/cuối" : category.kind === "fixed" ? "Cố định" : "Phát sinh 1 lần"}</small>
+                  <small>{category.kind === "fixed" ? "Cố định" : "Phát sinh 1 lần"}</small>
                 </div>
-                {category.kind === "envelope" ? (
-                  <>
-                    <label>
-                      Đầu tháng
-                      <input value={record.startAmount.toLocaleString("vi-VN")} onChange={(event) => updateMonthlyExpense(category, { startAmount: parseMoney(event.target.value) })} />
-                    </label>
-                    <label>
-                      Cuối tháng
-                      <input value={record.endAmount ? record.endAmount.toLocaleString("vi-VN") : ""} onChange={(event) => updateMonthlyExpense(category, { endAmount: parseMoney(event.target.value) })} />
-                    </label>
-                    <span className="computed">Đã chi {formatVnd(Math.max(record.startAmount - record.endAmount, 0))}</span>
-                  </>
-                ) : category.kind === "fixed" ? (
+                {category.kind === "fixed" ? (
                   <>
                     <label>
                       Số tiền
@@ -1575,10 +2075,12 @@ function FundPage({
   state,
   setState,
   fund,
+  embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   fund: FundKey;
+  embedded?: boolean;
 }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
@@ -1600,8 +2102,8 @@ function FundPage({
     setNote("");
   };
 
-  return (
-    <div className="page">
+  const content = (
+    <>
       <header className="page-header">
         <div>
           <p className="eyebrow">Quỹ VND</p>
@@ -1633,6 +2135,52 @@ function FundPage({
         </article>
         <HistoryPanel rows={rows} />
       </section>
+    </>
+  );
+
+  if (embedded) return content;
+  return <div className="page">{content}</div>;
+}
+
+function InvestmentPage({
+  state,
+  setState,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+}) {
+  const [activeTab, setActiveTab] = useState<InvestmentTab>("btc");
+  const tabs: Array<{ id: InvestmentTab; label: string }> = [
+    { id: "btc", label: "BTC" },
+    { id: "stock", label: "CK" },
+    { id: "sol", label: "SOL" },
+  ];
+
+  return (
+    <div className="page">
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Portfolio</p>
+          <h1>Đầu tư</h1>
+        </div>
+      </header>
+      <div className="deposit-tabs investment-tabs" role="tablist" aria-label="Chọn danh mục đầu tư">
+        {tabs.map((tab) => (
+          <button
+            className={activeTab === tab.id ? "active" : ""}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+            aria-selected={activeTab === tab.id}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {activeTab === "btc" && <FundPage state={state} setState={setState} fund="btc" embedded />}
+      {activeTab === "stock" && <FundPage state={state} setState={setState} fund="stock" embedded />}
+      {activeTab === "sol" && <SolPage state={state} setState={setState} embedded />}
     </div>
   );
 }
@@ -1662,13 +2210,12 @@ function HistoryPanel({ rows }: { rows: FundTransaction[] }) {
 function BankDepositPage({
   state,
   setState,
-  fund,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
-  fund: DepositFund;
 }) {
-  const [form, setForm] = useState({
+  const defaultDepositForm = (fund: DepositFund = "saving") => ({
+    fund,
     amount: "",
     date: today(),
     maturityDate: addMonths(today(), 12),
@@ -1676,23 +2223,46 @@ function BankDepositPage({
     rate: "6",
     note: "",
     sourceMonth: "",
+    allocationSource: false,
   });
+  const [form, setForm] = useState(() => defaultDepositForm());
+  const [activeFilter, setActiveFilter] = useState<DepositFilter>("all");
   const [formOpen, setFormOpen] = useState(false);
   const [pendingSource, setPendingSource] = useState<BankDeposit | null>(null);
   const [earlySettlementDates, setEarlySettlementDates] = useState<Record<string, string>>({});
-  const label = fund === "saving" ? "Quỹ tiết kiệm MBB" : "Quỹ dự phòng";
-  const rows = state.bankDeposits.filter((item) => item.fund === fund);
+  const fundLabel = (fund: DepositFund) => (fund === "saving" ? "Tiết kiệm" : "Dự phòng");
+  const filterOptions: Array<{ id: DepositFilter; label: string }> = [
+    { id: "all", label: "Tổng" },
+    { id: "saving", label: "Tiết kiệm" },
+    { id: "emergency", label: "Dự phòng" },
+  ];
+  const fundOptions: Array<{ id: DepositFund; label: string }> = [
+    { id: "saving", label: "Tiết kiệm" },
+    { id: "emergency", label: "Dự phòng" },
+  ];
+  const rows = state.bankDeposits
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => activeFilter === "all" || item.fund === activeFilter)
+    .sort((left, right) => right.item.startDate.localeCompare(left.item.startDate) || right.index - left.index)
+    .map(({ item }) => item);
   const activeTotal = rows.reduce((sum, item) => sum + activePrincipal(item), 0);
   const pendingAllocations = state.allocations
     .filter((allocation) => allocation.confirmedAt)
-    .map((allocation) => ({
-      month: allocation.month,
-      amount: fund === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
-    }))
+    .flatMap((allocation) =>
+      fundOptions.map(({ id }) => ({
+        fund: id,
+        month: allocation.month,
+        amount: id === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
+        depositRequestedAt: allocation[depositRequestedField(id)],
+        depositCreatedAt: allocation[depositCreatedField(id)],
+      }))
+    )
     .filter(
       (allocation) =>
         allocation.amount > 0 &&
-        !state.bankDeposits.some((deposit) => deposit.fund === fund && deposit.createdFromMonth === allocation.month)
+        allocation.depositRequestedAt &&
+        !allocation.depositCreatedAt &&
+        !state.bankDeposits.some((deposit) => deposit.fund === allocation.fund && deposit.createdFromMonth === allocation.month)
     )
     .sort((a, b) => a.month.localeCompare(b.month));
 
@@ -1709,13 +2279,20 @@ function BankDepositPage({
     setFormOpen(true);
   };
 
-  const prefillPendingDeposit = (allocation: { month: string; amount: number }) => {
+  const openManualDepositForm = () => {
+    setPendingSource(null);
+    openDepositForm({ fund: activeFilter === "all" ? form.fund : activeFilter, allocationSource: false, sourceMonth: "" });
+  };
+
+  const prefillPendingDeposit = (allocation: { fund: DepositFund; month: string; amount: number }) => {
     setPendingSource(null);
     openDepositForm({
+      fund: allocation.fund,
       amount: allocation.amount.toLocaleString("vi-VN"),
       date: today(),
       maturityDate: addMonths(today(), Number(form.term) || 0),
       sourceMonth: allocation.month,
+      allocationSource: true,
       note: `Tạo sổ từ chia quỹ ${formatMonth(allocation.month)}`,
     });
   };
@@ -1724,15 +2301,16 @@ function BankDepositPage({
     const amount = parseMoney(form.amount);
     if (!amount) return;
     setState((prev) => {
+      const sourceMonth = form.sourceMonth || monthFromDate(form.date);
       const nextDeposit = makeDeposit(
         prev.bankDeposits,
-        fund,
+        form.fund,
         amount,
         Number(form.rate),
         Number(form.term),
         form.date,
         form.maturityDate,
-        form.sourceMonth || monthFromDate(form.date),
+        sourceMonth,
         form.note,
         pendingSource?.id
       );
@@ -1754,9 +2332,16 @@ function BankDepositPage({
       return {
         ...prev,
         bankDeposits: [...bankDeposits, nextDeposit],
+        allocations: form.allocationSource
+          ? prev.allocations.map((allocation) =>
+              allocation.month === sourceMonth
+                ? { ...allocation, [depositCreatedField(form.fund)]: new Date().toISOString() }
+                : allocation
+            )
+          : prev.allocations,
       };
     });
-    setForm({ amount: "", date: today(), maturityDate: addMonths(today(), 12), term: "12", rate: "6", note: "", sourceMonth: "" });
+    setForm(defaultDepositForm());
     setFormOpen(false);
     setPendingSource(null);
   };
@@ -1786,12 +2371,14 @@ function BankDepositPage({
     const nextPrincipal = item.principal + interestFor(item);
     setPendingSource(item);
     openDepositForm({
+      fund: item.fund,
       amount: nextPrincipal.toLocaleString("vi-VN"),
       date: item.maturityDate,
       maturityDate: addMonths(item.maturityDate, item.termMonths),
       term: String(item.termMonths),
       rate: String(item.rate),
       sourceMonth: monthFromDate(item.maturityDate),
+      allocationSource: false,
       note: `Tạo mới từ ${item.code}`,
     });
   };
@@ -1812,26 +2399,98 @@ function BankDepositPage({
     }));
   };
 
+  const deleteDeposit = (item: BankDeposit) => {
+    if (!window.confirm(`Xóa sổ ${item.code}? Thao tác này sẽ xóa sổ khỏi lịch sử và bảng tăng trưởng tài sản.`)) return;
+
+    setState((prev) => ({
+      ...prev,
+      bankDeposits: prev.bankDeposits
+        .filter((deposit) => deposit.id !== item.id)
+        .map((deposit) => {
+          if (deposit.childId === item.id) {
+            return {
+              ...deposit,
+              status: "active" as DepositStatus,
+              childId: undefined,
+              settledAt: undefined,
+              settledAmount: undefined,
+            };
+          }
+          if (deposit.parentId === item.id) {
+            return { ...deposit, parentId: undefined };
+          }
+          return deposit;
+        }),
+      allocations: item.createdFromMonth
+        ? prev.allocations.map((allocation) =>
+            allocation.month === item.createdFromMonth
+              ? { ...allocation, [depositCreatedField(item.fund)]: allocation[depositCreatedField(item.fund)] ?? new Date().toISOString() }
+              : allocation
+          )
+        : prev.allocations,
+    }));
+    setEarlySettlementDates((prev) => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+    if (pendingSource?.id === item.id) setPendingSource(null);
+  };
+
+  const fundSelectionLocked = Boolean(form.sourceMonth);
+
   return (
     <div className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Sổ tiết kiệm riêng</p>
-          <h1>{label}</h1>
+          <p className="eyebrow">Quỹ MBB</p>
+          <h1>Sổ MBB</h1>
         </div>
       </header>
+      <div className="deposit-tabs" role="tablist" aria-label="Lọc sổ MBB">
+        {filterOptions.map((option) => (
+          <button
+            className={activeFilter === option.id ? "active" : ""}
+            key={option.id}
+            onClick={() => setActiveFilter(option.id)}
+            role="tab"
+            type="button"
+            aria-selected={activeFilter === option.id}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
       <section className="metrics-grid single">
-        <MetricCard label="Gốc hiện tại" value={formatVnd(activeTotal)} icon={<Landmark size={20} />} tone="highlight" />
+        <MetricCard label="Gốc đang gửi" value={formatVnd(activeTotal)} icon={<Landmark size={20} />} tone="highlight" />
       </section>
       {pendingAllocations.length > 0 && (
         <section className="pending-stack">
           {pendingAllocations.map((allocation) => (
-            <article className="pending-banner" key={allocation.month}>
+            <article
+              className="pending-banner clickable"
+              key={`${allocation.fund}-${allocation.month}`}
+              onClick={() => prefillPendingDeposit(allocation)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  prefillPendingDeposit(allocation);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
               <div>
-                <strong>Tháng {formatMonth(allocation.month)} chưa tạo sổ</strong>
+                <strong>{fundLabel(allocation.fund)} · Tháng {formatMonth(allocation.month)} chưa tạo sổ</strong>
                 <small>{formatVnd(allocation.amount)}</small>
               </div>
-              <button className="primary" onClick={() => prefillPendingDeposit(allocation)}>
+              <button
+                className="primary"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  prefillPendingDeposit(allocation);
+                }}
+              >
                 <Plus size={17} /> Tạo sổ
               </button>
             </article>
@@ -1842,7 +2501,7 @@ function BankDepositPage({
         <div className="panel-title">
           <h2>Thêm sổ MBB</h2>
           {!formOpen ? (
-            <button className="ghost" onClick={() => setFormOpen(true)}>
+            <button className="ghost" onClick={openManualDepositForm}>
               Mở form
             </button>
           ) : (
@@ -1858,6 +2517,22 @@ function BankDepositPage({
                 Tạo từ {pendingSource.code} · gốc {formatVnd(pendingSource.principal)} · lãi {formatVnd(interestFor(pendingSource))}
               </p>
             )}
+            <div className="deposit-fund-field">
+              <span>Loại sổ</span>
+              <div className="deposit-fund-toggle" role="group" aria-label="Chọn loại sổ">
+                {fundOptions.map((option) => (
+                  <button
+                    className={form.fund === option.id ? "active" : ""}
+                    disabled={fundSelectionLocked}
+                    key={option.id}
+                    onClick={() => setForm({ ...form, fund: option.id })}
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <label>
               Số tiền
               <input value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="6.000.000" />
@@ -1900,6 +2575,7 @@ function BankDepositPage({
                 <div>
                   <div className="deposit-code-row">
                     <small>{item.code}</small>
+                    <span className={`fund-badge ${item.fund}`}>{fundLabel(item.fund)}</span>
                     <input
                       className="deposit-last4-inline"
                       value={item.mbLast4}
@@ -1955,6 +2631,11 @@ function BankDepositPage({
                   </button>
                 </div>
               )}
+              <div className="card-actions deposit-delete-actions">
+                <button className="ghost history-delete-button deposit-delete-button" onClick={() => deleteDeposit(item)} type="button">
+                  Xóa sổ
+                </button>
+              </div>
             </article>
           );
         })}
@@ -1977,9 +2658,11 @@ function statusLabel(status: DepositStatus) {
 function SolPage({
   state,
   setState,
+  embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  embedded?: boolean;
 }) {
   const [form, setForm] = useState({ sol: "", price: "", date: today(), note: "" });
   const totalSol = state.solTransactions.reduce((sum, item) => sum + item.solAmount, 0);
@@ -2001,8 +2684,8 @@ function SolPage({
     setForm({ sol: "", price: "", date: today(), note: "" });
   };
 
-  return (
-    <div className="page">
+  const content = (
+    <>
       <header className="page-header">
         <div>
           <p className="eyebrow">Coin portfolio</p>
@@ -2088,8 +2771,11 @@ function SolPage({
           ))}
         </div>
       </section>
-    </div>
+    </>
   );
+
+  if (embedded) return content;
+  return <div className="page">{content}</div>;
 }
 
 function ReportsPage({ state }: { state: AppState }) {
@@ -2487,7 +3173,7 @@ export function App() {
   const [state, setState] = useStoredState();
   const [unlocked, setUnlocked] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
-  const [month, setMonth] = useState(DEFAULT_START_MONTH);
+  const [month, setMonth] = useState(currentMonth);
   const [activePin, setActivePin] = useState("");
   const [cloudStatus, setCloudStatus] = useState("");
   const cloudLoaded = useRef(false);
@@ -2495,6 +3181,10 @@ export function App() {
   const cloudConfigured = isCloudSyncConfigured();
   const cloudAccountKey = activePin ? cloudAccountKeyForPin(activePin) : "";
   const stateForCloud = (): AppState => (activePin ? stateForAccountPin(state, activePin) : state);
+  const navigateToPage = (nextPage: Page) => {
+    setPage(nextPage);
+    if (nextPage === "dashboard") setMonth(currentMonth());
+  };
 
   const unlockWithPin = async (pin: string) => {
     if (!cloudConfigured) {
@@ -2642,28 +3332,12 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <AppNav page={page} setPage={setPage} />
+      <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
-        {page === "dashboard" && <DashboardPage state={state} month={month} setMonth={setMonth} setPage={setPage} />}
-        {page === "money" && <MoneyPage state={state} setState={setState} month={month} setMonth={setMonth} />}
-        {page === "btc" && <FundPage state={state} setState={setState} fund="btc" />}
-        {page === "stock" && <FundPage state={state} setState={setState} fund="stock" />}
-        {page === "saving" && <BankDepositPage state={state} setState={setState} fund="saving" />}
-        {page === "emergency" && <BankDepositPage state={state} setState={setState} fund="emergency" />}
-        {page === "sol" && <SolPage state={state} setState={setState} />}
+        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={setPage} />}
+        {page === "investment" && <InvestmentPage state={state} setState={setState} />}
+        {page === "mbb" && <BankDepositPage state={state} setState={setState} />}
         {page === "reports" && <ReportsPage state={state} />}
-        {page === "settings" && (
-          <SettingsPage
-            state={state}
-            setState={setState}
-            cloudSync={{
-              configured: cloudConfigured,
-              status: cloudStatus,
-              onSyncNow: syncCloudNow,
-              onChangePin: changePin,
-            }}
-          />
-        )}
       </main>
     </div>
   );

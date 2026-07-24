@@ -173,8 +173,45 @@ label strong {
   text-transform: uppercase;
 }
 
+.deposit-tabs,
+.deposit-fund-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #2f2924;
+  border-radius: 8px;
+  background: #11100e;
+  padding: 4px;
+}
+
+.deposit-tabs {
+  margin: -8px 0 14px;
+}
+
+.deposit-tabs button,
+.deposit-fund-toggle button {
+  min-height: 34px;
+  border-radius: 7px;
+  background: transparent;
+  color: #b9afa5;
+  padding: 0 12px;
+  font-weight: 800;
+}
+
+.deposit-tabs button.active,
+.deposit-fund-toggle button.active {
+  background: #211b16;
+  color: #fff7ed;
+}
+
+.deposit-fund-toggle button:disabled {
+  cursor: not-allowed;
+  opacity: 0.92;
+}
+
 .month-picker {
   display: inline-flex;
+  position: relative;
   align-items: center;
   gap: 10px;
   border: 1px solid #2f2924;
@@ -182,6 +219,29 @@ label strong {
   background: #11100e;
   padding: 6px;
   white-space: nowrap;
+}
+
+.month-picker strong {
+  min-width: 112px;
+  padding: 0 6px;
+  text-align: center;
+}
+
+.month-picker-input {
+  position: absolute;
+  left: 50%;
+  z-index: 1;
+  width: 132px;
+  height: 34px;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(-50%);
+}
+
+.month-picker-input:focus + strong {
+  border-radius: 8px;
+  outline: 1px solid #f97316;
+  outline-offset: 4px;
 }
 
 .month-picker button,
@@ -440,6 +500,11 @@ label strong {
   font-weight: 800;
 }
 
+.fund-chip small b {
+  color: #14b8a6;
+  font-weight: 900;
+}
+
 .check-list div {
   color: #a59b91;
 }
@@ -450,6 +515,40 @@ label strong {
 
 .check-list svg {
   color: #f97316;
+}
+
+.fixed-check-row {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  min-height: 48px;
+}
+
+.check-icon,
+.row-icon-button {
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #211b16;
+  color: #f97316;
+}
+
+.check-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.check-icon.checked {
+  color: #14b8a6;
+}
+
+.row-icon-button {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+}
+
+.danger-text {
+  color: #fb7185;
 }
 
 .deposit-mini-list div {
@@ -511,6 +610,11 @@ label strong {
   width: 100%;
 }
 
+.ghost.full {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .ghost,
 .toggle {
   border: 1px solid #332c26;
@@ -521,6 +625,12 @@ label strong {
 .toggle.checked {
   border-color: rgba(20, 184, 166, 0.5);
   color: #99f6e4;
+}
+
+.allocation-inline {
+  margin-top: 16px;
+  border-top: 1px solid #2b251f;
+  padding-top: 16px;
 }
 
 .expense-row {
@@ -581,6 +691,21 @@ label strong {
   align-items: end;
 }
 
+.deposit-fund-field,
+.deposit-source-hint {
+  grid-column: 1 / -1;
+}
+
+.deposit-fund-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #a59b91;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .ok {
   color: #14b8a6;
 }
@@ -609,6 +734,20 @@ label strong {
   border-radius: 8px;
   background: rgba(234, 179, 8, 0.1);
   padding: 14px;
+}
+
+.pending-banner.clickable {
+  cursor: pointer;
+}
+
+.pending-banner.clickable:hover {
+  border-color: rgba(250, 204, 21, 0.85);
+  background: rgba(234, 179, 8, 0.16);
+}
+
+.pending-banner.clickable:focus-visible {
+  outline: 2px solid #facc15;
+  outline-offset: 3px;
 }
 
 .pending-banner strong,
@@ -643,6 +782,20 @@ label strong {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.fund-badge {
+  border-radius: 999px;
+  background: rgba(20, 184, 166, 0.12);
+  color: #99f6e4;
+  padding: 5px 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.fund-badge.emergency {
+  background: rgba(96, 165, 250, 0.13);
+  color: #bfdbfe;
 }
 
 .deposit-last4-inline {
@@ -686,6 +839,15 @@ label strong {
   gap: 8px;
 }
 
+.deposit-delete-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.deposit-delete-button {
+  color: #fecdd3;
+}
+
 .compact-date-input {
   width: 150px;
   min-height: 36px;
@@ -715,18 +877,10 @@ label strong {
 
 .history-edit-button {
   flex: 0 0 auto;
-  min-height: 30px;
-  padding: 0 10px;
-  font-size: 0.75rem;
-  border-radius: 999px;
 }
 
 .history-delete-button {
   flex: 0 0 auto;
-  min-height: 30px;
-  padding: 0 10px;
-  font-size: 0.75rem;
-  border-radius: 999px;
 }
 
 .timeline > div > span {
@@ -998,6 +1152,27 @@ label strong {
     justify-content: space-between;
   }
 
+  .deposit-tabs {
+    display: flex;
+  }
+
+  .deposit-tabs button {
+    flex: 1;
+  }
+
+  .deposit-fund-field {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .deposit-fund-toggle {
+    display: flex;
+  }
+
+  .deposit-fund-toggle button {
+    flex: 1;
+  }
+
   .metrics-grid,
   .two-column,
   .allocation-grid,
@@ -1029,7 +1204,7 @@ label strong {
 
   .history-edit-button,
   .history-delete-button {
-    width: 100%;
+    width: 30px;
   }
 
   .modal-actions {
