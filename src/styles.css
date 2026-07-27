@@ -94,14 +94,10 @@ label strong {
 }
 
 .brand-mark {
-  display: grid;
   width: 38px;
   height: 38px;
-  place-items: center;
   border-radius: 8px;
-  background: #f97316;
-  color: #090807;
-  font-weight: 900;
+  object-fit: cover;
 }
 
 .brand strong,
@@ -175,6 +171,13 @@ label strong {
   margin: 4px 0 0;
   font-size: clamp(1.55rem, 3vw, 2.35rem);
   letter-spacing: 0;
+}
+
+.page-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .eyebrow {
@@ -279,6 +282,10 @@ label strong {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.metrics-grid.report-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .metric,
 .panel,
 .pin-card,
@@ -296,6 +303,19 @@ label strong {
   gap: 12px;
   min-height: 92px;
   padding: 18px;
+}
+
+.metric.clickable {
+  cursor: pointer;
+}
+
+.metric.clickable:hover {
+  border-color: rgba(249, 115, 22, 0.55);
+}
+
+.metric.clickable:focus-visible {
+  outline: 2px solid #f97316;
+  outline-offset: 3px;
 }
 
 .metric > span {
@@ -336,6 +356,24 @@ label strong {
 .metric.highlight {
   border-color: rgba(249, 115, 22, 0.55);
   background: linear-gradient(135deg, rgba(249, 115, 22, 0.18), rgba(20, 17, 15, 0.94));
+}
+
+.fund-chip.clickable {
+  cursor: pointer;
+}
+
+.fund-chip.clickable:hover {
+  border-color: rgba(249, 115, 22, 0.55);
+}
+
+.fund-chip.clickable:focus-visible {
+  outline: 2px solid #f97316;
+  outline-offset: 3px;
+}
+
+.fund-chip.highlight {
+  border-color: rgba(249, 115, 22, 0.55);
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.15), rgba(20, 17, 15, 0.94));
 }
 
 .metric.loss {
@@ -493,7 +531,7 @@ label strong {
 }
 
 .asset-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .fund-chip {
@@ -512,6 +550,7 @@ label strong {
   font-weight: 800;
 }
 
+.metric small b,
 .fund-chip small b {
   color: #14b8a6;
   font-weight: 900;
@@ -696,6 +735,373 @@ label strong {
   font-weight: 800;
 }
 
+.accumulation-form {
+  grid-template-columns: repeat(6, minmax(0, 1fr)) auto;
+}
+
+.accumulation-computed,
+.accumulation-form-error {
+  grid-column: 1 / -1;
+}
+
+.accumulation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.accumulation-card {
+  position: relative;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: rgba(18, 15, 13, 0.88);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.18);
+  padding: 16px 44px 16px 16px;
+}
+
+.accumulation-card.ended {
+  opacity: 0.78;
+}
+
+.progress-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #211b16;
+  margin: 12px 0 14px;
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f97316, #14b8a6);
+}
+
+.accumulation-summary {
+  display: grid;
+  gap: 8px;
+  color: #a59b91;
+  font-size: 0.86rem;
+}
+
+.accumulation-summary span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.accumulation-summary strong {
+  color: #fff7ed;
+}
+
+.accumulation-actions {
+  margin-top: 14px;
+}
+
+.accumulation-action-button {
+  min-height: 38px;
+  padding: 0 14px;
+}
+
+.accumulation-delete-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(18, 15, 13, 0.82);
+  color: #fecdd3;
+  padding: 0;
+}
+
+.accumulation-delete-button:hover {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fff1f2;
+}
+
+.empty-state {
+  color: #a59b91;
+  padding: 18px;
+}
+
+.stock-buy-list {
+  display: grid;
+  gap: 10px;
+}
+
+.stock-trade-section {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.stock-action-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 2fr);
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.stock-buy-row {
+  display: grid;
+  grid-template-columns: 1.15fr 0.55fr 0.8fr 0.9fr 1fr 34px;
+  gap: 10px;
+  align-items: end;
+}
+
+.stock-row-value {
+  display: grid;
+  min-height: 42px;
+  align-content: end;
+  gap: 7px;
+  padding: 0 0 7px;
+}
+
+.stock-row-value span {
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+.stock-row-value strong {
+  color: #fff7ed;
+  font-size: 0.96rem;
+}
+
+.stock-symbol-field {
+  position: relative;
+}
+
+.stock-suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(420px, calc(100vw - 48px));
+  display: grid;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #3a3028;
+  border-radius: 8px;
+  background: #120f0d;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.34);
+  padding: 6px;
+}
+
+.stock-suggestions button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  padding: 8px;
+  text-align: left;
+}
+
+.stock-suggestions button:hover {
+  background: rgba(249, 115, 22, 0.12);
+}
+
+.stock-suggestions span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.stock-suggestions strong {
+  color: #fff7ed;
+}
+
+.stock-suggestions small {
+  overflow: hidden;
+  color: #a59b91;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stock-suggestions b {
+  color: #14b8a6;
+  white-space: nowrap;
+}
+
+.stock-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.stock-confirm-summary {
+  margin: 12px 0;
+}
+
+.stock-holding-list {
+  display: grid;
+  gap: 10px;
+}
+
+.stock-holding-card {
+  position: relative;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: #100d0b;
+  padding: 14px 118px 14px 14px;
+}
+
+.stock-holding-card h3 {
+  margin: 0 0 2px;
+}
+
+.stock-holding-grid {
+  display: grid;
+  grid-template-columns: 0.65fr 1.35fr 1.3fr 1fr;
+  gap: 14px;
+  align-items: end;
+  margin-top: 14px;
+}
+
+.stock-holding-grid span,
+.stock-holding-grid label {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  color: #a59b91;
+  font-size: 0.82rem;
+}
+
+.stock-holding-grid > span,
+.stock-holding-grid > label {
+  min-height: 52px;
+}
+
+.stock-holding-grid strong {
+  color: #fff7ed;
+}
+
+.stock-price-pair > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stock-price-pair input {
+  width: 92px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  font-weight: 800;
+}
+
+.stock-price-pair strong {
+  min-width: 58px;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: rgba(249, 115, 22, 0.08);
+  color: #fff7ed;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.stock-value-pair {
+  gap: 4px;
+}
+
+.stock-value-pair b {
+  color: #14b8a6;
+  font-size: 0.92rem;
+}
+
+.stock-value-pair strong {
+  font-size: 0.92rem;
+}
+
+.stock-holding-grid .stock-pnl.gain {
+  color: #14b8a6;
+}
+
+.stock-holding-grid .stock-pnl.loss {
+  color: #fb7185;
+}
+
+.stock-card-withdraw-button {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid #3a3028;
+  border-radius: 8px;
+  background: rgba(18, 15, 13, 0.85);
+  color: #fff7ed;
+  padding: 0 12px;
+}
+
+.stock-card-withdraw-button:hover {
+  border-color: rgba(249, 115, 22, 0.55);
+  background: rgba(249, 115, 22, 0.14);
+}
+
+.stock-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.stock-sale-form {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 14px;
+  border-top: 1px solid #2b251f;
+  padding-top: 14px;
+}
+
+.stock-sale-shares {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.stock-sale-summary {
+  display: grid;
+  min-height: 42px;
+  align-content: end;
+  gap: 7px;
+  padding-bottom: 7px;
+}
+
+.stock-sale-summary span {
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+.stock-sale-summary strong {
+  color: #fff7ed;
+  white-space: nowrap;
+}
+
+.stock-sale-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.timeline .stock-history-row {
+  grid-template-columns: auto 1fr auto;
+}
+
 .deposit-confirm {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
@@ -773,7 +1179,15 @@ label strong {
   font-weight: 800;
 }
 
+.stock-allocation-notice {
+  width: 100%;
+  margin-bottom: 14px;
+  color: #f6efe8;
+  text-align: left;
+}
+
 .deposit-card {
+  position: relative;
   padding: 16px;
 }
 
@@ -782,6 +1196,7 @@ label strong {
   align-items: start;
   justify-content: space-between;
   gap: 12px;
+  padding-right: 36px;
 }
 
 .deposit-head h3 {
@@ -851,13 +1266,25 @@ label strong {
   gap: 8px;
 }
 
-.deposit-delete-actions {
-  justify-content: flex-end;
-  margin-top: 10px;
+.deposit-delete-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(18, 15, 13, 0.8);
+  color: #fecdd3;
+  padding: 0;
 }
 
-.deposit-delete-button {
-  color: #fecdd3;
+.deposit-delete-button:hover {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fff1f2;
 }
 
 .compact-date-input {
@@ -1160,6 +1587,14 @@ label strong {
     flex-direction: column;
   }
 
+  .page-header-actions {
+    justify-content: stretch;
+  }
+
+  .page-header-actions button {
+    flex: 1;
+  }
+
   .month-picker {
     justify-content: space-between;
   }
@@ -1185,8 +1620,39 @@ label strong {
     flex: 1;
   }
 
+  .stock-buy-row,
+  .stock-holding-grid,
+  .stock-sale-form {
+    grid-template-columns: 1fr;
+  }
+
+  .stock-holding-card {
+    padding: 14px;
+  }
+
+  .stock-holding-card h3,
+  .stock-holding-card small {
+    padding-right: 86px;
+  }
+
+  .stock-price-pair > div {
+    justify-content: flex-start;
+  }
+
+  .stock-price-pair input {
+    width: 112px;
+  }
+
+  .stock-form-actions,
+  .stock-sale-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .metrics-grid,
+  .metrics-grid.report-metrics,
   .two-column,
+  .stock-action-grid,
   .allocation-grid,
   .asset-grid,
   .allocation-editor,

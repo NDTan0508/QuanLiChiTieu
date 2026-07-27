@@ -22,6 +22,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Coins,
+  History,
   Pencil,
   Landmark,
   LayoutDashboard,
@@ -37,8 +38,8 @@ import { deleteCloudState, isCloudSyncConfigured, loadAdminPasswordHash, loadClo
 
 type Page =
   | "dashboard"
+  | "accumulation"
   | "investment"
-  | "mbb"
   | "reports";
 
 type IncomeCategory = {
@@ -61,6 +62,7 @@ type ExpenseCategory = {
   name: string;
   kind: "fixed" | "variable";
   defaultAmount: number;
+  accumulationGoalId?: string;
 };
 
 type MonthlyExpense = {
@@ -71,6 +73,24 @@ type MonthlyExpense = {
   endAmount: number;
   amount: number;
   checked: boolean;
+};
+
+type AccumulationStatus = "active" | "ended" | "deleted";
+
+type AccumulationGoal = {
+  id: string;
+  name: string;
+  targetAmount: number;
+  startMonth: string;
+  dueDate?: string;
+  months: number;
+  monthlyAmount: number;
+  categoryId: string;
+  status: AccumulationStatus;
+  endedAt?: string;
+  deletedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type ExpenseEntry = {
@@ -101,7 +121,57 @@ type Allocation = {
 };
 
 type FundKey = "btc" | "stock";
-type InvestmentTab = FundKey | "sol";
+type InvestmentTab = FundKey | "mbb" | "sol";
+type SolDestination = FundKey | DepositFund | "cash";
+type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | DepositFund;
+
+type StockPurchaseLine = {
+  symbol: string;
+  shares: number;
+  buyPrice: number;
+};
+
+type StockPurchase = {
+  id: string;
+  date: string;
+  month: string;
+  note: string;
+  lines: StockPurchaseLine[];
+};
+
+type StockSale = {
+  id: string;
+  symbol: string;
+  shares: number;
+  sellPrice: number;
+  vndAmount: number;
+  destination: SolDestination;
+  date: string;
+  note: string;
+};
+
+type StockMarketPrice = {
+  symbol: string;
+  price: number;
+  updatedAt: string;
+  source: string;
+};
+
+type StockLookupSuggestion = {
+  symbol: string;
+  name: string;
+  exchange?: string;
+  price?: number;
+  source: string;
+};
+
+type StockBuyRow = {
+  id: string;
+  symbol: string;
+  percent: string;
+  shares: string;
+  buyPrice: string;
+};
 
 type FundTransaction = {
   id: string;
@@ -136,6 +206,7 @@ type BankDeposit = {
   parentId?: string;
   childId?: string;
   createdFromMonth?: string;
+  createdFromSolWithdrawalId?: string;
   settledAt?: string;
   settledAmount?: number;
   note: string;
@@ -168,13 +239,27 @@ type ExpenseSummaryRow = {
   kind: ExpenseCategory['kind'];
 };
 
-type SolTransaction = {
+type SolBuyTransaction = {
   id: string;
+  type?: "buy";
   solAmount: number;
   buyPrice: number;
   date: string;
   note: string;
 };
+
+type SolWithdrawTransaction = {
+  id: string;
+  type: "withdraw";
+  solAmount: number;
+  sellPrice: number;
+  vndAmount: number;
+  destination: SolDestination;
+  date: string;
+  note: string;
+};
+
+type SolTransaction = SolBuyTransaction | SolWithdrawTransaction;
 
 type Market = {
   solUsd: number;
@@ -185,6 +270,7 @@ type Market = {
 type SettingsState = {
   pin: string;
   hasPin: boolean;
+  dismissedStockAllocationIds: string[];
 };
 
 type AppState = {
@@ -192,9 +278,13 @@ type AppState = {
   incomeTransactions: IncomeTransaction[];
   expenseCategories: ExpenseCategory[];
   monthlyExpenses: MonthlyExpense[];
+  accumulationGoals: AccumulationGoal[];
   expenseEntries: ExpenseEntry[];
   allocations: Allocation[];
   fundTransactions: FundTransaction[];
+  stockPurchases: StockPurchase[];
+  stockSales: StockSale[];
+  stockMarketPrices: StockMarketPrice[];
   bankDeposits: BankDeposit[];
   solTransactions: SolTransaction[];
   market: Market;
@@ -206,6 +296,9 @@ const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
 const DEFAULT_START_MONTH = "2026-06";
 const CERTIFICATE_LOT = 100_000;
+const STOCK_PRICE_UNIT = 1_000;
+const STOCK_LOT = 100;
+const STOCK_PRICE_REFRESH_MS = 30 * 60 * 1000;
 const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"];
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -216,7 +309,25 @@ const currentMonth = () => {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 };
 
+const isVietnamStockTradingSession = (date = new Date()) => {
+  const day = date.getDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  return (minutes >= 9 * 60 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60);
+};
+
 const monthFromDate = (value: string) => value.slice(0, 7);
+
+const monthIndex = (value: string) => {
+  const [year, month] = value.split("-").map(Number);
+  return year * 12 + month - 1;
+};
+
+const monthsBetweenInclusive = (startMonth: string, endMonth: string) =>
+  Math.max(monthIndex(endMonth) - monthIndex(startMonth) + 1, 1);
+
+const monthRange = (startMonth: string, months: number) =>
+  Array.from({ length: Math.max(months, 0) }, (_, index) => shiftMonth(startMonth, index));
 
 const addMonths = (dateValue: string, months: number) => {
   const date = new Date(`${dateValue}T00:00:00`);
@@ -237,6 +348,16 @@ const formatDate = (value: string) => {
   return `${day}/${month}/${year}`;
 };
 
+const formatDateTime = (value: string) =>
+  new Date(value).toLocaleString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
 const formatMonth = (value: string) => {
   const [year, month] = value.split("-");
   return `${month}/${year}`;
@@ -254,11 +375,25 @@ const formatVnd = (value: number) =>
 const formatUsd = (value: number) =>
   `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`;
 
+const formatStockPrice = (value: number) =>
+  value.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
+
 const parseMoney = (value: string) => Number(value.replace(/[^\d]/g, "")) || 0;
+const parseDecimal = (value: string) => {
+  const cleaned = value.trim().replace(/[^\d.,]/g, "");
+  if (!cleaned) return 0;
+  const lastComma = cleaned.lastIndexOf(",");
+  const lastDot = cleaned.lastIndexOf(".");
+  const decimalIndex = Math.max(lastComma, lastDot);
+  if (decimalIndex === -1) return Number(cleaned) || 0;
+  const integerPart = cleaned.slice(0, decimalIndex).replace(/[.,]/g, "");
+  const decimalPart = cleaned.slice(decimalIndex + 1).replace(/[.,]/g, "");
+  return Number(`${integerPart || "0"}.${decimalPart}`) || 0;
+};
 const cloudAccountKeyForPin = (pin: string) => `${CLOUD_ACCOUNT_NAMESPACE}:${pin}`;
 const stateForAccountPin = (state: AppState, pin: string): AppState => ({
   ...state,
-  settings: { hasPin: true, pin },
+  settings: { ...state.settings, hasPin: true, pin },
 });
 const sha256Hex = async (value: string) => {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -273,6 +408,248 @@ const roundDownToCertificateLot = (amount: number) =>
 
 const allocationAmountOrDefault = (amount: number | undefined, fallback: number) =>
   typeof amount === "number" && Number.isFinite(amount) ? Math.max(amount, 0) : fallback;
+
+const isSolWithdrawal = (transaction: SolTransaction): transaction is SolWithdrawTransaction =>
+  transaction.type === "withdraw";
+
+const solDestinationLabel = (destination: SolDestination) => {
+  const labels: Record<SolDestination, string> = {
+    btc: "BTC",
+    stock: "CK",
+    saving: "Tiết kiệm",
+    emergency: "Dự phòng",
+    cash: "Tiền mặt",
+  };
+  return labels[destination];
+};
+
+function solPosition(transactions: SolTransaction[]) {
+  return transactions.reduce(
+    (position, transaction) => {
+      if (isSolWithdrawal(transaction)) {
+        const currentAverageCost = position.balance > 0 ? position.cost / position.balance : 0;
+        const withdrawnSol = Math.min(transaction.solAmount, position.balance);
+        return {
+          balance: Math.max(position.balance - transaction.solAmount, 0),
+          cost: Math.max(position.cost - withdrawnSol * currentAverageCost, 0),
+        };
+      }
+
+      return {
+        balance: position.balance + transaction.solAmount,
+        cost: position.cost + transaction.solAmount * transaction.buyPrice,
+      };
+    },
+    { balance: 0, cost: 0 }
+  );
+}
+
+const stockLineValue = (line: Pick<StockPurchaseLine, "shares" | "buyPrice">) =>
+  Math.round(line.shares * line.buyPrice * STOCK_PRICE_UNIT);
+
+function normalizeStockPrice(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value > 1_000 ? value / STOCK_PRICE_UNIT : value;
+}
+
+function stockPriceFromPayload(payload: unknown) {
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as { data?: unknown[] })?.data)
+      ? (payload as { data: unknown[] }).data
+      : [payload];
+  const priceFields = ["lastPrice", "matchPrice", "matchedPrice", "close", "price", "adClose", "basicPrice", "priorClosePrice"];
+  for (const row of rows) {
+    const item = row as Record<string, unknown>;
+    for (const field of priceFields) {
+      const raw = item[field];
+      const value = typeof raw === "string" ? parseDecimal(raw) : Number(raw);
+      const price = normalizeStockPrice(value);
+      if (price) return price;
+    }
+  }
+  return 0;
+}
+
+function stockMarketPrice(state: AppState, symbol: string) {
+  return state.stockMarketPrices.find((item) => item.symbol === symbol.toUpperCase());
+}
+
+function stockPortfolioStats(state: AppState, upToMonth?: string) {
+  const fundCash = state.fundTransactions
+    .filter((item) => item.fund === "stock" && (!upToMonth || item.month <= upToMonth))
+    .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
+  const purchases = state.stockPurchases.filter((purchase) => !upToMonth || purchase.month <= upToMonth);
+  const sales = state.stockSales.filter((sale) => !upToMonth || monthFromDate(sale.date) <= upToMonth);
+  const invested = purchases.reduce((sum, purchase) => sum + purchase.lines.reduce((lineSum, line) => lineSum + stockLineValue(line), 0), 0);
+  const soldToCashBalance = sales
+    .filter((sale) => sale.destination === "stock")
+    .reduce((sum, sale) => sum + sale.vndAmount, 0);
+  const holdings = new Map<string, { symbol: string; shares: number; cost: number; lastBuyPrice: number }>();
+
+  purchases.forEach((purchase) => {
+    purchase.lines.forEach((line) => {
+      const symbol = line.symbol.toUpperCase();
+      const existing = holdings.get(symbol) ?? { symbol, shares: 0, cost: 0, lastBuyPrice: line.buyPrice };
+      existing.shares += line.shares;
+      existing.cost += stockLineValue(line);
+      existing.lastBuyPrice = line.buyPrice;
+      holdings.set(symbol, existing);
+    });
+  });
+
+  sales.forEach((sale) => {
+    const symbol = sale.symbol.toUpperCase();
+    const existing = holdings.get(symbol);
+    if (!existing) return;
+    const soldShares = Math.min(sale.shares, existing.shares);
+    const averageCost = existing.shares ? existing.cost / existing.shares : 0;
+    existing.shares = Math.max(existing.shares - soldShares, 0);
+    existing.cost = Math.max(existing.cost - soldShares * averageCost, 0);
+    holdings.set(symbol, existing);
+  });
+
+  const rows = [...holdings.values()]
+    .filter((item) => item.shares > 0)
+    .sort((a, b) => a.symbol.localeCompare(b.symbol))
+    .map((item) => {
+      const averageCost = item.shares ? item.cost / item.shares / STOCK_PRICE_UNIT : 0;
+      const market = stockMarketPrice(state, item.symbol);
+      const marketPrice = market?.price || averageCost || item.lastBuyPrice;
+      const marketValue = stockLineValue({ shares: item.shares, buyPrice: marketPrice });
+      const pnl = marketValue - item.cost;
+      return {
+        ...item,
+        averageCost,
+        marketPrice,
+        marketValue,
+        pnl,
+        pnlPercent: item.cost ? (pnl / item.cost) * 100 : 0,
+        updatedAt: market?.updatedAt ?? "",
+        source: market?.source ?? "fallback",
+        hasMarketPrice: Boolean(market),
+      };
+    });
+  const stockValue = rows.reduce((sum, item) => sum + item.marketValue, 0);
+  const totalCost = rows.reduce((sum, item) => sum + item.cost, 0);
+  const pnl = stockValue - totalCost;
+
+  return {
+    cash: Math.max(fundCash - invested + soldToCashBalance, 0),
+    invested,
+    stockValue,
+    totalValue: Math.max(fundCash - invested, 0) + stockValue,
+    totalCost,
+    pnl,
+    pnlPercent: totalCost ? (pnl / totalCost) * 100 : 0,
+    holdings: rows,
+  };
+}
+
+function pendingSolDepositTotal(state: AppState, fund: DepositFund) {
+  return state.solTransactions
+    .filter(
+      (transaction) =>
+        isSolWithdrawal(transaction) &&
+        transaction.destination === fund &&
+        !state.bankDeposits.some((deposit) => deposit.createdFromSolWithdrawalId === transaction.id)
+    )
+    .reduce((sum, transaction) => sum + (isSolWithdrawal(transaction) ? transaction.vndAmount : 0), 0);
+}
+
+const stockSaleDepositMarker = (saleId: string) => `[stock-sale:${saleId}]`;
+
+function pendingStockSaleDepositTotal(state: AppState, fund: DepositFund) {
+  return state.stockSales
+    .filter(
+      (sale) =>
+        sale.destination === fund &&
+        !state.bankDeposits.some((deposit) => deposit.note.includes(stockSaleDepositMarker(sale.id)))
+    )
+    .reduce((sum, sale) => sum + sale.vndAmount, 0);
+}
+
+function accumulationProgress(state: AppState, goal: AccumulationGoal) {
+  const paid = state.monthlyExpenses
+    .filter((item) => item.categoryId === goal.categoryId && item.checked)
+    .reduce((sum, item) => sum + item.amount, 0);
+  return Math.min(paid, goal.targetAmount);
+}
+
+function accumulationPaidMonths(state: AppState, goal: AccumulationGoal) {
+  return state.monthlyExpenses.filter((item) => item.categoryId === goal.categoryId && item.checked).length;
+}
+
+function accumulationUnpaidMonths(state: AppState, goal: AccumulationGoal) {
+  return Math.max(goal.months - accumulationPaidMonths(state, goal), 0);
+}
+
+function accumulationScheduleAmounts(total: number, months: number, monthlyAmount: number) {
+  const count = Math.max(Math.ceil(months), 0);
+  if (!total || !count) return [];
+  const base = Math.max(Math.round(monthlyAmount), 1);
+  return Array.from({ length: count }, (_, index) => {
+    const alreadyAssigned = base * index;
+    if (index === count - 1) return Math.max(total - alreadyAssigned, 0);
+    return Math.min(base, Math.max(total - alreadyAssigned, 0));
+  }).filter((amount) => amount > 0);
+}
+
+function buildAccumulationMonthlyExpenses(goal: AccumulationGoal, remainingAmount: number, blockedMonths = new Set<string>()) {
+  const amounts = accumulationScheduleAmounts(remainingAmount, goal.months, goal.monthlyAmount);
+  let cursor = goal.startMonth;
+  return amounts.map((amount) => {
+    while (blockedMonths.has(cursor)) cursor = shiftMonth(cursor, 1);
+    const month = cursor;
+    cursor = shiftMonth(cursor, 1);
+    return {
+      id: uid(),
+      categoryId: goal.categoryId,
+      month,
+      startAmount: 0,
+      endAmount: 0,
+      amount,
+      checked: false,
+    };
+  });
+}
+
+function rescheduleAccumulationGoal(state: AppState, goal: AccumulationGoal, preservedUnpaid: MonthlyExpense[] = []): MonthlyExpense[] {
+  const checked = state.monthlyExpenses.filter((item) => item.categoryId === goal.categoryId && item.checked);
+  const preservedIds = new Set(preservedUnpaid.map((item) => item.id));
+  const preservedMonths = new Set(preservedUnpaid.map((item) => item.month));
+  const other = state.monthlyExpenses.filter((item) => item.categoryId !== goal.categoryId);
+  const progress = checked.reduce((sum, item) => sum + item.amount, 0);
+  const preservedTotal = preservedUnpaid.reduce((sum, item) => sum + item.amount, 0);
+  const remaining = Math.max(goal.targetAmount - progress - preservedTotal, 0);
+  if (goal.status !== "active" || remaining <= 0) return [...other, ...checked, ...preservedUnpaid];
+  const blockedMonths = new Set([...checked.map((item) => item.month), ...preservedMonths]);
+  const remainingMonths = Math.max(goal.months - checked.length - preservedUnpaid.length, 0);
+  if (remainingMonths <= 0) return [...other, ...checked, ...preservedUnpaid];
+  const nextGoal = { ...goal, months: remainingMonths };
+  return [
+    ...other,
+    ...checked,
+    ...preservedUnpaid,
+    ...buildAccumulationMonthlyExpenses(nextGoal, remaining, blockedMonths).filter((item) => !preservedIds.has(item.id)),
+  ];
+}
+
+function accumulationGoalForCategory(state: AppState, categoryId: string) {
+  return state.accumulationGoals.find((goal) => goal.categoryId === categoryId);
+}
+
+function isFixedCategoryVisibleInMonth(state: AppState, category: ExpenseCategory, month: string) {
+  if (category.kind !== "fixed") return false;
+  const goal = accumulationGoalForCategory(state, category.id);
+  if (!goal) return true;
+  const record = state.monthlyExpenses.find((item) => item.categoryId === category.id && item.month === month);
+  if (!record) return false;
+  if (record.checked) return true;
+  if (goal.status === "deleted") return false;
+  if (goal.status === "ended") return goal.endedAt ? month <= monthFromDate(goal.endedAt) : false;
+  return accumulationProgress(state, goal) < goal.targetAmount;
+}
 
 function normalizeState(state: AppState): AppState {
   const expenseCategories = state.expenseCategories.map((category: ExpenseCategory & { kind?: string }) => {
@@ -291,10 +668,33 @@ function normalizeState(state: AppState): AppState {
     mbLast4: deposit.mbLast4 ?? "",
   }));
 
+  const solTransactions = state.solTransactions.map((transaction) =>
+    isSolWithdrawal(transaction)
+      ? {
+          ...transaction,
+          sellPrice: transaction.sellPrice ?? state.market.solUsd ?? 0,
+          vndAmount: transaction.vndAmount ?? 0,
+          destination: transaction.destination ?? "cash",
+        }
+      : {
+          ...transaction,
+          type: "buy" as const,
+        }
+  );
+
   return {
     ...state,
+    settings: {
+      ...state.settings,
+      dismissedStockAllocationIds: state.settings?.dismissedStockAllocationIds ?? [],
+    },
     expenseCategories,
     bankDeposits,
+    solTransactions,
+    accumulationGoals: state.accumulationGoals ?? [],
+    stockPurchases: state.stockPurchases ?? [],
+    stockSales: state.stockSales ?? [],
+    stockMarketPrices: state.stockMarketPrices ?? [],
   };
 }
 
@@ -334,6 +734,7 @@ const initialState: AppState = {
     { id: "hoc-phi", name: "Học phí", kind: "fixed", defaultAmount: 2000000 },
   ],
   monthlyExpenses: [],
+  accumulationGoals: [],
   expenseEntries: [],
   allocations: [
     {
@@ -345,6 +746,9 @@ const initialState: AppState = {
     },
   ],
   fundTransactions: [],
+  stockPurchases: [],
+  stockSales: [],
+  stockMarketPrices: [],
   bankDeposits: [],
   solTransactions: [],
   market: {
@@ -355,6 +759,7 @@ const initialState: AppState = {
   settings: {
     pin: "",
     hasPin: false,
+    dismissedStockAllocationIds: [],
   },
 };
 
@@ -455,15 +860,15 @@ function AppNav({
 }) {
   const items: Array<{ id: Page; label: string; icon: JSX.Element }> = [
     { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} /> },
-    { id: "investment", label: "Đầu tư", icon: <LineChart size={18} /> },
-    { id: "mbb", label: "Sổ MBB", icon: <Landmark size={18} /> },
+    { id: "accumulation", label: "Tích lũy", icon: <PiggyBank size={18} /> },
+    { id: "investment", label: "Tài sản", icon: <LineChart size={18} /> },
     { id: "reports", label: "Báo cáo", icon: <BarChart3 size={18} /> },
   ];
 
   return (
     <nav className="app-nav">
       <div className="brand">
-        <span className="brand-mark">Q</span>
+        <img className="brand-mark" src="/logo.png" alt="Quản Lí" />
         <div>
           <strong>Quản Lí</strong>
           <small>Chi tiêu cá nhân</small>
@@ -516,7 +921,7 @@ function PinGate({
       return;
     }
     if (isSetup) {
-      setState((prev) => ({ ...prev, settings: { pin, hasPin: true } }));
+      setState((prev) => ({ ...prev, settings: { ...prev.settings, pin, hasPin: true } }));
       await onUnlock(pin);
       return;
     }
@@ -581,18 +986,28 @@ function MetricCard({
   subValue,
   icon,
   tone,
+  percent,
+  onClick,
 }: {
   label: string;
   value: string;
   subValue?: string;
   icon: JSX.Element;
   tone?: string;
+  percent?: number;
+  onClick?: () => void;
 }) {
   return (
-    <article className={`metric ${tone ?? ""}`}>
+    <article className={`metric ${tone ?? ""} ${onClick ? "clickable" : ""}`} onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined} onKeyDown={(event) => {
+      if (!onClick) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onClick();
+      }
+    }}>
       <span>{icon}</span>
       <div>
-        <small>{label}</small>
+        <small>{label} {typeof percent === "number" && <b>{percent}%</b>}</small>
         <strong>{value}</strong>
         {subValue && <em>{subValue}</em>}
       </div>
@@ -622,11 +1037,13 @@ function DashboardPage({
   month,
   setMonth,
   setPage,
+  setAssetTab,
 }: {
   state: AppState;
   month: string;
   setMonth: (month: string) => void;
   setPage: (page: Page) => void;
+  setAssetTab: (tab: InvestmentTab) => void;
 }) {
   const summary = monthlySummary(state, month);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
@@ -714,7 +1131,7 @@ function DashboardPage({
         </div>
       </section>
 
-      <section className="two-column compact">
+      <section className="stock-trade-section">
         <article className="panel">
           <div className="panel-title">
             <h2>Checklist</h2>
@@ -739,7 +1156,10 @@ function DashboardPage({
         <article className="panel">
           <div className="panel-title">
             <h2>Sổ sắp đáo hạn</h2>
-            <button className="ghost" onClick={() => setPage("mbb")}>
+            <button className="ghost" onClick={() => {
+              setAssetTab("mbb");
+              setPage("investment");
+            }}>
               Xem
             </button>
           </div>
@@ -771,12 +1191,14 @@ function UnifiedDashboardPage({
   month,
   setMonth,
   setPage,
+  setAssetTab,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   month: string;
   setMonth: (month: string) => void;
   setPage: (page: Page) => void;
+  setAssetTab: (tab: InvestmentTab) => void;
 }) {
   const summary = monthlySummary(state, month);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
@@ -807,7 +1229,7 @@ function UnifiedDashboardPage({
   });
   const [newIncome, setNewIncome] = useState({ name: "", kind: "variable" as IncomeCategory["kind"] });
   const [newExpense, setNewExpense] = useState({ name: "", kind: "variable" as NewExpenseKind, amount: "" });
-  const [depositForm, setDepositForm] = useState({ month, note: "Chia quỹ cuối tháng" });
+  const [depositForm, setDepositForm] = useState({ month });
 
   useEffect(() => {
     setDepositForm((prev) => (prev.month === month ? prev : { ...prev, month }));
@@ -833,7 +1255,7 @@ function UnifiedDashboardPage({
     .slice(0, 3);
   const selectedIncome = summary.incomeRows.find((row) => row.id === selectedIncomeId) ?? null;
   const selectedExpense = summary.expenseRows.find((row) => row.id === selectedExpenseId) ?? null;
-  const fixedCategories = state.expenseCategories.filter((category) => category.kind === "fixed");
+  const fixedCategories = state.expenseCategories.filter((category) => isFixedCategoryVisibleInMonth(state, category, month));
   const percentTotal =
     summary.allocation.btcPercent +
     summary.allocation.stockPercent +
@@ -984,7 +1406,44 @@ function UnifiedDashboardPage({
     if (!editingFixed) return;
     const category = state.expenseCategories.find((item) => item.id === editingFixed.categoryId);
     if (!category) return;
-    updateMonthlyExpense(category, { amount: parseMoney(editingFixed.amount) });
+    const amount = parseMoney(editingFixed.amount);
+    const goal = accumulationGoalForCategory(state, category.id);
+    if (goal) {
+      setState((prev) => {
+        const currentGoal = accumulationGoalForCategory(prev, category.id);
+        if (!currentGoal) return prev;
+        const existing = prev.monthlyExpenses.find((item) => item.categoryId === category.id && item.month === month);
+        const edited = existing ? { ...existing, amount } : { ...getMonthlyExpense(prev, category, month), amount };
+        const withoutFutureUnpaid = prev.monthlyExpenses.filter((item) => item.categoryId !== category.id || item.checked || item.id === edited.id);
+        const withEdited = {
+          ...prev,
+          monthlyExpenses: withoutFutureUnpaid.some((item) => item.id === edited.id)
+            ? withoutFutureUnpaid.map((item) => (item.id === edited.id ? edited : item))
+            : [...withoutFutureUnpaid, edited],
+        };
+        const preservedUnpaid = edited.checked ? [] : [edited];
+        const checked = withEdited.monthlyExpenses.filter((item) => item.categoryId === category.id && item.checked);
+        const checkedTotal = checked.reduce((sum, item) => sum + item.amount, 0);
+        const preservedTotal = preservedUnpaid.reduce((sum, item) => sum + item.amount, 0);
+        const remainingMonths = Math.max(currentGoal.months - checked.length - preservedUnpaid.length, 0);
+        const remainingAmount = Math.max(currentGoal.targetAmount - checkedTotal - preservedTotal, 0);
+        const nextMonthlyAmount = remainingMonths > 0 && remainingAmount > 0 ? Math.ceil(remainingAmount / remainingMonths) : currentGoal.monthlyAmount;
+        const nextGoal = { ...currentGoal, monthlyAmount: nextMonthlyAmount, updatedAt: new Date().toISOString() };
+        const withGoal = {
+          ...withEdited,
+          accumulationGoals: withEdited.accumulationGoals.map((item) => (item.id === nextGoal.id ? nextGoal : item)),
+          expenseCategories: withEdited.expenseCategories.map((item) =>
+            item.id === category.id ? { ...item, defaultAmount: nextMonthlyAmount } : item
+          ),
+        };
+        return {
+          ...withGoal,
+          monthlyExpenses: rescheduleAccumulationGoal(withGoal, nextGoal, preservedUnpaid),
+        };
+      });
+    } else {
+      updateMonthlyExpense(category, { amount });
+    }
     setEditingFixed(null);
   };
 
@@ -1007,8 +1466,8 @@ function UnifiedDashboardPage({
       allocations: prev.allocations.some((item) => item.month === month) ? prev.allocations.map((item) => (item.month === month ? confirmedAllocation : item)) : [...prev.allocations, confirmedAllocation],
       fundTransactions: [
         ...prev.fundTransactions,
-        { id: uid(), fund: "btc", type: "deposit", amount: confirmedAllocation.btcAmount ?? 0, date: `${depositForm.month}-01`, month, note: depositForm.note },
-        { id: uid(), fund: "stock", type: "deposit", amount: confirmedAllocation.stockAmount ?? 0, date: `${depositForm.month}-01`, month, note: depositForm.note },
+        { id: uid(), fund: "btc", type: "deposit", amount: confirmedAllocation.btcAmount ?? 0, date: `${depositForm.month}-01`, month, note: "Chia quỹ cuối tháng" },
+        { id: uid(), fund: "stock", type: "deposit", amount: confirmedAllocation.stockAmount ?? 0, date: `${depositForm.month}-01`, month, note: "Chia quỹ cuối tháng" },
       ],
     }));
     setConfirmOpen(false);
@@ -1110,6 +1569,7 @@ function UnifiedDashboardPage({
           <div className="check-list">
             {fixedCategories.map((category) => {
               const record = getMonthlyExpense(state, category, month);
+              const accumulationGoal = accumulationGoalForCategory(state, category.id);
               return (
                 <div key={category.id} className={record.checked ? "done fixed-check-row" : "fixed-check-row"}>
                   <button className={record.checked ? "check-icon checked" : "check-icon"} title={record.checked ? "Bỏ tick khoản cố định" : "Tick khoản cố định"} onClick={() => updateMonthlyExpense(category, { checked: !record.checked })} type="button">
@@ -1120,9 +1580,11 @@ function UnifiedDashboardPage({
                   <button className="row-icon-button" title="Sửa số tiền tháng này" onClick={() => setEditingFixed({ categoryId: category.id, amount: record.amount.toLocaleString("vi-VN") })} type="button">
                     <Pencil size={16} />
                   </button>
-                  <button className="row-icon-button danger-text" title="Xóa mục" onClick={() => deleteExpenseCategory(category)} type="button">
-                    <X size={16} />
-                  </button>
+                  {!accumulationGoal && (
+                    <button className="row-icon-button danger-text" title="Xóa mục" onClick={() => deleteExpenseCategory(category)} type="button">
+                      <X size={16} />
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -1132,7 +1594,10 @@ function UnifiedDashboardPage({
         <article className="panel">
           <div className="panel-title">
             <h2>Sổ sắp đáo hạn</h2>
-            <button className="ghost" onClick={() => setPage("mbb")}>Xem</button>
+            <button className="ghost" onClick={() => {
+              setAssetTab("mbb");
+              setPage("investment");
+            }}>Xem</button>
           </div>
           {dueSoon.length === 0 ? (
             <p className="muted">Chưa có sổ nào cần xử lý trong 30 ngày tới.</p>
@@ -1352,13 +1817,371 @@ function CategoryHistoryPanel({
   );
 }
 
-function FundChip({ label, value, percent }: { label: string; value: number; percent: number }) {
+function FundChip({
+  label,
+  value,
+  percent,
+  tone,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  percent: number;
+  tone?: string;
+  onClick?: () => void;
+}) {
   return (
-    <div className="fund-chip">
+    <div
+      className={`fund-chip ${tone ?? ""} ${onClick ? "clickable" : ""}`}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={(event) => {
+        if (!onClick) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+    >
       <small>
         {label} <b>{percent}%</b>
       </small>
       <strong>{formatVnd(value)}</strong>
+    </div>
+  );
+}
+
+function AccumulationPage({
+  state,
+  setState,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+}) {
+  const emptyForm = () => ({
+    name: "",
+    target: "",
+    startMonth: currentMonth(),
+    dueDate: "",
+    months: "",
+    monthlyAmount: "",
+  });
+  const [form, setForm] = useState(emptyForm);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [formError, setFormError] = useState("");
+  const editingGoal = editingId ? state.accumulationGoals.find((goal) => goal.id === editingId) ?? null : null;
+
+  useEffect(() => {
+    setState((prev) => {
+      let next = prev;
+      let changed = false;
+
+      prev.accumulationGoals
+        .filter((goal) => goal.status === "active")
+        .forEach((goal) => {
+          const paidMonths = accumulationPaidMonths(next, goal);
+          const remainingMonths = Math.max(goal.months - paidMonths, 0);
+          const unpaid = next.monthlyExpenses.filter((item) => item.categoryId === goal.categoryId && !item.checked);
+          if (unpaid.length <= remainingMonths) return;
+
+          const progress = accumulationProgress(next, goal);
+          const remainingAmount = Math.max(goal.targetAmount - progress, 0);
+          const monthlyAmount = remainingMonths > 0 && remainingAmount > 0 ? Math.ceil(remainingAmount / remainingMonths) : goal.monthlyAmount;
+          const repairedGoal = { ...goal, monthlyAmount, updatedAt: new Date().toISOString() };
+          const withGoal = {
+            ...next,
+            accumulationGoals: next.accumulationGoals.map((item) => (item.id === goal.id ? repairedGoal : item)),
+            expenseCategories: next.expenseCategories.map((item) =>
+              item.id === goal.categoryId ? { ...item, defaultAmount: monthlyAmount } : item
+            ),
+          };
+          next = {
+            ...withGoal,
+            monthlyExpenses: rescheduleAccumulationGoal(withGoal, repairedGoal),
+          };
+          changed = true;
+        });
+
+      return changed ? next : prev;
+    });
+  }, [setState, state.accumulationGoals, state.monthlyExpenses]);
+
+  const derivePlan = () => {
+    const targetAmount = parseMoney(form.target);
+    const progress = editingGoal ? accumulationProgress(state, editingGoal) : 0;
+    const remaining = Math.max(targetAmount - progress, 0);
+    const startMonth = form.startMonth || currentMonth();
+    let months = Number(form.months) || 0;
+    let monthlyAmount = parseMoney(form.monthlyAmount);
+
+    if (form.dueDate && !editingGoal) {
+      months = monthsBetweenInclusive(startMonth, monthFromDate(form.dueDate));
+      monthlyAmount = months ? Math.ceil(remaining / months) : 0;
+    } else if (months) {
+      monthlyAmount = months ? Math.ceil(remaining / months) : 0;
+    } else if (monthlyAmount) {
+      months = Math.ceil(remaining / monthlyAmount);
+    }
+
+    return {
+      targetAmount,
+      progress,
+      remaining,
+      startMonth,
+      dueDate: form.dueDate || undefined,
+      months,
+      monthlyAmount,
+      valid: Boolean(form.name.trim() && targetAmount > 0 && (remaining === 0 || (months > 0 && monthlyAmount > 0))),
+    };
+  };
+
+  const plan = derivePlan();
+
+  const resetForm = () => {
+    setForm(emptyForm());
+    setEditingId(null);
+    setFormOpen(false);
+    setFormError("");
+  };
+
+  const openEdit = (goal: AccumulationGoal) => {
+    const progress = accumulationProgress(state, goal);
+    const remaining = Math.max(goal.targetAmount - progress, 0);
+    const unpaidMonths = accumulationUnpaidMonths(state, goal);
+    setEditingId(goal.id);
+    setFormOpen(true);
+    setShowHistory(false);
+    setForm({
+      name: goal.name,
+      target: goal.targetAmount.toLocaleString("vi-VN"),
+      startMonth: goal.startMonth,
+      dueDate: goal.dueDate ?? "",
+      months: String(unpaidMonths || ""),
+      monthlyAmount: unpaidMonths && remaining ? Math.ceil(remaining / unpaidMonths).toLocaleString("vi-VN") : "",
+    });
+    setFormError("");
+  };
+
+  const saveGoal = () => {
+    const nextPlan = derivePlan();
+    if (!nextPlan.valid) {
+      setFormError("Nhập tên, tổng tiền và ngày cần dùng hoặc số tháng/số tiền mỗi tháng.");
+      return;
+    }
+
+    setState((prev) => {
+      const now = new Date().toISOString();
+      const existing = editingId ? prev.accumulationGoals.find((goal) => goal.id === editingId) : null;
+      const goalId = existing?.id ?? uid();
+      const categoryId = existing?.categoryId ?? uid();
+      const paidMonths = existing ? accumulationPaidMonths(prev, existing) : 0;
+      const nextGoal: AccumulationGoal = {
+        id: goalId,
+        name: form.name.trim(),
+        targetAmount: nextPlan.targetAmount,
+        startMonth: nextPlan.startMonth,
+        dueDate: nextPlan.dueDate,
+        months: existing ? paidMonths + nextPlan.months : nextPlan.months,
+        monthlyAmount: nextPlan.monthlyAmount,
+        categoryId,
+        status: "active",
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const category: ExpenseCategory = {
+        id: categoryId,
+        name: nextGoal.name,
+        kind: "fixed",
+        defaultAmount: nextGoal.monthlyAmount,
+        accumulationGoalId: goalId,
+      };
+      const withGoal: AppState = {
+        ...prev,
+        accumulationGoals: existing
+          ? prev.accumulationGoals.map((goal) => (goal.id === existing.id ? nextGoal : goal))
+          : [...prev.accumulationGoals, nextGoal],
+        expenseCategories: prev.expenseCategories.some((item) => item.id === categoryId)
+          ? prev.expenseCategories.map((item) => (item.id === categoryId ? { ...item, ...category } : item))
+          : [...prev.expenseCategories, category],
+      };
+      return {
+        ...withGoal,
+        monthlyExpenses: rescheduleAccumulationGoal(withGoal, nextGoal),
+      };
+    });
+    resetForm();
+  };
+
+  const endGoal = (goal: AccumulationGoal) => {
+    if (!window.confirm(`Kết thúc mục ${goal.name}? Checklist từ tháng sau sẽ không còn hiển thị mục này.`)) return;
+    setState((prev) => ({
+      ...prev,
+      accumulationGoals: prev.accumulationGoals.map((item) =>
+        item.id === goal.id ? { ...item, status: "ended", endedAt: today(), updatedAt: new Date().toISOString() } : item
+      ),
+      monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== goal.categoryId || item.checked || item.month <= currentMonth()),
+    }));
+    if (editingId === goal.id) resetForm();
+  };
+
+  const deleteGoal = (goal: AccumulationGoal) => {
+    if (!window.confirm(`Xóa mục ${goal.name}? Các tháng đã tick vẫn được giữ trong báo cáo cũ.`)) return;
+    setState((prev) => ({
+      ...prev,
+      accumulationGoals: prev.accumulationGoals.map((item) =>
+        item.id === goal.id ? { ...item, status: "deleted", deletedAt: today(), updatedAt: new Date().toISOString() } : item
+      ),
+      monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== goal.categoryId || item.checked),
+    }));
+    if (editingId === goal.id) resetForm();
+  };
+
+  const goals = state.accumulationGoals.filter((goal) => goal.status === "active");
+  const historyGoals = state.accumulationGoals.filter((goal) => goal.status === "ended");
+
+  return (
+    <div className="page">
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Kế hoạch chi cố định</p>
+          <h1>{showHistory ? "Lịch sử tích lũy" : "Tích lũy"}</h1>
+        </div>
+        <div className="page-header-actions">
+          <button className="ghost" onClick={() => {
+            setShowHistory((value) => !value);
+            setFormOpen(false);
+            setEditingId(null);
+          }} type="button">
+            <History size={17} /> {showHistory ? "Danh sách" : "Lịch sử"}
+          </button>
+          {!formOpen && !showHistory && (
+            <button className="primary" onClick={() => setFormOpen(true)}>
+              <Plus size={17} /> Thêm
+            </button>
+          )}
+        </div>
+      </header>
+
+      {formOpen && !showHistory && (
+        <section className="panel">
+          <div className="panel-title">
+            <h2>{editingGoal ? "Sửa mục tích lũy" : "Tạo mục tích lũy"}</h2>
+            <button className="ghost" onClick={resetForm}>Hủy</button>
+          </div>
+          <div className="deposit-confirm accumulation-form">
+            <label>
+              Tên mục
+              <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Du lịch" />
+            </label>
+            <label>
+              Tổng tiền cần dồn
+              <input value={form.target} onChange={(event) => setForm({ ...form, target: event.target.value })} placeholder="9.000.000" />
+            </label>
+            <label>
+              Tháng bắt đầu
+              <input type="month" value={form.startMonth} onChange={(event) => setForm({ ...form, startMonth: event.target.value })} />
+            </label>
+            <label>
+              Ngày cần dùng
+              <input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} />
+            </label>
+            <label>
+              Số tháng
+              <input value={form.months} onChange={(event) => setForm({ ...form, months: event.target.value, monthlyAmount: form.dueDate ? "" : form.monthlyAmount })} placeholder={plan.months ? String(plan.months) : "6"} />
+            </label>
+            <label>
+              Tiền mỗi tháng
+              <input value={form.monthlyAmount} onChange={(event) => setForm({ ...form, monthlyAmount: event.target.value, months: form.dueDate ? "" : form.months })} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
+            </label>
+            <button className="primary" onClick={saveGoal}>
+              <Save size={17} /> {editingGoal ? "Lưu thay đổi" : "Tạo quỹ"}
+            </button>
+            <small className="computed accumulation-computed">
+              Còn cần dồn {formatVnd(plan.remaining)} · {plan.months || 0} tháng · khoảng {formatVnd(plan.monthlyAmount || 0)}/tháng
+            </small>
+            {formError && <span className="form-error accumulation-form-error">{formError}</span>}
+          </div>
+        </section>
+      )}
+
+      {showHistory ? (
+        <section className="accumulation-grid">
+          {historyGoals.length === 0 ? (
+            <article className="panel empty-state">Chưa có mục tích lũy nào đã kết thúc.</article>
+          ) : (
+            historyGoals.map((goal) => {
+              const progress = accumulationProgress(state, goal);
+              const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
+              return (
+                <article className="accumulation-card ended" key={goal.id}>
+                  <div className="panel-title">
+                    <div>
+                      <h2>{goal.name}</h2>
+                      <small>{goal.endedAt ? `Kết thúc ${formatDate(goal.endedAt)}` : "Đã kết thúc"}</small>
+                    </div>
+                    <strong>{percent.toFixed(0)}%</strong>
+                  </div>
+                  <div className="progress-track">
+                    <span style={{ width: `${percent}%` }} />
+                  </div>
+                  <div className="accumulation-summary">
+                    <span>Mục tiêu <strong>{formatVnd(goal.targetAmount)}</strong></span>
+                    <span>Đã tích lũy <strong>{formatVnd(progress)}</strong></span>
+                    <span>Tiến độ <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong></span>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </section>
+      ) : (
+        <section className="accumulation-grid">
+        {goals.length === 0 ? (
+          <article className="panel empty-state">Chưa có mục tích lũy nào.</article>
+        ) : (
+          goals.map((goal) => {
+            const progress = accumulationProgress(state, goal);
+            const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
+            const remainingAmount = Math.max(goal.targetAmount - progress, 0);
+            const nextRecord = state.monthlyExpenses
+              .filter((item) => item.categoryId === goal.categoryId && !item.checked && item.month >= currentMonth())
+              .sort((a, b) => a.month.localeCompare(b.month))[0];
+            const paidMonths = state.monthlyExpenses.filter((item) => item.categoryId === goal.categoryId && item.checked).length;
+            return (
+              <article className={`accumulation-card ${goal.status}`} key={goal.id}>
+                <button className="accumulation-delete-button" onClick={() => deleteGoal(goal)} title={`Xóa ${goal.name}`} type="button" aria-label={`Xóa ${goal.name}`}>
+                  <X size={16} />
+                </button>
+                <div className="panel-title">
+                  <div>
+                    <h2>{goal.name}</h2>
+                    <small>{goal.status === "ended" ? "Đã kết thúc" : goal.dueDate ? `Cần dùng ${formatDate(goal.dueDate)}` : `Bắt đầu ${formatMonth(goal.startMonth)}`}</small>
+                  </div>
+                  <strong>{percent.toFixed(0)}%</strong>
+                </div>
+                <div className="progress-track">
+                  <span style={{ width: `${percent}%` }} />
+                </div>
+                <div className="accumulation-summary">
+                  <span>Mục tiêu <strong>{formatVnd(goal.targetAmount)}</strong></span>
+                  <span>Đã dồn <strong>{formatVnd(progress)}</strong></span>
+                  <span>Còn lại <strong>{formatVnd(remainingAmount)}</strong></span>
+                  <span>Số tháng dồn <strong>{paidMonths}/{goal.months}</strong></span>
+                  <span>Tháng kế tiếp <strong>{nextRecord ? `${formatMonth(nextRecord.month)} · ${formatVnd(nextRecord.amount)}` : "Không còn"}</strong></span>
+                </div>
+                <div className="card-actions accumulation-actions">
+                  {goal.status === "active" && <button className="ghost accumulation-action-button" onClick={() => openEdit(goal)}><Pencil size={16} /> Sửa</button>}
+                  {goal.status === "active" && <button className="ghost accumulation-action-button" onClick={() => endGoal(goal)}>Kết thúc</button>}
+                </div>
+              </article>
+            );
+          })
+        )}
+        </section>
+      )}
     </div>
   );
 }
@@ -2051,7 +2874,8 @@ function makeDeposit(
   maturityDate: string,
   month: string,
   note: string,
-  parentId?: string
+  parentId?: string,
+  createdFromSolWithdrawalId?: string
 ): BankDeposit {
   const id = uid();
   return {
@@ -2067,6 +2891,7 @@ function makeDeposit(
     status: "active",
     parentId,
     createdFromMonth: month,
+    createdFromSolWithdrawalId,
     note,
   };
 }
@@ -2142,17 +2967,669 @@ function FundPage({
   return <div className="page">{content}</div>;
 }
 
-function InvestmentPage({
+function StockPage({
   state,
   setState,
+  embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  embedded?: boolean;
 }) {
-  const [activeTab, setActiveTab] = useState<InvestmentTab>("btc");
+  const stats = stockPortfolioStats(state);
+  const stockHoldingSymbols = stats.holdings.map((item) => item.symbol).join("|");
+  const defaultBuyRows = (): StockBuyRow[] => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }];
+  const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
+  const [purchaseDate, setPurchaseDate] = useState(today());
+  const [purchaseNote, setPurchaseNote] = useState("");
+  const [buyRows, setBuyRows] = useState<StockBuyRow[]>(defaultBuyRows);
+  const [sellingSymbol, setSellingSymbol] = useState<string | null>(null);
+  const [saleForm, setSaleForm] = useState({
+    shares: "",
+    price: "",
+    destination: "stock" as SolDestination,
+    date: today(),
+    note: "",
+  });
+  const [stockSuggestions, setStockSuggestions] = useState<Record<string, StockLookupSuggestion[]>>({});
+  const [activeSuggestionRow, setActiveSuggestionRow] = useState<string | null>(null);
+  const [stockError, setStockError] = useState("");
+  const [refreshStatus, setRefreshStatus] = useState("");
+
+  const stockAllocatedCapital = state.allocations
+    .filter((allocation) => allocation.confirmedAt)
+    .reduce((sum, allocation) => sum + (allocation.stockAmount ?? 0), 0);
+  const plannedValue = buyRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: parseDecimal(row.buyPrice) }), 0);
+  const plannedPercent = stats.cash ? Math.round((plannedValue / stats.cash) * 100) : 0;
+  const saleVndAmount = Math.round((Number(saleForm.shares) || 0) * parseDecimal(saleForm.price) * STOCK_PRICE_UNIT);
+  const latestStockAllocationNotice = [...state.fundTransactions]
+    .reverse()
+    .find(
+      (transaction) =>
+        transaction.fund === "stock" &&
+        transaction.type === "deposit" &&
+        transaction.note === "Chia quỹ cuối tháng" &&
+        !state.settings.dismissedStockAllocationIds.includes(transaction.id)
+    );
+
+  const dismissStockAllocationNotice = () => {
+    if (!latestStockAllocationNotice) return;
+    setState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        dismissedStockAllocationIds: [...new Set([...prev.settings.dismissedStockAllocationIds, latestStockAllocationNotice.id])],
+      },
+    }));
+  };
+
+  const autoShares = (percentInput: string, priceInput: string) => {
+    const percent = Number(percentInput) || 0;
+    const price = parseDecimal(priceInput);
+    if (!stats.cash || !percent || !price) return "";
+    const rawShares = Math.floor((stats.cash * percent) / 100 / (price * STOCK_PRICE_UNIT));
+    const shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
+    return shares > 0 ? String(shares) : "";
+  };
+
+  const recalculateShares = (row: StockBuyRow): StockBuyRow => ({
+    ...row,
+    shares: autoShares(row.percent, row.buyPrice),
+  });
+
+  const fetchPrice = async (symbol: string) => {
+    const normalized = symbol.trim().toUpperCase();
+    const urls = [
+      { source: "VPS", url: `https://bgapidatafeed.vps.com.vn/getliststockdata/${encodeURIComponent(normalized)}` },
+      { source: "VNDIRECT", url: `https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&q=code:${encodeURIComponent(normalized)}&size=1&page=1` },
+      { source: "VPS", url: `/market-api/vps/getliststockdata/${encodeURIComponent(normalized)}` },
+      { source: "VNDIRECT", url: `/market-api/vndirect/v4/stock_prices?sort=date:desc&q=code:${encodeURIComponent(normalized)}&size=1&page=1` },
+    ];
+    for (const item of urls) {
+      try {
+        const response = await fetch(item.url, { cache: "no-store" });
+        if (!response.ok) continue;
+        const price = stockPriceFromPayload(await response.json());
+        if (price) return { price, source: item.source };
+      } catch {
+        // Try the next public source when one endpoint is blocked or unavailable.
+      }
+    }
+    throw new Error("Không lấy được giá cổ phiếu");
+  };
+
+  const extractStockSuggestions = (payload: unknown, fallbackSymbol: string) => {
+    const root = payload as { data?: unknown; symbol?: string; code?: string; ticker?: string; companyName?: string; shortName?: string; floor?: string; exchange?: string };
+    const rows = Array.isArray(root?.data) ? root.data : Array.isArray(payload) ? payload : root?.data ? [root.data] : [root];
+    const suggestions: StockLookupSuggestion[] = [];
+    rows.forEach((row) => {
+      const item = row as Record<string, unknown>;
+      const symbol = String(item.symbol ?? item.code ?? item.ticker ?? item.stockCode ?? fallbackSymbol).toUpperCase();
+      const name = String(item.companyName ?? item.shortName ?? item.organName ?? item.name ?? item.companyNameEng ?? "");
+      const exchange = String(item.floor ?? item.exchange ?? item.floorCode ?? "");
+      if (!symbol || symbol === "UNDEFINED") return;
+      suggestions.push({ symbol, name: name || symbol, exchange: exchange || undefined, source: "VNDIRECT" });
+    });
+    return suggestions;
+  };
+
+  const fetchStockSuggestions = async (query: string) => {
+    const normalized = query.trim().toUpperCase();
+    if (normalized.length < 2) return [];
+    const urls = [
+      `https://finfo-api.vndirect.com.vn/v4/stocks?q=code:${encodeURIComponent(normalized)}&size=8&page=1`,
+      `https://finfo-api.vndirect.com.vn/stocks?symbol=${encodeURIComponent(normalized)}`,
+    ];
+    const settled = await Promise.allSettled(
+      urls.map(async (url) => {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("Không lấy được thông tin cổ phiếu");
+        return response.json();
+      })
+    );
+    const baseSuggestions = settled
+      .flatMap((result) => (result.status === "fulfilled" ? extractStockSuggestions(result.value, normalized) : []))
+      .filter((item, index, rows) => rows.findIndex((row) => row.symbol === item.symbol) === index)
+      .slice(0, 6);
+    const pricedSuggestions = await Promise.all(
+      baseSuggestions.map(async (item) => {
+        try {
+          const quote = await fetchPrice(item.symbol);
+          return { ...item, price: quote.price, source: quote.source };
+        } catch {
+          return item;
+        }
+      })
+    );
+    return pricedSuggestions;
+  };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      buyRows.forEach((row) => {
+        const query = row.symbol.trim();
+        if (query.length < 2) {
+          setStockSuggestions((prev) => ({ ...prev, [row.id]: [] }));
+          return;
+        }
+        fetchStockSuggestions(query)
+          .then((suggestions) => {
+            if (controller.signal.aborted) return;
+            setStockSuggestions((prev) => ({ ...prev, [row.id]: suggestions }));
+          })
+          .catch(() => {
+            if (controller.signal.aborted) return;
+            setStockSuggestions((prev) => ({ ...prev, [row.id]: [] }));
+          });
+      });
+    }, 350);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [buyRows.map((row) => `${row.id}:${row.symbol}`).join("|")]);
+
+  const updateBuyRow = (id: string, patch: Partial<Omit<StockBuyRow, "id">>) => {
+    setBuyRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const next = { ...row, ...patch };
+        if ("percent" in patch || "buyPrice" in patch) return recalculateShares(next);
+        return next;
+      })
+    );
+  };
+
+  const updateBuyPercent = (id: string, value: string) => {
+    const nextPercent = Math.max(Math.min(Number(value) || 0, 100), 0);
+    setBuyRows((prev) => {
+      const others = prev.filter((row) => row.id !== id);
+      if (others.length === 0) {
+        return prev.map((row) => (row.id === id ? recalculateShares({ ...row, percent: String(nextPercent) }) : row));
+      }
+      const remaining = Math.max(100 - nextPercent, 0);
+      const otherCurrentTotal = others.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+      let assigned = 0;
+      return prev.map((row) => {
+        if (row.id === id) return recalculateShares({ ...row, percent: String(nextPercent) });
+        const isLastOther = others[others.length - 1]?.id === row.id;
+        const percent = isLastOther
+          ? remaining - assigned
+          : Math.round((otherCurrentTotal ? ((Number(row.percent) || 0) / otherCurrentTotal) * remaining : remaining / others.length) * 100) / 100;
+        assigned += percent;
+        return recalculateShares({ ...row, percent: String(Math.max(percent, 0)) });
+      });
+    });
+  };
+
+  const selectSuggestion = (rowId: string, suggestion: StockLookupSuggestion) => {
+    updateBuyRow(rowId, {
+      symbol: suggestion.symbol,
+      buyPrice: suggestion.price ? formatStockPrice(suggestion.price) : undefined,
+    });
+    if (suggestion.price) {
+      setState((prev) => ({
+        ...prev,
+        stockMarketPrices: [
+          ...prev.stockMarketPrices.filter((item) => item.symbol !== suggestion.symbol),
+          { symbol: suggestion.symbol, price: suggestion.price ?? 0, updatedAt: new Date().toISOString(), source: suggestion.source },
+        ],
+      }));
+    }
+    setActiveSuggestionRow(null);
+    setStockSuggestions((prev) => ({ ...prev, [rowId]: [] }));
+  };
+
+  const addBuyRow = () => {
+    setBuyRows((prev) => {
+      if (prev.length === 1) {
+        const firstPercent = prev[0].percent === "100" ? "50" : prev[0].percent;
+        return [
+          recalculateShares({ ...prev[0], percent: firstPercent }),
+          { id: uid(), symbol: "", percent: String(Math.max(100 - (Number(firstPercent) || 0), 0)), shares: "", buyPrice: "" },
+        ];
+      }
+      return [...prev, { id: uid(), symbol: "", percent: "0", shares: "", buyPrice: "" }];
+    });
+  };
+
+  const removeBuyRow = (id: string) => {
+    setBuyRows((prev) => {
+      if (prev.length === 1) return prev;
+      const next = prev.filter((row) => row.id !== id);
+      if (next.length === 1) return [recalculateShares({ ...next[0], percent: "100" })];
+      const total = next.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+      if (!total) return next;
+      let assigned = 0;
+      return next.map((row, index) => {
+        const percent = index === next.length - 1 ? 100 - assigned : Math.round(((Number(row.percent) || 0) / total) * 10000) / 100;
+        assigned += percent;
+        return recalculateShares({ ...row, percent: String(Math.max(percent, 0)) });
+      });
+    });
+  };
+
+  const resetPurchaseForm = () => {
+    setBuyRows(defaultBuyRows());
+    setPurchaseDate(today());
+    setPurchaseNote("");
+    setStockSuggestions({});
+    setActiveSuggestionRow(null);
+    setStockError("");
+  };
+
+  const savePurchase = () => {
+    const lines = buyRows
+      .map((row) => ({
+        symbol: row.symbol.trim().toUpperCase(),
+        shares: Number(row.shares) || 0,
+        buyPrice: parseDecimal(row.buyPrice),
+      }))
+      .filter((line) => line.symbol && line.shares > 0 && line.buyPrice > 0);
+    const total = lines.reduce((sum, line) => sum + stockLineValue(line), 0);
+    if (!lines.length) {
+      setStockError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
+      return;
+    }
+    if (total > stats.cash) {
+      setStockError("Tổng giá trị mua đang vượt quá tiền dư CK.");
+      return;
+    }
+    setState((prev) => ({
+      ...prev,
+      stockPurchases: [
+        ...prev.stockPurchases,
+        { id: uid(), date: purchaseDate, month: monthFromDate(purchaseDate), note: purchaseNote, lines },
+      ],
+    }));
+    resetPurchaseForm();
+    setPurchaseFormOpen(false);
+  };
+
+  const openSaleForm = (holding: ReturnType<typeof stockPortfolioStats>["holdings"][number]) => {
+    setSellingSymbol(holding.symbol);
+    setSaleForm({
+      shares: "",
+      price: formatStockPrice(holding.marketPrice),
+      destination: "stock",
+      date: today(),
+      note: "",
+    });
+    setStockError("");
+  };
+
+  const saveStockSale = () => {
+    const holding = stats.holdings.find((item) => item.symbol === sellingSymbol);
+    if (!holding) return;
+    const shares = Number(saleForm.shares) || 0;
+    const sellPrice = parseDecimal(saleForm.price);
+    if (!shares || !sellPrice) {
+      setStockError("Nhập số cổ phiếu và giá rút hợp lệ.");
+      return;
+    }
+    if (shares > holding.shares) {
+      setStockError("Số cổ phiếu rút lớn hơn số đang có.");
+      return;
+    }
+    const vndAmount = Math.round(shares * sellPrice * STOCK_PRICE_UNIT);
+    const note = saleForm.note.trim();
+    const transferNote = note ? `Rút từ CK ${holding.symbol} · ${note}` : `Rút từ CK ${holding.symbol}`;
+    const sale: StockSale = {
+      id: uid(),
+      symbol: holding.symbol,
+      shares,
+      sellPrice,
+      vndAmount,
+      destination: saleForm.destination,
+      date: saleForm.date,
+      note,
+    };
+    setState((prev) => ({
+      ...prev,
+      stockSales: [...prev.stockSales, sale],
+      fundTransactions:
+        sale.destination === "stock" || sale.destination === "btc"
+          ? [
+              ...prev.fundTransactions,
+              {
+                id: uid(),
+                fund: sale.destination,
+                type: "deposit",
+                amount: vndAmount,
+                date: sale.date,
+                month: monthFromDate(sale.date),
+                note: transferNote,
+              },
+            ]
+          : prev.fundTransactions,
+      incomeTransactions:
+        sale.destination === "cash"
+          ? [
+              ...prev.incomeTransactions,
+              {
+                id: uid(),
+                categoryId: "other-income",
+                amount: vndAmount,
+                date: sale.date,
+                month: monthFromDate(sale.date),
+                note: transferNote,
+              },
+            ]
+          : prev.incomeTransactions,
+    }));
+    setSellingSymbol(null);
+    setSaleForm({ shares: "", price: "", destination: "stock", date: today(), note: "" });
+    setStockError("");
+  };
+
+  const saveManualPrice = (symbol: string, value: string) => {
+    const price = parseDecimal(value);
+    if (!symbol || !price) return;
+    setState((prev) => ({
+      ...prev,
+      stockMarketPrices: [
+        ...prev.stockMarketPrices.filter((item) => item.symbol !== symbol),
+        { symbol, price, updatedAt: new Date().toISOString(), source: "manual" },
+      ],
+    }));
+  };
+
+  const refreshPrices = async (silent = false) => {
+    const symbols = stats.holdings.map((item) => item.symbol);
+    if (!symbols.length) return;
+    if (!silent) setRefreshStatus("Đang cập nhật giá...");
+    const results = await Promise.allSettled(symbols.map(async (symbol) => ({ symbol, ...(await fetchPrice(symbol)) })));
+    const now = new Date().toISOString();
+    const updates = results
+      .filter((result): result is PromiseFulfilledResult<{ symbol: string; price: number; source: string }> => result.status === "fulfilled")
+      .map((result) => ({ symbol: result.value.symbol, price: result.value.price, updatedAt: now, source: result.value.source }));
+    if (updates.length) {
+      setState((prev) => ({
+        ...prev,
+        stockMarketPrices: [
+          ...prev.stockMarketPrices.filter((item) => !updates.some((update) => update.symbol === item.symbol)),
+          ...updates,
+        ],
+      }));
+    }
+    setRefreshStatus(
+      silent
+        ? updates.length
+          ? `Tự động cập nhật lúc ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`
+          : ""
+        : updates.length === symbols.length
+          ? "Đã cập nhật giá."
+          : `Cập nhật được ${updates.length}/${symbols.length} mã. Có thể nhập tay mã lỗi.`
+    );
+  };
+
+  useEffect(() => {
+    if (!stats.holdings.length) return;
+    const maybeRefreshPrices = () => {
+      if (!isVietnamStockTradingSession()) return;
+      const hasStalePrice = stats.holdings.some((holding) => {
+        if (!holding.updatedAt) return true;
+        const updatedAt = new Date(holding.updatedAt).getTime();
+        return !Number.isFinite(updatedAt) || Date.now() - updatedAt >= STOCK_PRICE_REFRESH_MS;
+      });
+      if (hasStalePrice) void refreshPrices(true);
+    };
+    maybeRefreshPrices();
+    const timer = window.setInterval(maybeRefreshPrices, STOCK_PRICE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [stockHoldingSymbols]);
+
+  const content = (
+    <>
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Chứng khoán Việt Nam</p>
+          <h1>Danh mục CK</h1>
+        </div>
+      </header>
+      {latestStockAllocationNotice && (
+        <button className="pending-banner clickable stock-allocation-notice" onClick={dismissStockAllocationNotice} type="button">
+          <div>
+            <strong>
+              Đã chia {formatVnd(latestStockAllocationNotice.amount)} vào quỹ CK tháng {formatMonth(latestStockAllocationNotice.month)}
+            </strong>
+            <small>Bấm dấu tick để ẩn thông báo</small>
+          </div>
+          <CheckCircle2 size={20} />
+        </button>
+      )}
+      <section className="metrics-grid stock-metrics-grid">
+        <MetricCard label="Tổng vốn" value={formatVnd(stockAllocatedCapital)} icon={<BadgeDollarSign size={20} />} />
+        <MetricCard label="Tổng tài sản CK" value={formatVnd(stats.totalValue)} icon={<LineChart size={20} />} tone="highlight" />
+        <MetricCard label="Lãi/lỗ" value={`${formatVnd(stats.pnl)} · ${stats.pnlPercent.toFixed(1)}%`} icon={<BarChart3 size={20} />} tone={stats.pnl < 0 ? "loss" : undefined} />
+      </section>
+      <section className="stock-action-grid">
+        <MetricCard label="Tiền dư" value={formatVnd(stats.cash)} icon={<CircleDollarSign size={20} />} />
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Mua cổ phiếu</h2>
+            {purchaseFormOpen && <button className="ghost" onClick={() => {
+              resetPurchaseForm();
+              setPurchaseFormOpen(false);
+            }} type="button">Hủy</button>}
+          </div>
+          {!purchaseFormOpen ? (
+            <button className="primary" onClick={() => setPurchaseFormOpen(true)} type="button">
+              <Plus size={17} /> Mua cổ phiếu
+            </button>
+          ) : (
+            <>
+              <div className="confirm-summary stock-confirm-summary">
+                <div>
+                  <span>Tỷ lệ</span>
+                  <strong>{plannedPercent}%</strong>
+                </div>
+                <div>
+                  <span>Tổng tiền</span>
+                  <strong>{formatVnd(plannedValue)} / {formatVnd(stats.cash)}</strong>
+                </div>
+              </div>
+              <div className="stock-buy-list">
+                {buyRows.map((row, index) => {
+                  const value = stockLineValue({ shares: Number(row.shares) || 0, buyPrice: parseDecimal(row.buyPrice) });
+                  return (
+                    <div className="stock-buy-row" key={row.id}>
+                      <label>
+                        Cổ phiếu
+                        <div className="stock-symbol-field">
+                          <input
+                            value={row.symbol}
+                            onChange={(event) => {
+                              updateBuyRow(row.id, { symbol: event.target.value.toUpperCase() });
+                              setActiveSuggestionRow(row.id);
+                            }}
+                            onFocus={() => setActiveSuggestionRow(row.id)}
+                            placeholder="MBB"
+                            autoComplete="off"
+                          />
+                          {activeSuggestionRow === row.id && (stockSuggestions[row.id]?.length ?? 0) > 0 && (
+                            <div className="stock-suggestions">
+                              {stockSuggestions[row.id].map((suggestion) => (
+                                <button key={suggestion.symbol} onClick={() => selectSuggestion(row.id, suggestion)} type="button">
+                                  <span>
+                                    <strong>{suggestion.symbol}</strong>
+                                    <small>{suggestion.name}{suggestion.exchange ? ` · ${suggestion.exchange}` : ""}</small>
+                                  </span>
+                                  <b>{suggestion.price ? formatStockPrice(suggestion.price) : "Chưa có giá"}</b>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </label>
+                      <label>
+                        %
+                        <input value={row.percent} onChange={(event) => updateBuyPercent(row.id, event.target.value)} placeholder={index === 0 ? "100" : "0"} />
+                      </label>
+                      <label>
+                        Giá vào
+                        <input value={row.buyPrice} onChange={(event) => updateBuyRow(row.id, { buyPrice: event.target.value })} placeholder="27.5" />
+                      </label>
+                      <label>
+                        Số cổ phiếu
+                        <input value={row.shares} onChange={(event) => updateBuyRow(row.id, { shares: event.target.value.replace(/\D/g, "") })} placeholder="100" />
+                      </label>
+                      <div className="stock-row-value">
+                        <span>Giá trị</span>
+                        <strong>{formatVnd(value)}</strong>
+                      </div>
+                      <button className="row-icon-button danger-text" onClick={() => removeBuyRow(row.id)} title="Xóa dòng" type="button">
+                        <X size={16} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="stock-form-actions">
+                <button className="ghost" onClick={addBuyRow} type="button"><Plus size={17} /> Thêm cổ phiếu</button>
+                <button className="primary" onClick={savePurchase} type="button"><Save size={17} /> Lưu lệnh mua</button>
+              </div>
+              <div className="form-grid">
+                <label>
+                  Ngày mua
+                  <input type="date" value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} />
+                </label>
+                <label>
+                  Note
+                  <input value={purchaseNote} onChange={(event) => setPurchaseNote(event.target.value)} placeholder="Mua trên MBS" />
+                </label>
+              </div>
+              {stockError && <span className="form-error">{stockError}</span>}
+            </>
+          )}
+        </article>
+      </section>
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Danh mục cổ phiếu</h2>
+          <button className="ghost" onClick={() => refreshPrices()} type="button"><LineChart size={17} /> Cập nhật giá</button>
+        </div>
+        {refreshStatus && <p className="muted">{refreshStatus}</p>}
+        {stats.holdings.length === 0 ? (
+          <p className="muted">Chưa có cổ phiếu nào.</p>
+        ) : (
+          <div className="stock-holding-list">
+            {stats.holdings.map((holding) => (
+              <article className="stock-holding-card" key={holding.symbol}>
+                {sellingSymbol !== holding.symbol && (
+                  <button className="stock-card-withdraw-button" onClick={() => openSaleForm(holding)} type="button">
+                    <ArrowDownCircle size={16} /> Rút
+                  </button>
+                )}
+                <div>
+                  <h3>{holding.symbol}</h3>
+                  <small>{holding.hasMarketPrice ? `${holding.source} · ${holding.updatedAt ? formatDateTime(holding.updatedAt) : "mới cập nhật"}` : "Chưa cập nhật giá, đang dùng giá vốn"}</small>
+                </div>
+                <div className="stock-holding-grid">
+                  <span>Số cổ <strong>{holding.shares.toLocaleString("vi-VN")}</strong></span>
+                  <label className="stock-price-pair">
+                    <span>Giá TT / Giá TB</span>
+                    <div>
+                      <input key={`${holding.symbol}-${holding.marketPrice}`} defaultValue={formatStockPrice(holding.marketPrice)} onBlur={(event) => saveManualPrice(holding.symbol, event.target.value)} />
+                      <strong>{formatStockPrice(holding.averageCost)}</strong>
+                    </div>
+                  </label>
+                  <span className="stock-value-pair">
+                    Vốn / Thị trường
+                    <strong>{formatVnd(holding.cost)}</strong>
+                    <b>{formatVnd(holding.marketValue)}</b>
+                  </span>
+                  <span>Lãi/lỗ <strong className={holding.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(holding.pnl)} · {holding.pnlPercent.toFixed(1)}%</strong></span>
+                </div>
+                {sellingSymbol === holding.symbol ? (
+                  <div className="stock-sale-form">
+                    <label>
+                      Số cổ phiếu rút
+                      <div className="stock-sale-shares">
+                        <input value={saleForm.shares} onChange={(event) => setSaleForm({ ...saleForm, shares: event.target.value.replace(/\D/g, "") })} placeholder="100" />
+                        <button className="ghost" onClick={() => setSaleForm({ ...saleForm, shares: String(holding.shares) })} type="button">Max</button>
+                      </div>
+                    </label>
+                    <label>
+                      Giá rút
+                      <input value={saleForm.price} onChange={(event) => setSaleForm({ ...saleForm, price: event.target.value })} placeholder={formatStockPrice(holding.marketPrice)} />
+                    </label>
+                    <label>
+                      Nơi nhận
+                      <select value={saleForm.destination} onChange={(event) => setSaleForm({ ...saleForm, destination: event.target.value as SolDestination })}>
+                        <option value="stock">Số dư CK</option>
+                        <option value="btc">BTC</option>
+                        <option value="saving">Tiết kiệm</option>
+                        <option value="emergency">Dự phòng</option>
+                        <option value="cash">Tiền mặt</option>
+                      </select>
+                    </label>
+                    <label>
+                      Ngày
+                      <input type="date" value={saleForm.date} onChange={(event) => setSaleForm({ ...saleForm, date: event.target.value })} />
+                    </label>
+                    <label>
+                      Note
+                      <input value={saleForm.note} onChange={(event) => setSaleForm({ ...saleForm, note: event.target.value })} placeholder="Rút từ CK" />
+                    </label>
+                    <div className="stock-sale-summary">
+                      <span>Giá trị rút</span>
+                      <strong>{formatVnd(saleVndAmount)}</strong>
+                    </div>
+                    <div className="stock-sale-actions">
+                      <button className="ghost" onClick={() => setSellingSymbol(null)} type="button">Hủy</button>
+                      <button className="primary" onClick={saveStockSale} type="button"><ArrowDownCircle size={17} /> Rút</button>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Lịch sử mua</h2>
+          <small>{state.stockPurchases.length} lệnh</small>
+        </div>
+        <div className="timeline">
+          {[...state.stockPurchases].reverse().map((purchase) => (
+            <div key={purchase.id}>
+              <span className="deposit">+</span>
+              <div>
+                <strong>{formatVnd(purchase.lines.reduce((sum, line) => sum + stockLineValue(line), 0))}</strong>
+                <small>
+                  {formatDate(purchase.date)} · {purchase.lines.map((line) => `${line.symbol} ${line.shares.toLocaleString("vi-VN")}cp @ ${formatStockPrice(line.buyPrice)}`).join(" · ")} · {purchase.note || "Không ghi chú"}
+                </small>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+
+  if (embedded) return content;
+  return <div className="page">{content}</div>;
+}
+
+function InvestmentPage({
+  state,
+  setState,
+  activeTab,
+  setActiveTab,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  activeTab: InvestmentTab;
+  setActiveTab: (tab: InvestmentTab) => void;
+}) {
   const tabs: Array<{ id: InvestmentTab; label: string }> = [
     { id: "btc", label: "BTC" },
     { id: "stock", label: "CK" },
+    { id: "mbb", label: "Sổ MB" },
     { id: "sol", label: "SOL" },
   ];
 
@@ -2161,10 +3638,10 @@ function InvestmentPage({
       <header className="page-header">
         <div>
           <p className="eyebrow">Portfolio</p>
-          <h1>Đầu tư</h1>
+          <h1>Tài sản</h1>
         </div>
       </header>
-      <div className="deposit-tabs investment-tabs" role="tablist" aria-label="Chọn danh mục đầu tư">
+      <div className="deposit-tabs investment-tabs" role="tablist" aria-label="Chọn danh mục tài sản">
         {tabs.map((tab) => (
           <button
             className={activeTab === tab.id ? "active" : ""}
@@ -2179,7 +3656,8 @@ function InvestmentPage({
         ))}
       </div>
       {activeTab === "btc" && <FundPage state={state} setState={setState} fund="btc" embedded />}
-      {activeTab === "stock" && <FundPage state={state} setState={setState} fund="stock" embedded />}
+      {activeTab === "stock" && <StockPage state={state} setState={setState} embedded />}
+      {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} embedded fixedFilter="all" />}
       {activeTab === "sol" && <SolPage state={state} setState={setState} embedded />}
     </div>
   );
@@ -2210,10 +3688,24 @@ function HistoryPanel({ rows }: { rows: FundTransaction[] }) {
 function BankDepositPage({
   state,
   setState,
+  embedded = false,
+  fixedFilter,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  embedded?: boolean;
+  fixedFilter?: DepositFilter;
 }) {
+  type PendingDepositRequest = {
+    source: "allocation" | "sol" | "stock";
+    fund: DepositFund;
+    month: string;
+    amount: number;
+    title: string;
+    note: string;
+    solWithdrawalId?: string;
+  };
+
   const defaultDepositForm = (fund: DepositFund = "saving") => ({
     fund,
     amount: "",
@@ -2224,9 +3716,11 @@ function BankDepositPage({
     note: "",
     sourceMonth: "",
     allocationSource: false,
+    sourceSolWithdrawalId: "",
   });
   const [form, setForm] = useState(() => defaultDepositForm());
-  const [activeFilter, setActiveFilter] = useState<DepositFilter>("all");
+  const [activeFilter, setActiveFilter] = useState<DepositFilter>(fixedFilter ?? "all");
+  const [embeddedFilter, setEmbeddedFilter] = useState<DepositFilter>("all");
   const [formOpen, setFormOpen] = useState(false);
   const [pendingSource, setPendingSource] = useState<BankDeposit | null>(null);
   const [earlySettlementDates, setEarlySettlementDates] = useState<Record<string, string>>({});
@@ -2240,19 +3734,25 @@ function BankDepositPage({
     { id: "saving", label: "Tiết kiệm" },
     { id: "emergency", label: "Dự phòng" },
   ];
+  const effectiveFilter = fixedFilter === "all" ? embeddedFilter : fixedFilter ?? activeFilter;
   const rows = state.bankDeposits
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => activeFilter === "all" || item.fund === activeFilter)
+    .filter(({ item }) => effectiveFilter === "all" || item.fund === effectiveFilter)
     .sort((left, right) => right.item.startDate.localeCompare(left.item.startDate) || right.index - left.index)
     .map(({ item }) => item);
-  const activeTotal = rows.reduce((sum, item) => sum + activePrincipal(item), 0);
+  const savingActiveTotal = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
+  const emergencyActiveTotal = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
+  const activeTotal = effectiveFilter === "saving" ? savingActiveTotal : effectiveFilter === "emergency" ? emergencyActiveTotal : savingActiveTotal + emergencyActiveTotal;
   const pendingAllocations = state.allocations
     .filter((allocation) => allocation.confirmedAt)
     .flatMap((allocation) =>
       fundOptions.map(({ id }) => ({
+        source: "allocation" as const,
         fund: id,
         month: allocation.month,
         amount: id === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
+        title: `${fundLabel(id)} · Tháng ${formatMonth(allocation.month)} chưa tạo sổ`,
+        note: `Tạo sổ từ chia quỹ ${formatMonth(allocation.month)}`,
         depositRequestedAt: allocation[depositRequestedField(id)],
         depositCreatedAt: allocation[depositCreatedField(id)],
       }))
@@ -2265,6 +3765,44 @@ function BankDepositPage({
         !state.bankDeposits.some((deposit) => deposit.fund === allocation.fund && deposit.createdFromMonth === allocation.month)
     )
     .sort((a, b) => a.month.localeCompare(b.month));
+  const pendingSolDeposits = state.solTransactions
+    .filter(
+      (transaction) =>
+        isSolWithdrawal(transaction) &&
+        (transaction.destination === "saving" || transaction.destination === "emergency") &&
+        !state.bankDeposits.some((deposit) => deposit.createdFromSolWithdrawalId === transaction.id)
+    )
+    .map((transaction) => {
+      const withdrawal = transaction as SolWithdrawTransaction;
+      const fund = withdrawal.destination as DepositFund;
+      return {
+        source: "sol" as const,
+        fund,
+        month: monthFromDate(withdrawal.date),
+        amount: withdrawal.vndAmount,
+        title: `${fundLabel(fund)} · Rút từ SOL chưa tạo sổ`,
+        note: withdrawal.note ? `Rút từ SOL · ${withdrawal.note}` : "Rút từ SOL",
+        solWithdrawalId: withdrawal.id,
+      };
+    });
+  const pendingStockSaleDeposits = state.stockSales
+    .filter(
+      (sale) =>
+        (sale.destination === "saving" || sale.destination === "emergency") &&
+        !state.bankDeposits.some((deposit) => deposit.note.includes(stockSaleDepositMarker(sale.id)))
+    )
+    .map((sale) => {
+      const fund = sale.destination as DepositFund;
+      return {
+        source: "stock" as const,
+        fund,
+        month: monthFromDate(sale.date),
+        amount: sale.vndAmount,
+        title: `${fundLabel(fund)} · Rút từ CK chưa tạo sổ`,
+        note: sale.note ? `Rút từ CK ${sale.symbol} · ${sale.note} ${stockSaleDepositMarker(sale.id)}` : `Rút từ CK ${sale.symbol} ${stockSaleDepositMarker(sale.id)}`,
+      };
+    });
+  const pendingDepositRequests: PendingDepositRequest[] = [...pendingAllocations, ...pendingSolDeposits, ...pendingStockSaleDeposits].sort((a, b) => a.month.localeCompare(b.month));
 
   const updateDepositDate = (date: string) => {
     setForm((prev) => ({ ...prev, date, maturityDate: addMonths(date, Number(prev.term) || 0) }));
@@ -2281,10 +3819,10 @@ function BankDepositPage({
 
   const openManualDepositForm = () => {
     setPendingSource(null);
-    openDepositForm({ fund: activeFilter === "all" ? form.fund : activeFilter, allocationSource: false, sourceMonth: "" });
+    openDepositForm({ fund: effectiveFilter === "all" ? form.fund : effectiveFilter, allocationSource: false, sourceMonth: "", sourceSolWithdrawalId: "" });
   };
 
-  const prefillPendingDeposit = (allocation: { fund: DepositFund; month: string; amount: number }) => {
+  const prefillPendingDeposit = (allocation: PendingDepositRequest) => {
     setPendingSource(null);
     openDepositForm({
       fund: allocation.fund,
@@ -2292,8 +3830,9 @@ function BankDepositPage({
       date: today(),
       maturityDate: addMonths(today(), Number(form.term) || 0),
       sourceMonth: allocation.month,
-      allocationSource: true,
-      note: `Tạo sổ từ chia quỹ ${formatMonth(allocation.month)}`,
+      allocationSource: allocation.source === "allocation",
+      sourceSolWithdrawalId: allocation.solWithdrawalId ?? "",
+      note: allocation.note,
     });
   };
 
@@ -2312,7 +3851,8 @@ function BankDepositPage({
         form.maturityDate,
         sourceMonth,
         form.note,
-        pendingSource?.id
+        pendingSource?.id,
+        form.sourceSolWithdrawalId || undefined
       );
 
       const bankDeposits = pendingSource
@@ -2379,6 +3919,7 @@ function BankDepositPage({
       rate: String(item.rate),
       sourceMonth: monthFromDate(item.maturityDate),
       allocationSource: false,
+      sourceSolWithdrawalId: "",
       note: `Tạo mới từ ${item.code}`,
     });
   };
@@ -2421,7 +3962,7 @@ function BankDepositPage({
           }
           return deposit;
         }),
-      allocations: item.createdFromMonth
+      allocations: item.createdFromMonth && !item.createdFromSolWithdrawalId
         ? prev.allocations.map((allocation) =>
             allocation.month === item.createdFromMonth
               ? { ...allocation, [depositCreatedField(item.fund)]: allocation[depositCreatedField(item.fund)] ?? new Date().toISOString() }
@@ -2439,37 +3980,43 @@ function BankDepositPage({
 
   const fundSelectionLocked = Boolean(form.sourceMonth);
 
-  return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Quỹ MBB</p>
-          <h1>Sổ MBB</h1>
+  const content = (
+    <>
+      {!embedded && (
+        <header className="page-header">
+          <div>
+            <p className="eyebrow">Quỹ MBB</p>
+            <h1>Sổ MBB</h1>
+          </div>
+        </header>
+      )}
+      {!fixedFilter && (
+        <div className="deposit-tabs" role="tablist" aria-label="Lọc sổ MBB">
+          {filterOptions.map((option) => (
+            <button
+              className={activeFilter === option.id ? "active" : ""}
+              key={option.id}
+              onClick={() => setActiveFilter(option.id)}
+              role="tab"
+              type="button"
+              aria-selected={activeFilter === option.id}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
-      </header>
-      <div className="deposit-tabs" role="tablist" aria-label="Lọc sổ MBB">
-        {filterOptions.map((option) => (
-          <button
-            className={activeFilter === option.id ? "active" : ""}
-            key={option.id}
-            onClick={() => setActiveFilter(option.id)}
-            role="tab"
-            type="button"
-            aria-selected={activeFilter === option.id}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-      <section className="metrics-grid single">
-        <MetricCard label="Gốc đang gửi" value={formatVnd(activeTotal)} icon={<Landmark size={20} />} tone="highlight" />
+      )}
+      <section className="metrics-grid">
+        <MetricCard label="Tổng gốc đang gửi" value={formatVnd(savingActiveTotal + emergencyActiveTotal)} icon={<Landmark size={20} />} tone={effectiveFilter === "all" ? "highlight" : undefined} onClick={fixedFilter === "all" ? () => setEmbeddedFilter("all") : undefined} />
+        <MetricCard label="Tổng quỹ tiết kiệm" value={formatVnd(savingActiveTotal)} icon={<PiggyBank size={20} />} tone={effectiveFilter === "saving" ? "highlight" : undefined} onClick={fixedFilter === "all" ? () => setEmbeddedFilter("saving") : undefined} />
+        <MetricCard label="Tổng quỹ dự phòng" value={formatVnd(emergencyActiveTotal)} icon={<Landmark size={20} />} tone={effectiveFilter === "emergency" ? "highlight" : undefined} onClick={fixedFilter === "all" ? () => setEmbeddedFilter("emergency") : undefined} />
       </section>
-      {pendingAllocations.length > 0 && (
+      {pendingDepositRequests.length > 0 && (
         <section className="pending-stack">
-          {pendingAllocations.map((allocation) => (
+          {pendingDepositRequests.map((allocation) => (
             <article
               className="pending-banner clickable"
-              key={`${allocation.fund}-${allocation.month}`}
+              key={`${allocation.source}-${allocation.fund}-${allocation.month}-${allocation.solWithdrawalId ?? "allocation"}`}
               onClick={() => prefillPendingDeposit(allocation)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
@@ -2481,7 +4028,7 @@ function BankDepositPage({
               tabIndex={0}
             >
               <div>
-                <strong>{fundLabel(allocation.fund)} · Tháng {formatMonth(allocation.month)} chưa tạo sổ</strong>
+                <strong>{allocation.title}</strong>
                 <small>{formatVnd(allocation.amount)}</small>
               </div>
               <button
@@ -2571,6 +4118,9 @@ function BankDepositPage({
           const interest = interestFor(item);
           return (
             <article className={`deposit-card ${due <= 7 && item.status === "active" ? "danger" : due <= 30 && item.status === "active" ? "warning" : ""}`} key={item.id}>
+              <button className="deposit-delete-button" onClick={() => deleteDeposit(item)} title={`Xóa sổ ${item.code}`} type="button" aria-label={`Xóa sổ ${item.code}`}>
+                <X size={16} />
+              </button>
               <div className="deposit-head">
                 <div>
                   <div className="deposit-code-row">
@@ -2631,17 +4181,15 @@ function BankDepositPage({
                   </button>
                 </div>
               )}
-              <div className="card-actions deposit-delete-actions">
-                <button className="ghost history-delete-button deposit-delete-button" onClick={() => deleteDeposit(item)} type="button">
-                  Xóa sổ
-                </button>
-              </div>
             </article>
           );
         })}
       </section>
-    </div>
+    </>
   );
+
+  if (embedded) return content;
+  return <div className="page">{content}</div>;
 }
 
 function statusLabel(status: DepositStatus) {
@@ -2664,24 +4212,143 @@ function SolPage({
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   embedded?: boolean;
 }) {
+  type SolFormMode = "buy" | "withdraw";
+
   const [form, setForm] = useState({ sol: "", price: "", date: today(), note: "" });
-  const totalSol = state.solTransactions.reduce((sum, item) => sum + item.solAmount, 0);
-  const cost = state.solTransactions.reduce((sum, item) => sum + item.solAmount * item.buyPrice, 0);
+  const [formMode, setFormMode] = useState<SolFormMode>("buy");
+  const [withdrawForm, setWithdrawForm] = useState({
+    sol: "",
+    price: state.market.solUsd ? String(state.market.solUsd) : "",
+    vnd: "",
+    destination: "cash" as SolDestination,
+    date: today(),
+    note: "",
+  });
+  const [withdrawError, setWithdrawError] = useState("");
+  const solStats = solPosition(state.solTransactions);
+  const totalSol = solStats.balance;
+  const cost = solStats.cost;
   const currentUsd = totalSol * state.market.solUsd;
   const pnl = currentUsd - cost;
   const pnlPercent = cost ? (pnl / cost) * 100 : 0;
   const costVnd = cost * state.market.usdVnd;
   const pnlVnd = pnl * state.market.usdVnd;
+  const destinationOptions: Array<{ id: SolDestination; label: string }> = [
+    { id: "btc", label: "BTC" },
+    { id: "stock", label: "CK" },
+    { id: "saving", label: "Tiết kiệm" },
+    { id: "emergency", label: "Dự phòng" },
+    { id: "cash", label: "Tiền mặt" },
+  ];
+
+  useEffect(() => {
+    setWithdrawForm((prev) => {
+      if (prev.price || !state.market.solUsd) return prev;
+      return { ...prev, price: String(state.market.solUsd) };
+    });
+  }, [state.market.solUsd]);
+
+  const estimatedWithdrawVnd = (solInput: string, priceInput: string) =>
+    Math.round(parseDecimal(solInput) * parseDecimal(priceInput) * state.market.usdVnd);
+
+  const updateWithdrawSol = (sol: string) => {
+    const estimate = estimatedWithdrawVnd(sol, withdrawForm.price);
+    setWithdrawForm((prev) => ({ ...prev, sol, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
+    setWithdrawError("");
+  };
+
+  const updateWithdrawPrice = (price: string) => {
+    const estimate = estimatedWithdrawVnd(withdrawForm.sol, price);
+    setWithdrawForm((prev) => ({ ...prev, price, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
+    setWithdrawError("");
+  };
+
+  const updateWithdrawVnd = (vnd: string) => {
+    const sol = parseDecimal(withdrawForm.sol);
+    const vndAmount = parseMoney(vnd);
+    const price = sol && state.market.usdVnd ? vndAmount / sol / state.market.usdVnd : 0;
+    setWithdrawForm((prev) => ({ ...prev, vnd, price: price ? price.toFixed(2) : prev.price }));
+    setWithdrawError("");
+  };
 
   const addSol = () => {
-    const sol = Number(form.sol.replace(",", "."));
-    const price = Number(form.price.replace(",", "."));
+    const sol = parseDecimal(form.sol);
+    const price = parseDecimal(form.price);
     if (!sol || !price) return;
     setState((prev) => ({
       ...prev,
-      solTransactions: [...prev.solTransactions, { id: uid(), solAmount: sol, buyPrice: price, date: form.date, note: form.note }],
+      solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount: sol, buyPrice: price, date: form.date, note: form.note }],
     }));
     setForm({ sol: "", price: "", date: today(), note: "" });
+  };
+
+  const withdrawSol = () => {
+    const sol = parseDecimal(withdrawForm.sol);
+    const sellPrice = parseDecimal(withdrawForm.price);
+    const vndAmount = parseMoney(withdrawForm.vnd);
+    if (!sol || !sellPrice || !vndAmount) return;
+    if (sol - totalSol > 0.00000001) {
+      setWithdrawError("Số SOL rút lớn hơn số SOL đang có.");
+      return;
+    }
+
+    const userNote = withdrawForm.note.trim();
+    const note = userNote || "Rút từ SOL";
+    const transferNote = userNote ? `Rút từ SOL · ${userNote}` : "Rút từ SOL";
+    const withdrawal: SolWithdrawTransaction = {
+      id: uid(),
+      type: "withdraw",
+      solAmount: sol,
+      sellPrice,
+      vndAmount,
+      destination: withdrawForm.destination,
+      date: withdrawForm.date,
+      note,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      solTransactions: [...prev.solTransactions, withdrawal],
+      fundTransactions:
+        withdrawal.destination === "btc" || withdrawal.destination === "stock"
+          ? [
+              ...prev.fundTransactions,
+              {
+                id: uid(),
+                fund: withdrawal.destination,
+                type: "deposit",
+                amount: vndAmount,
+                date: withdrawal.date,
+                month: monthFromDate(withdrawal.date),
+                note: transferNote,
+              },
+            ]
+          : prev.fundTransactions,
+      incomeTransactions:
+        withdrawal.destination === "cash"
+          ? [
+              ...prev.incomeTransactions,
+              {
+                id: uid(),
+                categoryId: "other-income",
+                amount: vndAmount,
+                date: withdrawal.date,
+                month: monthFromDate(withdrawal.date),
+                note: transferNote,
+              },
+            ]
+          : prev.incomeTransactions,
+    }));
+
+    setWithdrawForm({
+      sol: "",
+      price: state.market.solUsd ? String(state.market.solUsd) : "",
+      vnd: "",
+      destination: "cash",
+      date: today(),
+      note: "",
+    });
+    setWithdrawError("");
   };
 
   const content = (
@@ -2726,32 +4393,83 @@ function SolPage({
         </article>
         <article className="panel">
           <div className="panel-title">
-            <h2>Thêm giao dịch</h2>
-            <button className="icon-button" title="Lưu SOL" onClick={addSol}>
+            <h2>Giao dịch SOL</h2>
+            <button className="icon-button" title="Lưu SOL" onClick={formMode === "buy" ? addSol : withdrawSol}>
               <Save size={18} />
             </button>
           </div>
-          <div className="form-grid">
-            <label>
-              Số SOL
-              <input value={form.sol} onChange={(event) => setForm({ ...form, sol: event.target.value })} placeholder="0.61" />
-            </label>
-            <label>
-              Giá mua
-              <input value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="77.58" />
-            </label>
-            <label>
-              Ngày
-              <input type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} />
-            </label>
-            <label>
-              Note
-              <input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} />
-            </label>
+          <div className="deposit-tabs investment-tabs" role="tablist" aria-label="Chọn loại giao dịch SOL">
+            <button className={formMode === "buy" ? "active" : ""} onClick={() => setFormMode("buy")} role="tab" type="button" aria-selected={formMode === "buy"}>
+              Thêm SOL
+            </button>
+            <button className={formMode === "withdraw" ? "active" : ""} onClick={() => setFormMode("withdraw")} role="tab" type="button" aria-selected={formMode === "withdraw"}>
+              Rút SOL
+            </button>
           </div>
-          <button className="primary" onClick={addSol}>
-            <Plus size={17} /> Thêm SOL
-          </button>
+          {formMode === "buy" ? (
+            <>
+              <div className="form-grid">
+                <label>
+                  Số SOL
+                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: event.target.value })} placeholder="0.61" />
+                </label>
+                <label>
+                  Giá mua
+                  <input value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="77.58" />
+                </label>
+                <label>
+                  Ngày
+                  <input type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} />
+                </label>
+                <label>
+                  Note
+                  <input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} />
+                </label>
+              </div>
+              <button className="primary" onClick={addSol}>
+                <Plus size={17} /> Thêm SOL
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="form-grid">
+                <label>
+                  Số SOL rút
+                  <input value={withdrawForm.sol} onChange={(event) => updateWithdrawSol(event.target.value)} placeholder="0.25" />
+                </label>
+                <label>
+                  Giá SOL lúc rút
+                  <input value={withdrawForm.price} onChange={(event) => updateWithdrawPrice(event.target.value)} placeholder={state.market.solUsd ? String(state.market.solUsd) : "76.43"} />
+                </label>
+                <label>
+                  Tiền VND nhận
+                  <input value={withdrawForm.vnd} onChange={(event) => updateWithdrawVnd(event.target.value)} placeholder="5.000.000" />
+                </label>
+                <label>
+                  Nơi nhận
+                  <select value={withdrawForm.destination} onChange={(event) => setWithdrawForm({ ...withdrawForm, destination: event.target.value as SolDestination })}>
+                    {destinationOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Ngày
+                  <input type="date" value={withdrawForm.date} onChange={(event) => setWithdrawForm({ ...withdrawForm, date: event.target.value })} />
+                </label>
+                <label>
+                  Note
+                  <input value={withdrawForm.note} onChange={(event) => setWithdrawForm({ ...withdrawForm, note: event.target.value })} placeholder="Rút từ SOL" />
+                </label>
+              </div>
+              {withdrawError && <span className="form-error">{withdrawError}</span>}
+              <button className="primary" onClick={withdrawSol}>
+                <ArrowDownCircle size={17} /> Rút SOL
+              </button>
+            </>
+          )}
         </article>
       </section>
       <section className="panel">
@@ -2762,10 +4480,19 @@ function SolPage({
         <div className="timeline">
           {[...state.solTransactions].reverse().map((item) => (
             <div key={item.id}>
-              <span className="deposit">+</span>
+              <span className={isSolWithdrawal(item) ? "withdraw" : "deposit"}>{isSolWithdrawal(item) ? "-" : "+"}</span>
               <div>
-                <strong>{item.solAmount} SOL · {formatUsd(item.solAmount * item.buyPrice)}</strong>
-                <small>{formatDate(item.date)} · Giá mua {formatUsd(item.buyPrice)} · {item.note || "Không ghi chú"}</small>
+                {isSolWithdrawal(item) ? (
+                  <>
+                    <strong>-{item.solAmount} SOL · {formatVnd(item.vndAmount)}</strong>
+                    <small>{formatDate(item.date)} · Rút về {solDestinationLabel(item.destination)} · Giá rút {formatUsd(item.sellPrice)} · {item.note || "Không ghi chú"}</small>
+                  </>
+                ) : (
+                  <>
+                    <strong>{item.solAmount} SOL · {formatUsd(item.solAmount * item.buyPrice)}</strong>
+                    <small>{formatDate(item.date)} · Giá mua {formatUsd(item.buyPrice)} · {item.note || "Không ghi chú"}</small>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -2779,13 +4506,20 @@ function SolPage({
 }
 
 function ReportsPage({ state }: { state: AppState }) {
+  const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
   const months = useMemo(() => {
     const allMonths = new Set<string>();
     state.incomeTransactions.forEach((item) => allMonths.add(item.month));
     state.expenseEntries.forEach((item) => allMonths.add(item.month));
     state.allocations.forEach((item) => allMonths.add(item.month));
     state.fundTransactions.forEach((item) => allMonths.add(item.month));
+    state.stockPurchases.forEach((item) => allMonths.add(item.month));
+    state.stockSales.forEach((item) => allMonths.add(monthFromDate(item.date)));
     state.solTransactions.forEach((item) => allMonths.add(monthFromDate(item.date)));
+    state.bankDeposits.forEach((item) => {
+      allMonths.add(monthFromDate(item.startDate));
+      if (item.settledAt) allMonths.add(monthFromDate(item.settledAt));
+    });
     allMonths.add(DEFAULT_START_MONTH);
     allMonths.add(currentMonth());
 
@@ -2803,31 +4537,128 @@ function ReportsPage({ state }: { state: AppState }) {
   }, [state]);
 
   const btc = state.fundTransactions.filter((item) => item.fund === "btc").reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
-  const stock = state.fundTransactions.filter((item) => item.fund === "stock").reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
-  const saving = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
-  const emergency = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
-  const solVnd = state.solTransactions.reduce((sum, item) => sum + item.solAmount, 0) * state.market.solUsd * state.market.usdVnd;
+  const stock = stockPortfolioStats(state).totalValue;
+  const savingActive = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
+  const emergencyActive = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
+  const saving = savingActive + pendingSolDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "saving");
+  const emergency = emergencyActive + pendingSolDepositTotal(state, "emergency") + pendingStockSaleDepositTotal(state, "emergency");
+  const solVnd = solPosition(state.solTransactions).balance * state.market.solUsd * state.market.usdVnd;
   const totalAssets = btc + stock + saving + emergency + solVnd;
+  const assetPercent = (value: number) => totalAssets ? Math.round((value / totalAssets) * 100) : 0;
+  const reportChartLabels: Record<ReportChartKey, string> = {
+    "current-assets": "Tổng tài sản hiện tại",
+    "net-accumulation": "Tổng số tiền tích lũy",
+    btc: "BTC",
+    stock: "CK",
+    saving: "Quỹ tiết kiệm",
+    emergency: "Quỹ dự phòng",
+  };
+  const fundRows = [
+    { id: "btc" as const, label: "BTC", value: btc },
+    { id: "stock" as const, label: "CK", value: stock },
+    { id: "saving" as const, label: "Quỹ tiết kiệm", value: saving },
+    { id: "emergency" as const, label: "Quỹ dự phòng", value: emergency },
+  ];
+  const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
 
-  const chartData = months.reduce<Array<{ month: string; income: number; expense: number; saving: number; assets: number; withdrawn: number }>>(
+  const fundBalanceAtMonth = (fund: FundKey, month: string) =>
+    state.fundTransactions
+      .filter((item) => item.fund === fund && item.month <= month)
+      .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
+  const depositBalanceAtMonth = (fund: DepositFund, month: string) =>
+    state.bankDeposits
+      .filter((item) =>
+        item.fund === fund &&
+        monthFromDate(item.startDate) <= month &&
+        (!item.settledAt || monthFromDate(item.settledAt) > month)
+      )
+      .reduce((sum, item) => sum + item.principal, 0);
+  const pendingSolDepositAtMonth = (fund: DepositFund, month: string) =>
+    state.solTransactions
+      .filter((transaction) => {
+        if (!isSolWithdrawal(transaction) || transaction.destination !== fund || monthFromDate(transaction.date) > month) return false;
+        const deposit = state.bankDeposits.find((item) => item.createdFromSolWithdrawalId === transaction.id);
+        return !deposit || month < monthFromDate(deposit.startDate);
+      })
+      .reduce((sum, transaction) => sum + (isSolWithdrawal(transaction) ? transaction.vndAmount : 0), 0);
+  const pendingStockSaleDepositAtMonth = (fund: DepositFund, month: string) =>
+    state.stockSales
+      .filter((sale) => {
+        if (sale.destination !== fund || monthFromDate(sale.date) > month) return false;
+        const deposit = state.bankDeposits.find((item) => item.note.includes(stockSaleDepositMarker(sale.id)));
+        return !deposit || month < monthFromDate(deposit.startDate);
+      })
+      .reduce((sum, sale) => sum + sale.vndAmount, 0);
+  const depositFundBalanceAtMonth = (fund: DepositFund, month: string) =>
+    depositBalanceAtMonth(fund, month) + pendingSolDepositAtMonth(fund, month) + pendingStockSaleDepositAtMonth(fund, month);
+  const solValueAtMonth = (month: string) =>
+    solPosition(state.solTransactions.filter((item) => monthFromDate(item.date) <= month)).balance * state.market.solUsd * state.market.usdVnd;
+  const withdrawalAtMonth = (key: ReportChartKey, month: string) => {
+    if (key === "btc" || key === "stock") {
+      return state.fundTransactions
+        .filter((item) => item.fund === key && item.type === "withdraw" && item.month === month)
+        .reduce((sum, item) => sum + item.amount, 0);
+    }
+    if (key === "saving" || key === "emergency") {
+      return state.bankDeposits
+        .filter((item) => item.fund === key && item.settledAt && monthFromDate(item.settledAt) === month)
+        .reduce((sum, item) => sum + (item.settledAmount ?? item.principal), 0);
+    }
+    return monthlyWithdrawal(state, month);
+  };
+
+  const reportRows = months.reduce<
+    Array<{
+      month: string;
+      currentAssets: number;
+      netAccumulation: number;
+      btc: number;
+      stock: number;
+      saving: number;
+      emergency: number;
+      sol: number;
+      withdrawn: number;
+      value: number;
+    }>
+  >(
     (rows, month) => {
       const summary = monthlySummary(state, month);
       const withdrawn = monthlyWithdrawal(state, month);
-      const previousAssets = rows[rows.length - 1]?.assets ?? 0;
-    return [
-      ...rows,
-      {
-        month: formatMonth(month),
-        income: summary.income,
-        expense: summary.expense,
-        saving: summary.saving,
-        withdrawn,
-        assets: Math.max(previousAssets + summary.saving - withdrawn, 0),
-      },
-    ];
+      const previousNetAccumulation = rows[rows.length - 1]?.netAccumulation ?? 0;
+      const rowBtc = fundBalanceAtMonth("btc", month);
+      const rowStock = stockPortfolioStats(state, month).totalValue;
+      const rowSaving = depositFundBalanceAtMonth("saving", month);
+      const rowEmergency = depositFundBalanceAtMonth("emergency", month);
+      const rowSol = solValueAtMonth(month);
+      const currentAssets = rowBtc + rowStock + rowSaving + rowEmergency + rowSol;
+      const netAccumulation = Math.max(previousNetAccumulation + summary.saving - withdrawn, 0);
+      const values: Record<ReportChartKey, number> = {
+        "current-assets": currentAssets,
+        "net-accumulation": netAccumulation,
+        btc: rowBtc,
+        stock: rowStock,
+        saving: rowSaving,
+        emergency: rowEmergency,
+      };
+      return [
+        ...rows,
+        {
+          month: formatMonth(month),
+          currentAssets,
+          netAccumulation,
+          btc: rowBtc,
+          stock: rowStock,
+          saving: rowSaving,
+          emergency: rowEmergency,
+          sol: rowSol,
+          withdrawn: withdrawalAtMonth(activeReportChart, month),
+          value: values[activeReportChart],
+        },
+      ];
     },
     []
   );
+  const netAccumulationTotal = reportRows[reportRows.length - 1]?.netAccumulation ?? 0;
 
   return (
     <div className="page">
@@ -2837,18 +4668,30 @@ function ReportsPage({ state }: { state: AppState }) {
           <h1>Tổng tài sản</h1>
         </div>
       </header>
-      <section className="metrics-grid">
-        <MetricCard label="Tổng tài sản hiện tại" value={formatVnd(totalAssets)} icon={<PiggyBank size={20} />} tone="highlight" />
-        <MetricCard label="BTC + CK" value={formatVnd(btc + stock)} icon={<LineChart size={20} />} />
-        <MetricCard label="Gốc MBB đang gửi" value={formatVnd(saving + emergency)} icon={<Landmark size={20} />} />
+      <section className="metrics-grid report-metrics">
+        <MetricCard
+          label="Tổng tài sản hiện tại"
+          value={formatVnd(totalAssets)}
+          icon={<PiggyBank size={20} />}
+          tone={activeReportChart === "current-assets" ? "highlight" : undefined}
+          onClick={() => setActiveReportChart("current-assets")}
+        />
+        <MetricCard
+          label="Tổng số tiền tích lũy"
+          value={formatVnd(netAccumulationTotal)}
+          icon={<BadgeDollarSign size={20} />}
+          tone={activeReportChart === "net-accumulation" ? "highlight" : undefined}
+          onClick={() => setActiveReportChart("net-accumulation")}
+        />
+        <MetricCard label="SOL quy đổi" value={formatVnd(solVnd)} percent={assetPercent(solVnd)} icon={<Coins size={20} />} />
       </section>
       <section className="panel">
         <div className="panel-title">
-          <h2>Tăng trưởng tài sản</h2>
-          <small>Hiển thị tổng hiện tại trên dữ liệu đang có</small>
+          <h2>Tăng trưởng {reportChartLabels[activeReportChart]}</h2>
+          <small>{activeReportChart === "current-assets" ? "Rê chuột để xem từng quỹ trong tháng" : "Rê chuột để xem giá trị và số tiền rút trong tháng"}</small>
         </div>
         <ResponsiveContainer width="100%" height={260}>
-          <AreaChart data={chartData}>
+          <AreaChart data={reportRows}>
             <defs>
               <linearGradient id="assetFill" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stopColor="#f97316" stopOpacity={0.55} />
@@ -2858,17 +4701,58 @@ function ReportsPage({ state }: { state: AppState }) {
             <CartesianGrid stroke="#2a2520" />
             <XAxis dataKey="month" stroke="#a59b91" />
             <YAxis stroke="#a59b91" tickFormatter={(value) => `${Math.round(Number(value) / 1_000_000)}M`} />
-            <Tooltip content={<GrowthTooltip />} />
-            <Area type="monotone" dataKey="assets" stroke="#f97316" fill="url(#assetFill)" />
+            <Tooltip content={<GrowthTooltip chartKey={activeReportChart} label={reportChartLabels[activeReportChart]} />} />
+            <Area type="monotone" dataKey="value" stroke="#f97316" fill="url(#assetFill)" />
           </AreaChart>
         </ResponsiveContainer>
       </section>
       <section className="asset-grid">
-        <FundChip label="BTC" value={btc} percent={0} />
-        <FundChip label="CK" value={stock} percent={0} />
-        <FundChip label="SOL quy đổi" value={solVnd} percent={0} />
-        <FundChip label="Quỹ tiết kiệm" value={saving} percent={0} />
-        <FundChip label="Quỹ dự phòng" value={emergency} percent={0} />
+        {fundRows.map((fund) => (
+          <FundChip
+            key={fund.label}
+            label={fund.label}
+            value={fund.value}
+            percent={assetPercent(fund.value)}
+            tone={activeReportChart === fund.id ? "highlight" : undefined}
+            onClick={() => setActiveReportChart(fund.id)}
+          />
+        ))}
+      </section>
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Tích lũy</h2>
+          <small>Các mục đang dồn tiền</small>
+        </div>
+        {activeAccumulationGoals.length === 0 ? (
+          <p className="muted">Chưa có mục tích lũy đang hoạt động.</p>
+        ) : (
+          <div className="accumulation-grid">
+            {activeAccumulationGoals.map((goal) => {
+              const progress = accumulationProgress(state, goal);
+              const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
+              const paidMonths = accumulationPaidMonths(state, goal);
+              const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
+              return (
+                <article className="accumulation-card" key={goal.id}>
+                  <div className="panel-title">
+                    <div>
+                      <h2>{goal.name}</h2>
+                      <small>{formatMonth(goal.startMonth)} - {formatMonth(endMonth)}</small>
+                    </div>
+                    <strong>{percent.toFixed(0)}%</strong>
+                  </div>
+                  <div className="progress-track">
+                    <span style={{ width: `${percent}%` }} />
+                  </div>
+                  <div className="accumulation-summary">
+                    <span>Mục tiêu <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong></span>
+                    <span>Số tháng dồn <strong>{paidMonths}/{goal.months}</strong></span>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -2886,21 +4770,68 @@ function monthlyWithdrawal(state: AppState, month: string) {
   return fundWithdrawals + depositSettlements;
 }
 
-function GrowthTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: { month: string; assets: number; withdrawn: number } }> }) {
+function GrowthTooltip({
+  active,
+  payload,
+  chartKey,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{
+    payload: {
+      month: string;
+      value: number;
+      currentAssets: number;
+      netAccumulation: number;
+      btc: number;
+      stock: number;
+      saving: number;
+      emergency: number;
+      sol: number;
+      withdrawn: number;
+    };
+  }>;
+  chartKey: ReportChartKey;
+  label: string;
+}) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
+  const breakdown = [
+    { label: "BTC", value: point.btc },
+    { label: "CK", value: point.stock },
+    { label: "Tiết kiệm", value: point.saving },
+    { label: "Dự phòng", value: point.emergency },
+    { label: "SOL", value: point.sol },
+  ];
 
   return (
     <div className="growth-tooltip">
       <strong>{point.month}</strong>
-      <span>
-        <em>Tích lũy</em>
-        <b>{formatVnd(point.assets)}</b>
-      </span>
-      <span>
-        <em>Số tiền rút</em>
-        <b>{formatVnd(point.withdrawn)}</b>
-      </span>
+      {chartKey === "current-assets" ? (
+        <>
+          {breakdown.map((item) => (
+            <span key={item.label}>
+              <em>{item.label}</em>
+              <b>{formatVnd(item.value)}</b>
+            </span>
+          ))}
+          <span>
+            <em>Tổng</em>
+            <b>{formatVnd(point.currentAssets)}</b>
+          </span>
+        </>
+      ) : (
+        <>
+          <span>
+            <em>{label}</em>
+            <b>{formatVnd(point.value)}</b>
+          </span>
+          <span>
+            <em>Số tiền rút</em>
+            <b>{formatVnd(point.withdrawn)}</b>
+          </span>
+        </>
+      )}
     </div>
   );
 }
@@ -3173,6 +5104,7 @@ export function App() {
   const [state, setState] = useStoredState();
   const [unlocked, setUnlocked] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
+  const [assetTab, setAssetTab] = useState<InvestmentTab>("btc");
   const [month, setMonth] = useState(currentMonth);
   const [activePin, setActivePin] = useState("");
   const [cloudStatus, setCloudStatus] = useState("");
@@ -3182,6 +5114,7 @@ export function App() {
   const cloudAccountKey = activePin ? cloudAccountKeyForPin(activePin) : "";
   const stateForCloud = (): AppState => (activePin ? stateForAccountPin(state, activePin) : state);
   const navigateToPage = (nextPage: Page) => {
+    if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("btc");
     setPage(nextPage);
     if (nextPage === "dashboard") setMonth(currentMonth());
   };
@@ -3189,7 +5122,7 @@ export function App() {
   const unlockWithPin = async (pin: string) => {
     if (!cloudConfigured) {
       if (!state.settings.hasPin) {
-        setState((prev) => ({ ...prev, settings: { pin, hasPin: true } }));
+        setState((prev) => ({ ...prev, settings: { ...prev.settings, pin, hasPin: true } }));
         setActivePin(pin);
         setUnlocked(true);
         return null;
@@ -3334,9 +5267,9 @@ export function App() {
     <div className="app-shell">
       <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
-        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={setPage} />}
-        {page === "investment" && <InvestmentPage state={state} setState={setState} />}
-        {page === "mbb" && <BankDepositPage state={state} setState={setState} />}
+        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} />}
+        {page === "accumulation" && <AccumulationPage state={state} setState={setState} />}
+        {page === "investment" && <InvestmentPage state={state} setState={setState} activeTab={assetTab} setActiveTab={setAssetTab} />}
         {page === "reports" && <ReportsPage state={state} />}
       </main>
     </div>

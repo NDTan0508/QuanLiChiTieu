@@ -1,5 +1,5 @@
 const CACHE_NAME = "quan-li-chi-tieu-v1";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/app-icon.svg"];
+const APP_SHELL = ["/", "/manifest.webmanifest", "/logo.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
