@@ -1437,6 +1437,13 @@ label strong {
   letter-spacing: 0.2rem;
 }
 
+input.pin-input {
+  -webkit-text-security: disc;
+  caret-color: #f97316;
+  touch-action: manipulation;
+  user-select: text;
+}
+
 .pin-icon {
   display: grid;
   width: 54px;

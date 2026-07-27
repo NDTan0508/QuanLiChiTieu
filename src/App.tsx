@@ -903,9 +903,15 @@ function PinGate({
   onUnlock: (pin: string) => Promise<string | null>;
 }) {
   const [pin, setPin] = useState("");
+  const pinInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const isSetup = !state.settings.hasPin;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => pinInputRef.current?.focus(), 250);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const submit = async () => {
     if (pin.length < 4) {
@@ -938,11 +944,19 @@ function PinGate({
         <h1>Nhập mã PIN</h1>
         <p>Mở dữ liệu tài khoản của bạn. Tạo hoặc đổi PIN tại /admin.</p>
         <input
+          ref={pinInputRef}
+          className="pin-input"
           inputMode="numeric"
-          type="password"
+          type="tel"
+          pattern="[0-9]*"
+          autoComplete="one-time-code"
+          enterKeyHint="done"
           value={pin}
           onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
           placeholder="Nhập PIN"
+          onPointerDown={(event) => {
+            window.setTimeout(() => event.currentTarget.focus(), 0);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") submit();
           }}
@@ -4986,8 +5000,11 @@ function AdminPage() {
             <label>
               PIN mới
               <input
-                type="password"
+                className="pin-input"
+                type="tel"
                 inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
                 value={newPin}
                 onChange={(event) => setNewPin(event.target.value.replace(/\D/g, ""))}
               />
@@ -5002,8 +5019,11 @@ function AdminPage() {
             <label>
               PIN cũ
               <input
-                type="password"
+                className="pin-input"
+                type="tel"
                 inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
                 value={oldPin}
                 onChange={(event) => setOldPin(event.target.value.replace(/\D/g, ""))}
               />
@@ -5011,8 +5031,11 @@ function AdminPage() {
             <label>
               PIN mới
               <input
-                type="password"
+                className="pin-input"
+                type="tel"
                 inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
                 value={replacementPin}
                 onChange={(event) => setReplacementPin(event.target.value.replace(/\D/g, ""))}
               />
@@ -5064,7 +5087,7 @@ function SettingsPage({
           <div className="form-grid">
             <label>
               PIN mới
-              <input type="password" inputMode="numeric" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))} />
+              <input className="pin-input" type="tel" inputMode="numeric" pattern="[0-9]*" autoComplete="one-time-code" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))} />
             </label>
           </div>
           <button

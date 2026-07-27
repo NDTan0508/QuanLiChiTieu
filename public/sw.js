@@ -1,4 +1,4 @@
-const CACHE_NAME = "quan-li-chi-tieu-v1";
+const CACHE_NAME = "quan-li-chi-tieu-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/logo.png"];
 
 self.addEventListener("install", (event) => {
