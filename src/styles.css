@@ -194,6 +194,28 @@ label strong {
   padding: 0;
 }
 
+.report-header-actions {
+  position: relative;
+}
+
+.refresh-success-pill {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(20, 184, 166, 0.36);
+  border-radius: 999px;
+  background: rgba(8, 47, 45, 0.94);
+  color: #99f6e4;
+  padding: 6px 9px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .eyebrow {
   margin: 0;
   color: #f97316;
@@ -1833,6 +1855,10 @@ input.pin-input {
 
   .deposit-confirm > label:last-of-type {
     grid-column: 1 / -1;
+  }
+
+  .bank-deposit-form > label:last-of-type {
+    grid-column: auto;
   }
 
   .deposit-card {

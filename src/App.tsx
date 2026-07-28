@@ -4131,7 +4131,7 @@ function BankDepositPage({
           )}
         </div>
         {formOpen && (
-          <div className="deposit-confirm">
+          <div className="deposit-confirm bank-deposit-form">
             {pendingSource && (
               <p className="muted deposit-source-hint">
                 Tạo từ {pendingSource.code} · gốc {formatVnd(pendingSource.principal)} · lãi {formatVnd(interestFor(pendingSource))}
@@ -4608,6 +4608,8 @@ function ReportsPage({
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
 }) {
   const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
+  const [reportRefreshSuccess, setReportRefreshSuccess] = useState(false);
+  const reportRefreshTimer = useRef<number | null>(null);
   const months = useMemo(() => {
     const allMonths = new Set<string>();
     state.incomeTransactions.forEach((item) => allMonths.add(item.month));
@@ -4662,12 +4664,21 @@ function ReportsPage({
   ];
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
 
+  useEffect(() => () => {
+    if (reportRefreshTimer.current) window.clearTimeout(reportRefreshTimer.current);
+  }, []);
+
   const refreshReportPrices = async () => {
     const symbols = stockPortfolioStats(state).holdings.map((item) => item.symbol);
-    await Promise.all([
+    const [stockResult, solUpdated] = await Promise.all([
       refreshStockMarketPrices(symbols, setState),
       onRefreshMarket(true),
     ]);
+    if (solUpdated || stockResult.updated > 0) {
+      setReportRefreshSuccess(true);
+      if (reportRefreshTimer.current) window.clearTimeout(reportRefreshTimer.current);
+      reportRefreshTimer.current = window.setTimeout(() => setReportRefreshSuccess(false), 2000);
+    }
   };
 
   const fundBalanceAtMonth = (fund: FundKey, month: string) =>
@@ -4775,10 +4786,15 @@ function ReportsPage({
         <div>
           <p className="eyebrow">Tổng tài sản</p>
         </div>
-        <div className="page-header-actions">
+        <div className="page-header-actions report-header-actions">
           <button className="ghost report-refresh-button" onClick={refreshReportPrices} type="button" aria-label="Cập nhật giá">
             <RefreshCw size={17} />
           </button>
+          {reportRefreshSuccess && (
+            <span className="refresh-success-pill">
+              <CheckCircle2 size={14} /> Đã cập nhật
+            </span>
+          )}
         </div>
       </header>
       <section className="metrics-grid report-metrics">
