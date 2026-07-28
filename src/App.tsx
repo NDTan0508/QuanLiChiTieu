@@ -30,6 +30,7 @@ import {
   Lock,
   PiggyBank,
   Plus,
+  RefreshCw,
   Save,
   Settings,
   X,
@@ -298,7 +299,7 @@ const DEFAULT_START_MONTH = "2026-06";
 const CERTIFICATE_LOT = 100_000;
 const STOCK_PRICE_UNIT = 1_000;
 const STOCK_LOT = 100;
-const STOCK_PRICE_REFRESH_MS = 30 * 60 * 1000;
+const MARKET_PRICE_REFRESH_MS = 60 * 1000;
 const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"];
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -342,6 +343,11 @@ const daysUntil = (dateValue: string) => {
   const target = new Date(`${dateValue}T00:00:00`).getTime();
   return Math.ceil((target - now) / 86_400_000);
 };
+
+const dateOnlyTime = (dateValue: string) => new Date(`${dateValue}T00:00:00`).getTime();
+
+const daysBetween = (startDate: string, endDate: string) =>
+  Math.max(Math.ceil((dateOnlyTime(endDate) - dateOnlyTime(startDate)) / 86_400_000), 0);
 
 const formatDate = (value: string) => {
   const [year, month, day] = value.split("-");
@@ -402,6 +408,20 @@ const sha256Hex = async (value: string) => {
 
 const interestFor = (deposit: Pick<BankDeposit, "principal" | "rate" | "termMonths">) =>
   Math.round((deposit.principal * deposit.rate * deposit.termMonths) / 100 / 12);
+
+function depositProgress(deposit: BankDeposit) {
+  const totalDays = daysBetween(deposit.startDate, deposit.maturityDate);
+  const remainingDays = deposit.status === "active" ? Math.max(daysUntil(deposit.maturityDate), 0) : 0;
+  const elapsedDays = totalDays - remainingDays;
+  const progressPercent = totalDays > 0 ? Math.min(Math.max((elapsedDays / totalDays) * 100, 0), 100) : 100;
+  const finalInterest = interestFor(deposit);
+  return {
+    totalDays,
+    remainingDays,
+    progressPercent,
+    accruedInterest: Math.round((finalInterest * progressPercent) / 100),
+  };
+}
 
 const roundDownToCertificateLot = (amount: number) =>
   Math.floor(Math.max(amount, 0) / CERTIFICATE_LOT) * CERTIFICATE_LOT;
@@ -469,6 +489,40 @@ function stockPriceFromPayload(payload: unknown) {
     }
   }
   return 0;
+}
+
+async function fetchStockQuote(symbol: string) {
+  const normalized = symbol.trim().toUpperCase();
+  const urls = [
+    { source: "VPS", url: `https://bgapidatafeed.vps.com.vn/getliststockdata/${encodeURIComponent(normalized)}` },
+    { source: "VNDIRECT", url: `https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&q=code:${encodeURIComponent(normalized)}&size=1&page=1` },
+    { source: "VPS", url: `/market-api/vps/getliststockdata/${encodeURIComponent(normalized)}` },
+    { source: "VNDIRECT", url: `/market-api/vndirect/v4/stock_prices?sort=date:desc&q=code:${encodeURIComponent(normalized)}&size=1&page=1` },
+  ];
+  for (const item of urls) {
+    try {
+      const response = await fetch(item.url, { cache: "no-store" });
+      if (!response.ok) continue;
+      const price = stockPriceFromPayload(await response.json());
+      if (price) return { price, source: item.source };
+    } catch {
+      // Try the next public source when one endpoint is blocked or unavailable.
+    }
+  }
+  throw new Error("Không lấy được giá cổ phiếu");
+}
+
+async function fetchSolMarket(fallback: Market) {
+  const [solResponse, rateResponse] = await Promise.all([
+    fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", { cache: "no-store" }),
+    fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" }),
+  ]);
+  const solJson = await solResponse.json();
+  const rateJson = await rateResponse.json();
+  const solUsd = Number(solJson?.solana?.usd) || fallback.solUsd;
+  const usdVnd = Number(rateJson?.rates?.VND) || fallback.usdVnd;
+  if (!solUsd || !usdVnd) throw new Error("Không lấy được giá SOL");
+  return { solUsd, usdVnd, updatedAt: new Date().toISOString() };
 }
 
 function stockMarketPrice(state: AppState, symbol: string) {
@@ -544,6 +598,31 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
     pnlPercent: totalCost ? (pnl / totalCost) * 100 : 0,
     holdings: rows,
   };
+}
+
+async function refreshStockMarketPrices(
+  symbols: string[],
+  setState: React.Dispatch<React.SetStateAction<AppState>>
+) {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+  if (!uniqueSymbols.length) return { updated: 0, total: 0 };
+  const results = await Promise.allSettled(
+    uniqueSymbols.map(async (symbol) => ({ symbol, ...(await fetchStockQuote(symbol)) }))
+  );
+  const now = new Date().toISOString();
+  const updates = results
+    .filter((result): result is PromiseFulfilledResult<{ symbol: string; price: number; source: string }> => result.status === "fulfilled")
+    .map((result) => ({ symbol: result.value.symbol, price: result.value.price, updatedAt: now, source: result.value.source }));
+  if (updates.length) {
+    setState((prev) => ({
+      ...prev,
+      stockMarketPrices: [
+        ...prev.stockMarketPrices.filter((item) => !updates.some((update) => update.symbol === item.symbol)),
+        ...updates,
+      ],
+    }));
+  }
+  return { updated: updates.length, total: uniqueSymbols.length };
 }
 
 function pendingSolDepositTotal(state: AppState, fund: DepositFund) {
@@ -860,9 +939,9 @@ function AppNav({
 }) {
   const items: Array<{ id: Page; label: string; icon: JSX.Element }> = [
     { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} /> },
-    { id: "accumulation", label: "Tích lũy", icon: <PiggyBank size={18} /> },
-    { id: "investment", label: "Tài sản", icon: <LineChart size={18} /> },
     { id: "reports", label: "Báo cáo", icon: <BarChart3 size={18} /> },
+    { id: "investment", label: "Tài sản", icon: <LineChart size={18} /> },
+    { id: "accumulation", label: "Tích lũy", icon: <PiggyBank size={18} /> },
   ];
 
   return (
@@ -891,6 +970,38 @@ function AppNav({
   );
 }
 
+function PinKeypad({
+  disabled,
+  onDigit,
+  onBackspace,
+  onClear,
+}: {
+  disabled: boolean;
+  onDigit: (digit: string) => void;
+  onBackspace: () => void;
+  onClear: () => void;
+}) {
+  const digits = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  return (
+    <div className="pin-keypad" aria-label="Bàn phím PIN">
+      {digits.map((digit) => (
+        <button key={digit} type="button" disabled={disabled} onClick={() => onDigit(digit)}>
+          {digit}
+        </button>
+      ))}
+      <button className="pin-keypad-action" type="button" disabled={disabled} onClick={onClear} aria-label="Xóa toàn bộ PIN">
+        <X size={18} />
+      </button>
+      <button type="button" disabled={disabled} onClick={() => onDigit("0")}>
+        0
+      </button>
+      <button className="pin-keypad-action" type="button" disabled={disabled} onClick={onBackspace} aria-label="Xóa một số">
+        <ChevronLeft size={20} />
+      </button>
+    </div>
+  );
+}
+
 function PinGate({
   state,
   setState,
@@ -903,15 +1014,13 @@ function PinGate({
   onUnlock: (pin: string) => Promise<string | null>;
 }) {
   const [pin, setPin] = useState("");
-  const pinInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const isSetup = !state.settings.hasPin;
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => pinInputRef.current?.focus(), 250);
-    return () => window.clearTimeout(timer);
-  }, []);
+  const addDigit = (digit: string) => {
+    setError("");
+    setPin((current) => `${current}${digit}`.slice(0, 12));
+  };
 
   const submit = async () => {
     if (pin.length < 4) {
@@ -944,22 +1053,18 @@ function PinGate({
         <h1>Nhập mã PIN</h1>
         <p>Mở dữ liệu tài khoản của bạn. Tạo hoặc đổi PIN tại /admin.</p>
         <input
-          ref={pinInputRef}
-          className="pin-input"
-          inputMode="numeric"
-          type="tel"
-          pattern="[0-9]*"
-          autoComplete="one-time-code"
-          enterKeyHint="done"
-          value={pin}
-          onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+          className="pin-display"
+          type="text"
+          value={pin ? "•".repeat(pin.length) : ""}
           placeholder="Nhập PIN"
-          onPointerDown={(event) => {
-            window.setTimeout(() => event.currentTarget.focus(), 0);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") submit();
-          }}
+          readOnly
+          aria-label="PIN đã nhập"
+        />
+        <PinKeypad
+          disabled={loading}
+          onDigit={addDigit}
+          onBackspace={() => setPin((current) => current.slice(0, -1))}
+          onClear={() => setPin("")}
         />
         {error && <span className="form-error">{error}</span>}
         <button className="primary full" disabled={loading} onClick={submit}>
@@ -1085,10 +1190,9 @@ function DashboardPage({
 
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-header dashboard-page-header">
         <div>
-          <p className="eyebrow">Dashboard</p>
-          <h1>Tháng {formatMonth(month)}</h1>
+          <p className="dashboard-month-title">Tháng {formatMonth(month)}</p>
         </div>
         <MonthPicker month={month} setMonth={setMonth} />
       </header>
@@ -1489,10 +1593,9 @@ function UnifiedDashboardPage({
 
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-header dashboard-page-header">
         <div>
-          <p className="eyebrow">Dashboard</p>
-          <h1>Tháng {formatMonth(month)}</h1>
+          <p className="dashboard-month-title">Tháng {formatMonth(month)}</p>
         </div>
         <MonthPicker month={month} setMonth={setMonth} />
       </header>
@@ -1500,7 +1603,7 @@ function UnifiedDashboardPage({
       <section className="metrics-grid">
         <MetricCard label="Thu nhập" value={formatVnd(summary.income)} icon={<BadgeDollarSign size={20} />} />
         <MetricCard label="Chi tiêu" value={formatVnd(summary.expense)} icon={<ArrowDownCircle size={20} />} />
-        <MetricCard label="Tiết kiệm tháng" value={formatVnd(summary.saving)} icon={<PiggyBank size={20} />} tone="highlight" />
+        <MetricCard label="Tiết kiệm" value={formatVnd(summary.saving)} icon={<PiggyBank size={20} />} tone="highlight" />
       </section>
 
       <section className="two-column">
@@ -1560,13 +1663,13 @@ function UnifiedDashboardPage({
                 </div>
               ))}
             </div>
-            <div className="deposit-confirm">
+            <div className="deposit-confirm allocation-confirm-row">
               <label>
                 Tháng chia quỹ
                 <input type="month" value={depositForm.month} onChange={(event) => setDepositForm({ ...depositForm, month: event.target.value })} />
               </label>
               <button className="primary" onClick={() => setConfirmOpen(true)} disabled={percentTotal !== 100 || summary.saving <= 0 || monthAlreadyConfirmed}>
-                <CheckCircle2 size={17} /> Xác nhận chia quỹ
+                <CheckCircle2 size={17} /> Chia quỹ
               </button>
               {monthAlreadyConfirmed && <small className="ok">Tháng này đã xác nhận chia quỹ.</small>}
             </div>
@@ -1693,7 +1796,7 @@ function UnifiedDashboardPage({
               <button className="icon-button" title="Đóng" onClick={() => setEditingFixed(null)}><X size={17} /></button>
             </div>
             <label>Số tiền tháng này<input value={editingFixed.amount} onChange={(event) => setEditingFixed({ ...editingFixed, amount: event.target.value })} /></label>
-            <div className="modal-actions">
+            <div className="modal-actions fixed-edit-actions">
               <button className="ghost" onClick={() => setEditingFixed(null)}>Hủy</button>
               <button className="primary" onClick={saveFixedAmount}><Save size={17} /> Lưu</button>
             </div>
@@ -2061,7 +2164,7 @@ function AccumulationPage({
       <header className="page-header">
         <div>
           <p className="eyebrow">Kế hoạch chi cố định</p>
-          <h1>{showHistory ? "Lịch sử tích lũy" : "Tích lũy"}</h1>
+            <h1>{showHistory}</h1>
         </div>
         <div className="page-header-actions">
           <button className="ghost" onClick={() => {
@@ -2805,7 +2908,7 @@ function MoneyPage({
             </div>
           ))}
         </div>
-        <div className="deposit-confirm">
+        <div className="deposit-confirm allocation-confirm-row">
           <label>
               Tháng chia quỹ
               <input type="month" value={depositForm.month} onChange={(event) => setDepositForm({ ...depositForm, month: event.target.value })} />
@@ -2815,7 +2918,7 @@ function MoneyPage({
             onClick={() => setConfirmOpen(true)}
             disabled={percentTotal !== 100 || summary.saving <= 0 || monthAlreadyConfirmed}
           >
-            <CheckCircle2 size={17} /> Xác nhận chia quỹ
+            <CheckCircle2 size={17} /> Chia quỹ
           </button>
           {monthAlreadyConfirmed && <small className="ok">Tháng này đã xác nhận chia quỹ.</small>}
         </div>
@@ -2945,8 +3048,7 @@ function FundPage({
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Quỹ VND</p>
-          <h1>Quỹ {label}</h1>
+          <p className="eyebrow">Quỹ {label}</p>
         </div>
       </header>
       <section className="metrics-grid single">
@@ -2991,7 +3093,6 @@ function StockPage({
   embedded?: boolean;
 }) {
   const stats = stockPortfolioStats(state);
-  const stockHoldingSymbols = stats.holdings.map((item) => item.symbol).join("|");
   const defaultBuyRows = (): StockBuyRow[] => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }];
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseDate, setPurchaseDate] = useState(today());
@@ -3051,26 +3152,7 @@ function StockPage({
     shares: autoShares(row.percent, row.buyPrice),
   });
 
-  const fetchPrice = async (symbol: string) => {
-    const normalized = symbol.trim().toUpperCase();
-    const urls = [
-      { source: "VPS", url: `https://bgapidatafeed.vps.com.vn/getliststockdata/${encodeURIComponent(normalized)}` },
-      { source: "VNDIRECT", url: `https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&q=code:${encodeURIComponent(normalized)}&size=1&page=1` },
-      { source: "VPS", url: `/market-api/vps/getliststockdata/${encodeURIComponent(normalized)}` },
-      { source: "VNDIRECT", url: `/market-api/vndirect/v4/stock_prices?sort=date:desc&q=code:${encodeURIComponent(normalized)}&size=1&page=1` },
-    ];
-    for (const item of urls) {
-      try {
-        const response = await fetch(item.url, { cache: "no-store" });
-        if (!response.ok) continue;
-        const price = stockPriceFromPayload(await response.json());
-        if (price) return { price, source: item.source };
-      } catch {
-        // Try the next public source when one endpoint is blocked or unavailable.
-      }
-    }
-    throw new Error("Không lấy được giá cổ phiếu");
-  };
+  const fetchPrice = fetchStockQuote;
 
   const extractStockSuggestions = (payload: unknown, fallbackSymbol: string) => {
     const root = payload as { data?: unknown; symbol?: string; code?: string; ticker?: string; companyName?: string; shortName?: string; floor?: string; exchange?: string };
@@ -3354,53 +3436,23 @@ function StockPage({
     const symbols = stats.holdings.map((item) => item.symbol);
     if (!symbols.length) return;
     if (!silent) setRefreshStatus("Đang cập nhật giá...");
-    const results = await Promise.allSettled(symbols.map(async (symbol) => ({ symbol, ...(await fetchPrice(symbol)) })));
-    const now = new Date().toISOString();
-    const updates = results
-      .filter((result): result is PromiseFulfilledResult<{ symbol: string; price: number; source: string }> => result.status === "fulfilled")
-      .map((result) => ({ symbol: result.value.symbol, price: result.value.price, updatedAt: now, source: result.value.source }));
-    if (updates.length) {
-      setState((prev) => ({
-        ...prev,
-        stockMarketPrices: [
-          ...prev.stockMarketPrices.filter((item) => !updates.some((update) => update.symbol === item.symbol)),
-          ...updates,
-        ],
-      }));
-    }
+    const { updated, total } = await refreshStockMarketPrices(symbols, setState);
     setRefreshStatus(
       silent
-        ? updates.length
+        ? updated
           ? `Tự động cập nhật lúc ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`
           : ""
-        : updates.length === symbols.length
-          ? "Đã cập nhật giá."
-          : `Cập nhật được ${updates.length}/${symbols.length} mã. Có thể nhập tay mã lỗi.`
+        : updated === total
+          ? ""
+          : `Cập nhật được ${updated}/${total} mã. Có thể nhập tay mã lỗi.`
     );
   };
-
-  useEffect(() => {
-    if (!stats.holdings.length) return;
-    const maybeRefreshPrices = () => {
-      if (!isVietnamStockTradingSession()) return;
-      const hasStalePrice = stats.holdings.some((holding) => {
-        if (!holding.updatedAt) return true;
-        const updatedAt = new Date(holding.updatedAt).getTime();
-        return !Number.isFinite(updatedAt) || Date.now() - updatedAt >= STOCK_PRICE_REFRESH_MS;
-      });
-      if (hasStalePrice) void refreshPrices(true);
-    };
-    maybeRefreshPrices();
-    const timer = window.setInterval(maybeRefreshPrices, STOCK_PRICE_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [stockHoldingSymbols]);
 
   const content = (
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Chứng khoán Việt Nam</p>
-          <h1>Danh mục CK</h1>
+          <p className="eyebrow">Chứng khoán</p>
         </div>
       </header>
       {latestStockAllocationNotice && (
@@ -3418,10 +3470,15 @@ function StockPage({
         <MetricCard label="Tổng vốn" value={formatVnd(stockAllocatedCapital)} icon={<BadgeDollarSign size={20} />} />
         <MetricCard label="Tổng tài sản CK" value={formatVnd(stats.totalValue)} icon={<LineChart size={20} />} tone="highlight" />
         <MetricCard label="Lãi/lỗ" value={`${formatVnd(stats.pnl)} · ${stats.pnlPercent.toFixed(1)}%`} icon={<BarChart3 size={20} />} tone={stats.pnl < 0 ? "loss" : undefined} />
+        <div className="stock-cash-mobile">
+          <MetricCard label="Tiền dư" value={formatVnd(stats.cash)} icon={<CircleDollarSign size={20} />} />
+        </div>
       </section>
-      <section className="stock-action-grid">
-        <MetricCard label="Tiền dư" value={formatVnd(stats.cash)} icon={<CircleDollarSign size={20} />} />
-        <article className="panel">
+      <section className="stock-action-grid stock-mobile-compact">
+        <div className="stock-cash-desktop">
+          <MetricCard label="Tiền dư" value={formatVnd(stats.cash)} icon={<CircleDollarSign size={20} />} />
+        </div>
+        <article className="panel stock-buy-panel">
           <div className="panel-title">
             <h2>Mua cổ phiếu</h2>
             {purchaseFormOpen && <button className="ghost" onClick={() => {
@@ -3505,7 +3562,7 @@ function StockPage({
                 <button className="ghost" onClick={addBuyRow} type="button"><Plus size={17} /> Thêm cổ phiếu</button>
                 <button className="primary" onClick={savePurchase} type="button"><Save size={17} /> Lưu lệnh mua</button>
               </div>
-              <div className="form-grid">
+              <div className="form-grid stock-buy-meta-grid">
                 <label>
                   Ngày mua
                   <input type="date" value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} />
@@ -3634,11 +3691,15 @@ function InvestmentPage({
   setState,
   activeTab,
   setActiveTab,
+  onRefreshMarket,
+  marketStatus,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   activeTab: InvestmentTab;
   setActiveTab: (tab: InvestmentTab) => void;
+  onRefreshMarket: (silent?: boolean) => Promise<boolean>;
+  marketStatus: string;
 }) {
   const tabs: Array<{ id: InvestmentTab; label: string }> = [
     { id: "btc", label: "BTC" },
@@ -3651,8 +3712,6 @@ function InvestmentPage({
     <div className="page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Portfolio</p>
-          <h1>Tài sản</h1>
         </div>
       </header>
       <div className="deposit-tabs investment-tabs" role="tablist" aria-label="Chọn danh mục tài sản">
@@ -3672,7 +3731,7 @@ function InvestmentPage({
       {activeTab === "btc" && <FundPage state={state} setState={setState} fund="btc" embedded />}
       {activeTab === "stock" && <StockPage state={state} setState={setState} embedded />}
       {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} embedded fixedFilter="all" />}
-      {activeTab === "sol" && <SolPage state={state} setState={setState} embedded />}
+      {activeTab === "sol" && <SolPage state={state} setState={setState} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} embedded />}
     </div>
   );
 }
@@ -4130,6 +4189,7 @@ function BankDepositPage({
           const due = daysUntil(item.maturityDate);
           const matured = due <= 0 && item.status === "active";
           const interest = interestFor(item);
+          const progress = depositProgress(item);
           return (
             <article className={`deposit-card ${due <= 7 && item.status === "active" ? "danger" : due <= 30 && item.status === "active" ? "warning" : ""}`} key={item.id}>
               <button className="deposit-delete-button" onClick={() => deleteDeposit(item)} title={`Xóa sổ ${item.code}`} type="button" aria-label={`Xóa sổ ${item.code}`}>
@@ -4168,6 +4228,19 @@ function BankDepositPage({
                 <span>Lãi {item.rate}%/năm</span>
                 <span>Lãi cuối kỳ {formatVnd(interest)}</span>
                 {item.status === "early-settled" && item.settledAt && <span>Tất toán trước hạn {formatDate(item.settledAt)}</span>}
+              </div>
+              <div className="progress-track deposit-progress-track" aria-label={`Tiến độ sổ ${item.code}: ${progress.progressPercent.toFixed(0)}%`}>
+                <span style={{ width: `${progress.progressPercent}%` }} />
+              </div>
+              <div className="deposit-progress-summary">
+                <span>
+                  Còn lại
+                  <strong>{progress.remainingDays.toLocaleString("vi-VN")} ngày</strong>
+                </span>
+                <span>
+                  Tiền lãi
+                  <strong>{formatVnd(progress.accruedInterest)}</strong>
+                </span>
               </div>
               {item.parentId && <p className="muted">Tạo mới từ sổ trước.</p>}
               {item.childId && <p className="muted">Đã tạo sổ mới từ sổ này.</p>}
@@ -4220,10 +4293,14 @@ function statusLabel(status: DepositStatus) {
 function SolPage({
   state,
   setState,
+  onRefreshMarket,
+  marketStatus,
   embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  onRefreshMarket: (silent?: boolean) => Promise<boolean>;
+  marketStatus: string;
   embedded?: boolean;
 }) {
   type SolFormMode = "buy" | "withdraw";
@@ -4369,8 +4446,7 @@ function SolPage({
     <>
       <header className="page-header">
         <div>
-          <p className="eyebrow">Coin portfolio</p>
-          <h1>Tích lũy SOL</h1>
+          <p className="eyebrow">SOL</p>
         </div>
       </header>
       <section className="metrics-grid">
@@ -4388,8 +4464,11 @@ function SolPage({
         <article className="panel">
           <div className="panel-title">
             <h2>Giá thị trường</h2>
-            <small>{state.market.updatedAt ? formatDate(state.market.updatedAt.slice(0, 10)) : "Chưa cập nhật"}</small>
+            <button className="ghost" onClick={() => onRefreshMarket()} type="button">
+              <RefreshCw size={17} /> Cập nhật giá
+            </button>
           </div>
+          <small className="market-status">{marketStatus || (state.market.updatedAt ? `Cập nhật ${formatDateTime(state.market.updatedAt)}` : "Chưa cập nhật")}</small>
           <div className="market-grid">
             <div>
               <small>SOL</small>
@@ -4446,7 +4525,7 @@ function SolPage({
             </>
           ) : (
             <>
-              <div className="form-grid">
+              <div className="form-grid sol-withdraw-grid">
                 <label>
                   Số SOL rút
                   <input value={withdrawForm.sol} onChange={(event) => updateWithdrawSol(event.target.value)} placeholder="0.25" />
@@ -4470,12 +4549,12 @@ function SolPage({
                   </select>
                 </label>
                 <label>
-                  Ngày
-                  <input type="date" value={withdrawForm.date} onChange={(event) => setWithdrawForm({ ...withdrawForm, date: event.target.value })} />
-                </label>
-                <label>
                   Note
                   <input value={withdrawForm.note} onChange={(event) => setWithdrawForm({ ...withdrawForm, note: event.target.value })} placeholder="Rút từ SOL" />
+                </label>
+                <label>
+                  Ngày
+                  <input type="date" value={withdrawForm.date} onChange={(event) => setWithdrawForm({ ...withdrawForm, date: event.target.value })} />
                 </label>
               </div>
               {withdrawError && <span className="form-error">{withdrawError}</span>}
@@ -4519,7 +4598,15 @@ function SolPage({
   return <div className="page">{content}</div>;
 }
 
-function ReportsPage({ state }: { state: AppState }) {
+function ReportsPage({
+  state,
+  setState,
+  onRefreshMarket,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  onRefreshMarket: (silent?: boolean) => Promise<boolean>;
+}) {
   const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
   const months = useMemo(() => {
     const allMonths = new Set<string>();
@@ -4574,6 +4661,14 @@ function ReportsPage({ state }: { state: AppState }) {
     { id: "emergency" as const, label: "Quỹ dự phòng", value: emergency },
   ];
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
+
+  const refreshReportPrices = async () => {
+    const symbols = stockPortfolioStats(state).holdings.map((item) => item.symbol);
+    await Promise.all([
+      refreshStockMarketPrices(symbols, setState),
+      onRefreshMarket(true),
+    ]);
+  };
 
   const fundBalanceAtMonth = (fund: FundKey, month: string) =>
     state.fundTransactions
@@ -4676,33 +4771,36 @@ function ReportsPage({ state }: { state: AppState }) {
 
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-header report-page-header">
         <div>
-          <p className="eyebrow">Báo cáo</p>
-          <h1>Tổng tài sản</h1>
+          <p className="eyebrow">Tổng tài sản</p>
+        </div>
+        <div className="page-header-actions">
+          <button className="ghost report-refresh-button" onClick={refreshReportPrices} type="button" aria-label="Cập nhật giá">
+            <RefreshCw size={17} />
+          </button>
         </div>
       </header>
       <section className="metrics-grid report-metrics">
         <MetricCard
-          label="Tổng tài sản hiện tại"
+          label="Tài sản"
           value={formatVnd(totalAssets)}
           icon={<PiggyBank size={20} />}
           tone={activeReportChart === "current-assets" ? "highlight" : undefined}
           onClick={() => setActiveReportChart("current-assets")}
         />
         <MetricCard
-          label="Tổng số tiền tích lũy"
+          label="Tích lũy"
           value={formatVnd(netAccumulationTotal)}
           icon={<BadgeDollarSign size={20} />}
           tone={activeReportChart === "net-accumulation" ? "highlight" : undefined}
           onClick={() => setActiveReportChart("net-accumulation")}
         />
-        <MetricCard label="SOL quy đổi" value={formatVnd(solVnd)} percent={assetPercent(solVnd)} icon={<Coins size={20} />} />
+        <MetricCard label="SOL" value={formatVnd(solVnd)} percent={assetPercent(solVnd)} icon={<Coins size={20} />} />
       </section>
       <section className="panel">
         <div className="panel-title">
-          <h2>Tăng trưởng {reportChartLabels[activeReportChart]}</h2>
-          <small>{activeReportChart === "current-assets" ? "Rê chuột để xem từng quỹ trong tháng" : "Rê chuột để xem giá trị và số tiền rút trong tháng"}</small>
+          <h2>{reportChartLabels[activeReportChart]}</h2>
         </div>
         <ResponsiveContainer width="100%" height={260}>
           <AreaChart data={reportRows}>
@@ -5131,11 +5229,16 @@ export function App() {
   const [month, setMonth] = useState(currentMonth);
   const [activePin, setActivePin] = useState("");
   const [cloudStatus, setCloudStatus] = useState("");
+  const [marketStatus, setMarketStatus] = useState("");
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
   const cloudConfigured = isCloudSyncConfigured();
   const cloudAccountKey = activePin ? cloudAccountKeyForPin(activePin) : "";
   const stateForCloud = (): AppState => (activePin ? stateForAccountPin(state, activePin) : state);
+  const autoStockSymbols = useMemo(
+    () => stockPortfolioStats(state).holdings.map((item) => item.symbol).join("|"),
+    [state.stockPurchases, state.stockSales]
+  );
   const navigateToPage = (nextPage: Page) => {
     if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("btc");
     setPage(nextPage);
@@ -5227,39 +5330,56 @@ export function App() {
     }
   };
 
+  const refreshMarket = async (silent = false) => {
+    if (!silent) setMarketStatus("Đang cập nhật giá SOL...");
+    try {
+      const market = await fetchSolMarket(state.market);
+      setState((prev) => ({ ...prev, market }));
+      const time = new Date(market.updatedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      setMarketStatus(silent ? `Tự động cập nhật SOL lúc ${time}.` : `Đã cập nhật giá SOL lúc ${time}.`);
+      return true;
+    } catch {
+      if (!silent) setMarketStatus("Không cập nhật được giá SOL.");
+      return false;
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
-    async function loadMarket() {
+    async function loadMarket(silent = true) {
       try {
-        const [solResponse, rateResponse] = await Promise.all([
-          fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"),
-          fetch("https://open.er-api.com/v6/latest/USD"),
-        ]);
-        const solJson = await solResponse.json();
-        const rateJson = await rateResponse.json();
-        const solUsd = Number(solJson?.solana?.usd) || state.market.solUsd;
-        const usdVnd = Number(rateJson?.rates?.VND) || state.market.usdVnd;
-        if (!cancelled && solUsd && usdVnd) {
+        const market = await fetchSolMarket(state.market);
+        if (!cancelled) {
           setState((prev) => ({
             ...prev,
-            market: {
-              solUsd,
-              usdVnd,
-              updatedAt: new Date().toISOString(),
-            },
+            market,
           }));
+          const time = new Date(market.updatedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          setMarketStatus(silent ? `Tự động cập nhật SOL lúc ${time}.` : `Đã cập nhật giá SOL lúc ${time}.`);
         }
       } catch {
         // Keep the latest saved price when the network or API is unavailable.
       }
     }
     loadMarket();
-    const timer = window.setInterval(loadMarket, 300_000);
+    const timer = window.setInterval(loadMarket, MARKET_PRICE_REFRESH_MS);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!unlocked || !autoStockSymbols) return;
+    const symbols = autoStockSymbols.split("|").filter(Boolean);
+    const refreshStocks = () => {
+      if (document.visibilityState === "hidden" || !isVietnamStockTradingSession()) return;
+      void refreshStockMarketPrices(symbols, setState);
+    };
+    refreshStocks();
+    const timer = window.setInterval(refreshStocks, MARKET_PRICE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [unlocked, autoStockSymbols]);
 
   useEffect(() => {
     if (!cloudConfigured || !cloudAccountKey || !cloudLoaded.current) return;
@@ -5292,8 +5412,8 @@ export function App() {
       <main className="content">
         {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} />}
         {page === "accumulation" && <AccumulationPage state={state} setState={setState} />}
-        {page === "investment" && <InvestmentPage state={state} setState={setState} activeTab={assetTab} setActiveTab={setAssetTab} />}
-        {page === "reports" && <ReportsPage state={state} />}
+        {page === "investment" && <InvestmentPage state={state} setState={setState} activeTab={assetTab} setActiveTab={setAssetTab} onRefreshMarket={refreshMarket} marketStatus={marketStatus} />}
+        {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} />}
       </main>
     </div>
   );

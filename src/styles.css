@@ -173,11 +173,25 @@ label strong {
   letter-spacing: 0;
 }
 
+.dashboard-month-title {
+  margin: 0;
+  color: #f97316;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .page-header-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.report-refresh-button {
+  width: 42px;
+  padding: 0;
 }
 
 .eyebrow {
@@ -850,6 +864,10 @@ label strong {
   margin-bottom: 12px;
 }
 
+.stock-cash-mobile {
+  display: none;
+}
+
 .stock-buy-row {
   display: grid;
   grid-template-columns: 1.15fr 0.55fr 0.8fr 0.9fr 1fr 34px;
@@ -1259,6 +1277,32 @@ label strong {
   font-size: 0.84rem;
 }
 
+.deposit-progress-track {
+  margin: 10px 0 12px;
+}
+
+.deposit-progress-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.deposit-progress-summary span {
+  display: grid;
+  gap: 5px;
+  border-radius: 8px;
+  background: #14110f;
+  color: #a59b91;
+  padding: 12px;
+  font-size: 0.8rem;
+}
+
+.deposit-progress-summary strong {
+  color: #fff7ed;
+  font-size: 0.98rem;
+}
+
 .card-actions {
   display: flex;
   align-items: center;
@@ -1356,6 +1400,11 @@ label strong {
   gap: 10px;
 }
 
+.market-status {
+  display: block;
+  margin: -6px 0 12px;
+}
+
 .market-grid div {
   border-radius: 8px;
   background: #14110f;
@@ -1437,11 +1486,47 @@ label strong {
   letter-spacing: 0.2rem;
 }
 
+.pin-card .pin-display {
+  pointer-events: none;
+}
+
 input.pin-input {
   -webkit-text-security: disc;
   caret-color: #f97316;
   touch-action: manipulation;
   user-select: text;
+}
+
+.pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.pin-keypad button {
+  min-height: 52px;
+  border: 1px solid #2f2924;
+  border-radius: 8px;
+  background: #14110f;
+  color: #fff7ed;
+  font-size: 1.25rem;
+  font-weight: 900;
+}
+
+.pin-keypad button:hover {
+  border-color: rgba(249, 115, 22, 0.58);
+  background: #211b16;
+}
+
+.pin-keypad button:active {
+  transform: translateY(1px);
+}
+
+.pin-keypad .pin-keypad-action {
+  display: grid;
+  place-items: center;
+  color: #f97316;
 }
 
 .pin-icon {
@@ -1602,6 +1687,106 @@ input.pin-input {
     flex: 1;
   }
 
+  .report-page-header {
+    align-items: center;
+    flex-direction: row;
+    gap: 10px;
+  }
+
+  .report-page-header .page-header-actions {
+    flex: 0 0 auto;
+  }
+
+  .report-page-header .page-header-actions button {
+    flex: 0 0 38px;
+  }
+
+  .report-refresh-button {
+    width: 38px;
+    min-height: 36px;
+  }
+
+  .dashboard-page-header {
+    align-items: center;
+    flex-direction: row;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .dashboard-page-header > div {
+    min-width: 0;
+  }
+
+  .dashboard-month-title {
+    font-size: 0.74rem;
+    white-space: nowrap;
+  }
+
+  .dashboard-page-header .month-picker {
+    flex: 0 0 auto;
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .dashboard-page-header .month-picker strong {
+    min-width: 92px;
+    padding: 0 2px;
+    font-size: 0.86rem;
+  }
+
+  .dashboard-page-header .month-picker-input {
+    width: 96px;
+    height: 32px;
+  }
+
+  .dashboard-page-header .month-picker button {
+    width: 32px;
+    height: 32px;
+  }
+
+  .metrics-grid,
+  .metrics-grid.report-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .allocation-grid,
+  .asset-grid,
+  .market-grid,
+  .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .metric {
+    min-height: 72px;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .metric > span {
+    width: 30px;
+    height: 30px;
+  }
+
+  .metric strong {
+    font-size: 0.92rem;
+    line-height: 1.12;
+  }
+
+  .metric em,
+  .metric small {
+    font-size: 0.68rem;
+  }
+
+  .fund-chip {
+    padding: 12px;
+  }
+
+  .fund-chip strong {
+    font-size: 0.98rem;
+  }
+
   .month-picker {
     justify-content: space-between;
   }
@@ -1627,10 +1812,106 @@ input.pin-input {
     flex: 1;
   }
 
-  .stock-buy-row,
-  .stock-holding-grid,
+  .deposit-confirm {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .deposit-confirm > .primary,
+  .deposit-fund-field,
+  .deposit-source-hint {
+    grid-column: 1 / -1;
+  }
+
+  .deposit-confirm > label:has(input[type="month"]) {
+    grid-column: span 1;
+  }
+
+  .deposit-confirm > label:has(input[type="month"]) + .primary {
+    grid-column: span 1;
+  }
+
+  .deposit-confirm > label:last-of-type {
+    grid-column: 1 / -1;
+  }
+
+  .deposit-card {
+    padding: 14px;
+  }
+
+  .deposit-head {
+    gap: 8px;
+  }
+
+  .deposit-head h3 {
+    font-size: 1.28rem;
+  }
+
+  .deposit-meta {
+    gap: 7px;
+    margin: 10px 0;
+    font-size: 0.82rem;
+  }
+
+  .deposit-progress-track {
+    margin: 8px 0 10px;
+  }
+
+  .deposit-progress-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .deposit-progress-summary span {
+    padding: 10px;
+    font-size: 0.76rem;
+  }
+
+  .deposit-progress-summary strong {
+    font-size: 0.92rem;
+  }
+
+  .stock-buy-row {
+    grid-template-columns: minmax(0, 1fr) 70px minmax(0, 1fr) 30px;
+    gap: 8px;
+  }
+
+  .stock-buy-row label:nth-child(4),
+  .stock-row-value {
+    grid-column: span 2;
+  }
+
+  .stock-buy-row label,
+  .stock-buy-row input {
+    min-width: 0;
+  }
+
+  .stock-buy-row label,
+  .stock-row-value span {
+    font-size: 0.72rem;
+  }
+
+  .stock-row-value {
+    min-height: 38px;
+    padding-bottom: 5px;
+  }
+
+  .stock-row-value strong {
+    font-size: 0.84rem;
+  }
+
+  .stock-holding-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
   .stock-sale-form {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stock-sale-actions {
+    grid-column: 1 / -1;
   }
 
   .stock-holding-card {
@@ -1644,33 +1925,110 @@ input.pin-input {
 
   .stock-price-pair > div {
     justify-content: flex-start;
+    gap: 6px;
   }
 
   .stock-price-pair input {
-    width: 112px;
+    width: 72px;
+    height: 34px;
+    padding: 0 8px;
   }
 
-  .stock-form-actions,
-  .stock-sale-actions {
+  .stock-price-pair strong {
+    min-width: 0;
+    padding: 7px 8px;
+    font-size: 0.9rem;
+  }
+
+  .stock-value-pair strong,
+  .stock-value-pair b {
+    font-size: 0.84rem;
+  }
+
+  .stock-holding-grid span,
+  .stock-holding-grid label {
+    font-size: 0.76rem;
+  }
+
+  .stock-form-actions {
     align-items: stretch;
-    flex-direction: column;
+    flex-direction: row;
   }
 
-  .metrics-grid,
-  .metrics-grid.report-metrics,
   .two-column,
-  .stock-action-grid,
-  .allocation-grid,
-  .asset-grid,
   .allocation-editor,
-  .deposit-confirm,
-  .deposit-meta,
-  .market-grid {
+  .deposit-meta {
     grid-template-columns: 1fr;
   }
 
-  .form-grid {
+  .form-grid label:only-child,
+  .form-grid .form-error,
+  .form-grid + .form-error,
+  .form-grid label:has(input[placeholder*="Note"]),
+  .form-grid label:has(input[placeholder*="Rút"]),
+  .form-grid label:has(input[placeholder*="Mua"]),
+  .form-grid label:nth-last-child(1):nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .stock-action-grid {
     grid-template-columns: 1fr;
+  }
+
+  .stock-mobile-compact {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .stock-cash-desktop {
+    display: none;
+  }
+
+  .stock-cash-mobile {
+    display: contents;
+  }
+
+  .stock-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-bottom: 12px;
+  }
+
+  .stock-confirm-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 10px 0;
+  }
+
+  .stock-form-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stock-form-actions .ghost,
+  .stock-form-actions .primary {
+    width: 100%;
+    padding-inline: 8px;
+    white-space: nowrap;
+  }
+
+  .stock-buy-panel {
+    margin-bottom: 12px;
+  }
+
+  .stock-action-grid > .panel {
+    min-width: 0;
+  }
+
+  .allocation-field {
+    grid-template-columns: minmax(72px, 0.7fr) minmax(54px, 0.45fr) minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .allocation-field span {
+    min-height: 0;
+  }
+
+  .allocation-field input {
+    min-height: 38px;
   }
 
   .inline-add,
@@ -1697,8 +2055,134 @@ input.pin-input {
     flex-direction: column;
   }
 
+  .fixed-edit-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .fixed-edit-actions .ghost,
+  .fixed-edit-actions .primary {
+    width: 100%;
+  }
+
   .confirm-summary {
     grid-template-columns: 1fr;
+  }
+
+  .stock-confirm-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stock-buy-meta-grid label:has(input[placeholder*="Mua"]),
+  .sol-withdraw-grid label:has(input[placeholder*="Rút"]) {
+    grid-column: auto;
+  }
+
+  .metric {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    align-content: center;
+    align-items: center;
+    column-gap: 7px;
+    row-gap: 4px;
+    min-height: 70px;
+    padding: 8px;
+  }
+
+  .metric > span {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .metric > div {
+    display: contents;
+  }
+
+  .metric small {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    line-height: 1.15;
+    overflow-wrap: anywhere;
+  }
+
+  .metric small b {
+    display: inline;
+  }
+
+  .metric strong {
+    grid-column: 1 / -1;
+    margin-top: 0;
+    font-size: 0.86rem;
+    line-height: 1.12;
+    overflow-wrap: anywhere;
+  }
+
+  .metric em {
+    grid-column: 1 / -1;
+    margin-top: -1px;
+  }
+
+  .accumulation-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .accumulation-form > label,
+  .accumulation-form > label:last-of-type {
+    grid-column: auto;
+    min-width: 0;
+  }
+
+  .accumulation-form > .primary,
+  .accumulation-computed,
+  .accumulation-form-error {
+    grid-column: 1 / -1;
+  }
+
+  .accumulation-form input[type="month"],
+  .allocation-confirm-row input[type="month"] {
+    min-width: 0;
+    padding-inline: 9px;
+    font-size: 0.82rem;
+  }
+
+  .allocation-confirm-row {
+    grid-template-columns: minmax(0, 1fr) minmax(126px, 0.72fr);
+    gap: 8px;
+  }
+
+  .allocation-confirm-row > label:has(input[type="month"]),
+  .allocation-confirm-row > label:has(input[type="month"]) + .primary {
+    grid-column: auto;
+  }
+
+  .allocation-confirm-row > label:has(input[type="month"]) + .primary {
+    min-width: 0;
+    padding-inline: 8px;
+    white-space: nowrap;
+  }
+
+  .market-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .market-grid div {
+    min-width: 0;
+    padding: 10px 8px;
+  }
+
+  .market-grid small {
+    font-size: 0.66rem;
+    line-height: 1.1;
+  }
+
+  .market-grid strong {
+    margin-top: 3px;
+    font-size: 0.78rem;
+    line-height: 1.12;
+    overflow-wrap: anywhere;
   }
 }
 
