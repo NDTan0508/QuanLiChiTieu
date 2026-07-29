@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -33,9 +33,22 @@ import {
   RefreshCw,
   Save,
   Settings,
+  Upload,
   X,
 } from "lucide-react";
-import { deleteCloudState, isCloudSyncConfigured, loadAdminPasswordHash, loadCloudState, saveCloudState } from "./cloudSync";
+import {
+  DataStatus,
+  cloudAccountIdForKey,
+  deleteCloudState,
+  deleteCloudPayloadRow,
+  isCloudSyncConfigured,
+  loadDataStatus,
+  loadAdminPasswordHash,
+  loadCloudPayloadRows,
+  loadCloudState,
+  saveCloudState,
+  upsertCloudPayloadRow,
+} from "./cloudSync";
 
 type Page =
   | "dashboard"
@@ -262,10 +275,79 @@ type SolWithdrawTransaction = {
 
 type SolTransaction = SolBuyTransaction | SolWithdrawTransaction;
 
+type BtcUsdtTopup = {
+  id: string;
+  vndAmount: number;
+  usdtAmount: number;
+  date: string;
+  note: string;
+};
+
+type BtcDcaFrequency = "daily" | "weekly" | "monthly";
+type BtcDcaStatus = "active" | "paused" | "insufficient-usdt";
+
+type BtcDcaPlan = {
+  id: string;
+  amountUsdt: number;
+  frequency: BtcDcaFrequency;
+  time: string;
+  startDate: string;
+  nextRunAt: string;
+  isActive: boolean;
+  status: BtcDcaStatus;
+  statusNote?: string;
+  lastRunAt?: string;
+  btcAmountOverride?: number;
+  averagePriceUsdtOverride?: number;
+  note: string;
+};
+
+type BtcTradeType = "dca" | "manual-buy";
+
+type BtcTrade = {
+  id: string;
+  type: BtcTradeType;
+  usdtAmount: number;
+  btcAmount: number;
+  btcPriceUsdt: number;
+  executedAt: string;
+  planId?: string;
+  note: string;
+};
+
+type BtcTransferDestination = "stock" | DepositFund | "cash";
+type BtcTransferTarget = BtcTransferDestination | "btc" | "usdt";
+
+type BtcTransfer = {
+  id: string;
+  asset: "btc" | "usdt";
+  btcAmount: number;
+  usdtAmount: number;
+  btcPriceUsdt: number;
+  vndAmount: number;
+  destination: BtcTransferTarget;
+  date: string;
+  note: string;
+};
+
+type BtcCloudLedger = {
+  topups: BtcUsdtTopup[];
+  dcaPlans: BtcDcaPlan[];
+  trades: BtcTrade[];
+  transfers: BtcTransfer[];
+};
+
 type Market = {
   solUsd: number;
+  btcUsdt: number;
+  usdtVnd: number;
   usdVnd: number;
   updatedAt: string;
+  btcSource?: string;
+  solSource?: string;
+  usdtSource?: string;
+  isFallback?: boolean;
+  lastError?: string;
 };
 
 type SettingsState = {
@@ -286,6 +368,10 @@ type AppState = {
   stockPurchases: StockPurchase[];
   stockSales: StockSale[];
   stockMarketPrices: StockMarketPrice[];
+  btcUsdtTopups: BtcUsdtTopup[];
+  btcDcaPlans: BtcDcaPlan[];
+  btcTrades: BtcTrade[];
+  btcTransfers: BtcTransfer[];
   bankDeposits: BankDeposit[];
   solTransactions: SolTransaction[];
   market: Market;
@@ -349,6 +435,12 @@ const dateOnlyTime = (dateValue: string) => new Date(`${dateValue}T00:00:00`).ge
 const daysBetween = (startDate: string, endDate: string) =>
   Math.max(Math.ceil((dateOnlyTime(endDate) - dateOnlyTime(startDate)) / 86_400_000), 0);
 
+const addDays = (dateValue: string, days: number) => {
+  const date = new Date(`${dateValue}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
 const formatDate = (value: string) => {
   const [year, month, day] = value.split("-");
   return `${day}/${month}/${year}`;
@@ -362,6 +454,15 @@ const formatDateTime = (value: string) =>
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+  });
+
+const formatShortDateTime = (value: string) =>
+  new Date(value).toLocaleString("vi-VN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
   });
 
 const formatMonth = (value: string) => {
@@ -379,18 +480,57 @@ const formatVnd = (value: number) =>
   `${Math.round(value).toLocaleString("vi-VN")}đ`;
 
 const formatUsd = (value: number) =>
-  `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT`;
+  `${value.toLocaleString("vi-VN", { maximumFractionDigits: 2 })} USDT`;
+
+const formatUsdt = (value: number) =>
+  `${value.toLocaleString("vi-VN", { maximumFractionDigits: 3 })} USDT`;
+
+const formatBtc = (value: number) =>
+  `${value.toLocaleString("vi-VN", { maximumFractionDigits: 7 })} BTC`;
 
 const formatStockPrice = (value: number) =>
   value.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
+
+const formatMoneyInput = (value: string) => {
+  const digits = value.replace(/\D/g, "");
+  return digits ? Number(digits).toLocaleString("vi-VN") : "";
+};
+
+const formatDecimalInput = (value: string) => {
+  const cleaned = value.replace(/[^\d.,]/g, "");
+  if (!cleaned) return "";
+  const decimalSeparator = (() => {
+    const comma = cleaned.lastIndexOf(",");
+    if (comma >= 0) return comma;
+    const dot = cleaned.lastIndexOf(".");
+    if (dot < 0) return -1;
+    const parts = cleaned.split(".");
+    const looksLikeThousands = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+    return looksLikeThousands ? -1 : dot;
+  })();
+  const integerRaw = decimalSeparator >= 0 ? cleaned.slice(0, decimalSeparator) : cleaned;
+  const decimalRaw = decimalSeparator >= 0 ? cleaned.slice(decimalSeparator + 1) : "";
+  const integerDigits = integerRaw.replace(/[^\d]/g, "");
+  const integerPart = integerDigits ? Number(integerDigits).toLocaleString("vi-VN") : "";
+  if (decimalSeparator >= 0) return `${integerPart || "0"},${decimalRaw.replace(/[^\d]/g, "")}`;
+  return integerPart;
+};
 
 const parseMoney = (value: string) => Number(value.replace(/[^\d]/g, "")) || 0;
 const parseDecimal = (value: string) => {
   const cleaned = value.trim().replace(/[^\d.,]/g, "");
   if (!cleaned) return 0;
   const lastComma = cleaned.lastIndexOf(",");
-  const lastDot = cleaned.lastIndexOf(".");
-  const decimalIndex = Math.max(lastComma, lastDot);
+  if (lastComma >= 0) {
+    const integerPart = cleaned.slice(0, lastComma).replace(/[.,]/g, "");
+    const decimalPart = cleaned.slice(lastComma + 1).replace(/[.,]/g, "");
+    return Number(`${integerPart || "0"}.${decimalPart}`) || 0;
+  }
+  const parts = cleaned.split(".");
+  if (parts.length > 1 && parts.slice(1).every((part) => part.length === 3)) {
+    return Number(parts.join("")) || 0;
+  }
+  const decimalIndex = cleaned.lastIndexOf(".");
   if (decimalIndex === -1) return Number(cleaned) || 0;
   const integerPart = cleaned.slice(0, decimalIndex).replace(/[.,]/g, "");
   const decimalPart = cleaned.slice(decimalIndex + 1).replace(/[.,]/g, "");
@@ -464,6 +604,161 @@ function solPosition(transactions: SolTransaction[]) {
   );
 }
 
+function dcaRunAt(startDate: string, time: string) {
+  const safeTime = /^\d{2}:\d{2}$/.test(time) ? time : "12:00";
+  return new Date(`${startDate}T${safeTime}:00`);
+}
+
+function addDcaInterval(date: Date, frequency: BtcDcaFrequency) {
+  const next = new Date(date);
+  if (frequency === "daily") {
+    next.setDate(next.getDate() + 1);
+    return next;
+  }
+  if (frequency === "weekly") {
+    next.setDate(next.getDate() + 7);
+    return next;
+  }
+  const day = next.getDate();
+  next.setMonth(next.getMonth() + 1);
+  if (next.getDate() !== day) next.setDate(0);
+  return next;
+}
+
+function shiftDcaDate(dateValue: string, frequency: BtcDcaFrequency, periods: number) {
+  if (frequency === "daily") return addDays(dateValue, periods);
+  if (frequency === "weekly") return addDays(dateValue, periods * 7);
+  return addMonths(dateValue, periods);
+}
+
+function localDateTimeIso(dateValue: string, time: string) {
+  const safeTime = /^\d{2}:\d{2}$/.test(time) ? time : "12:00";
+  return new Date(`${dateValue}T${safeTime}:00`).toISOString();
+}
+
+function nextDcaRunAt(plan: Pick<BtcDcaPlan, "startDate" | "time" | "frequency">, after = new Date()) {
+  let runAt = dcaRunAt(plan.startDate, plan.time);
+  while (runAt.getTime() <= after.getTime()) {
+    runAt = addDcaInterval(runAt, plan.frequency);
+  }
+  return runAt.toISOString();
+}
+
+function normalizeDcaPlan(plan: BtcDcaPlan): BtcDcaPlan {
+  return {
+    ...plan,
+    status: plan.isActive ? plan.status ?? "active" : "paused",
+    nextRunAt: plan.nextRunAt || nextDcaRunAt(plan),
+  };
+}
+
+function btcCloudLedgerFromState(state: AppState): BtcCloudLedger {
+  return {
+    topups: state.btcUsdtTopups,
+    dcaPlans: state.btcDcaPlans,
+    trades: state.btcTrades,
+    transfers: state.btcTransfers,
+  };
+}
+
+async function loadBtcCloudLedger(accountId: string): Promise<BtcCloudLedger> {
+  const [topups, dcaPlans, trades, transfers] = await Promise.all([
+    loadCloudPayloadRows<BtcUsdtTopup>("btc_usdt_topups", accountId),
+    loadCloudPayloadRows<BtcDcaPlan>("btc_dca_plans", accountId),
+    loadCloudPayloadRows<BtcTrade>("btc_trades", accountId),
+    loadCloudPayloadRows<BtcTransfer>("btc_transfers", accountId),
+  ]);
+  return { topups, dcaPlans: dcaPlans.map(normalizeDcaPlan), trades, transfers };
+}
+
+function mergeById<T extends { id: string }>(local: T[], remote: T[]) {
+  const rows = new Map(local.map((item) => [item.id, item]));
+  remote.forEach((item) => rows.set(item.id, item));
+  return [...rows.values()];
+}
+
+function btcPosition(trades: BtcTrade[], transfers: BtcTransfer[], plans: BtcDcaPlan[] = []) {
+  let balance = 0;
+  let costUsdt = 0;
+  const dcaTradesByPlan = new Map<string, BtcTrade[]>();
+
+  trades.forEach((trade) => {
+    if (trade.type === "dca" && trade.planId) {
+      dcaTradesByPlan.set(trade.planId, [...(dcaTradesByPlan.get(trade.planId) ?? []), trade]);
+      return;
+    }
+    balance += trade.btcAmount;
+    costUsdt += trade.usdtAmount;
+  });
+
+  plans.forEach((plan) => {
+    const planTrades = dcaTradesByPlan.get(plan.id) ?? [];
+    const investedUsdt = planTrades.reduce((sum, trade) => sum + trade.usdtAmount, 0);
+    const tradeBtcAmount = planTrades.reduce((sum, trade) => sum + trade.btcAmount, 0);
+    const tradeAveragePriceUsdt = tradeBtcAmount ? investedUsdt / tradeBtcAmount : 0;
+    const btcAmount = plan.btcAmountOverride && plan.btcAmountOverride > 0 ? plan.btcAmountOverride : tradeBtcAmount;
+    const averagePriceUsdt =
+      plan.averagePriceUsdtOverride && plan.averagePriceUsdtOverride > 0 ? plan.averagePriceUsdtOverride : tradeAveragePriceUsdt;
+    if (!btcAmount) return;
+    balance += btcAmount;
+    costUsdt += averagePriceUsdt ? btcAmount * averagePriceUsdt : investedUsdt;
+  });
+
+  transfers.forEach((transfer) => {
+    if (transfer.asset !== "btc") return;
+    const averageCost = balance > 0 ? costUsdt / balance : 0;
+    const movedBtc = Math.min(transfer.btcAmount, balance);
+    balance = Math.max(balance - transfer.btcAmount, 0);
+    costUsdt = Math.max(costUsdt - movedBtc * averageCost, 0);
+  });
+
+  return { balance, costUsdt };
+}
+
+function btcPortfolioStats(state: AppState, upToMonth?: string) {
+  const fundCapital = state.fundTransactions
+    .filter((item) => item.fund === "btc" && (!upToMonth || item.month <= upToMonth))
+    .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
+  const topups = state.btcUsdtTopups.filter((item) => !upToMonth || monthFromDate(item.date) <= upToMonth);
+  const trades = state.btcTrades.filter((item) => !upToMonth || monthFromDate(item.executedAt.slice(0, 10)) <= upToMonth);
+  const transfers = state.btcTransfers.filter((item) => !upToMonth || monthFromDate(item.date) <= upToMonth);
+  const plans = state.btcDcaPlans.filter((item) => !upToMonth || monthFromDate(item.startDate) <= upToMonth);
+  const topupVnd = topups.reduce((sum, item) => sum + item.vndAmount, 0);
+  const topupUsdt = topups.reduce((sum, item) => sum + item.usdtAmount, 0);
+  const spentUsdt = trades.reduce((sum, item) => sum + item.usdtAmount, 0);
+  const transferredUsdt = transfers.reduce((sum, item) => sum + (item.asset === "usdt" ? item.usdtAmount : 0), 0);
+  const convertedToUsdt = transfers.reduce((sum, item) => sum + (item.asset === "btc" && item.destination === "usdt" ? item.usdtAmount : 0), 0);
+  const usdtBalance = Math.max(topupUsdt + convertedToUsdt - spentUsdt - transferredUsdt, 0);
+  const position = btcPosition(trades, transfers, plans);
+  const btcValueUsdt = position.balance * state.market.btcUsdt;
+  const totalValueUsdt = usdtBalance + btcValueUsdt;
+  const usdtVndRate = state.market.usdtVnd || state.market.usdVnd;
+  const totalValueVnd = totalValueUsdt * usdtVndRate;
+  const reportValueVnd = totalValueVnd + Math.max(fundCapital - topupVnd, 0);
+  const investedValueVnd = topupVnd;
+  const pnl = totalValueVnd - investedValueVnd;
+  const pnlUsdt = usdtVndRate ? pnl / usdtVndRate : 0;
+
+  return {
+    capitalVnd: fundCapital,
+    pendingVnd: Math.max(fundCapital - topupVnd, 0),
+    topupVnd,
+    topupUsdt,
+    investedValueVnd,
+    usdtBalance,
+    btcBalance: position.balance,
+    btcCostUsdt: position.costUsdt,
+    btcValueUsdt,
+    totalValueUsdt,
+    totalValueVnd,
+    reportValueVnd,
+    averageCostUsdt: position.balance ? position.costUsdt / position.balance : 0,
+    pnlUsdt,
+    pnlVnd: pnl,
+    pnlPercent: investedValueVnd ? (pnl / investedValueVnd) * 100 : 0,
+  };
+}
+
 const stockLineValue = (line: Pick<StockPurchaseLine, "shares" | "buyPrice">) =>
   Math.round(line.shares * line.buyPrice * STOCK_PRICE_UNIT);
 
@@ -529,6 +824,35 @@ function stockMarketPrice(state: AppState, symbol: string) {
   return state.stockMarketPrices.find((item) => item.symbol === symbol.toUpperCase());
 }
 
+async function fetchMarket(fallback: Market) {
+  const [cryptoResponse, btcResponse, rateResponse] = await Promise.allSettled([
+    fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana,tether&vs_currencies=usd,vnd", { cache: "no-store" }),
+    fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", { cache: "no-store" }),
+    fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" }),
+  ]);
+  const cryptoJson = cryptoResponse.status === "fulfilled" && cryptoResponse.value.ok ? await cryptoResponse.value.json() : null;
+  const btcJson = btcResponse.status === "fulfilled" && btcResponse.value.ok ? await btcResponse.value.json() : null;
+  const rateJson = rateResponse.status === "fulfilled" && rateResponse.value.ok ? await rateResponse.value.json() : null;
+  const solUsd = Number(cryptoJson?.solana?.usd) || fallback.solUsd;
+  const btcUsdt = Number(btcJson?.price) || fallback.btcUsdt;
+  const usdtVnd = Number(cryptoJson?.tether?.vnd) || fallback.usdtVnd || Number(rateJson?.rates?.VND) || fallback.usdVnd;
+  const usdVnd = Number(rateJson?.rates?.VND) || fallback.usdVnd || usdtVnd;
+  if (!solUsd && !btcUsdt && !usdtVnd && !usdVnd) throw new Error("Khong lay duoc gia thi truong");
+  const isFallback = !cryptoJson?.solana?.usd || !btcJson?.price || !cryptoJson?.tether?.vnd || !rateJson?.rates?.VND;
+  return {
+    solUsd,
+    btcUsdt,
+    usdtVnd,
+    usdVnd,
+    updatedAt: new Date().toISOString(),
+    btcSource: btcJson?.price ? "Binance" : fallback.btcSource ?? "Fallback",
+    solSource: cryptoJson?.solana?.usd ? "CoinGecko" : fallback.solSource ?? "Fallback",
+    usdtSource: cryptoJson?.tether?.vnd ? "CoinGecko" : rateJson?.rates?.VND ? "ExchangeRate" : fallback.usdtSource ?? "Fallback",
+    isFallback,
+    lastError: isFallback ? "Một phần giá đang dùng dữ liệu lưu gần nhất." : "",
+  };
+}
+
 function stockPortfolioStats(state: AppState, upToMonth?: string) {
   const fundCash = state.fundTransactions
     .filter((item) => item.fund === "stock" && (!upToMonth || item.month <= upToMonth))
@@ -587,12 +911,14 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
   const stockValue = rows.reduce((sum, item) => sum + item.marketValue, 0);
   const totalCost = rows.reduce((sum, item) => sum + item.cost, 0);
   const pnl = stockValue - totalCost;
+  const cash = Math.max(fundCash - invested + soldToCashBalance, 0);
 
   return {
-    cash: Math.max(fundCash - invested + soldToCashBalance, 0),
+    fundCash,
+    cash,
     invested,
     stockValue,
-    totalValue: Math.max(fundCash - invested, 0) + stockValue,
+    totalValue: cash + stockValue,
     totalCost,
     pnl,
     pnlPercent: totalCost ? (pnl / totalCost) * 100 : 0,
@@ -637,6 +963,7 @@ function pendingSolDepositTotal(state: AppState, fund: DepositFund) {
 }
 
 const stockSaleDepositMarker = (saleId: string) => `[stock-sale:${saleId}]`;
+const btcTransferDepositMarker = (transferId: string) => `[btc-transfer:${transferId}]`;
 
 function pendingStockSaleDepositTotal(state: AppState, fund: DepositFund) {
   return state.stockSales
@@ -646,6 +973,23 @@ function pendingStockSaleDepositTotal(state: AppState, fund: DepositFund) {
         !state.bankDeposits.some((deposit) => deposit.note.includes(stockSaleDepositMarker(sale.id)))
     )
     .reduce((sum, sale) => sum + sale.vndAmount, 0);
+}
+
+function pendingBtcTransferDepositTotal(state: AppState, fund: DepositFund) {
+  return state.btcTransfers
+    .filter(
+      (transfer) =>
+        transfer.destination === fund &&
+        !state.bankDeposits.some((deposit) => deposit.note.includes(btcTransferDepositMarker(transfer.id)))
+    )
+    .reduce((sum, transfer) => sum + transfer.vndAmount, 0);
+}
+
+function pendingStockCashFromTransfer(state: AppState, source: "SOL" | "BTC", maxCash: number) {
+  const sourceTotal = state.fundTransactions
+    .filter((item) => item.fund === "stock" && item.type === "deposit" && item.note.includes(`Rút từ ${source}`))
+    .reduce((sum, item) => sum + item.amount, 0);
+  return Math.min(Math.max(maxCash, 0), sourceTotal);
 }
 
 function accumulationProgress(state: AppState, goal: AccumulationGoal) {
@@ -774,6 +1118,16 @@ function normalizeState(state: AppState): AppState {
     stockPurchases: state.stockPurchases ?? [],
     stockSales: state.stockSales ?? [],
     stockMarketPrices: state.stockMarketPrices ?? [],
+    btcUsdtTopups: state.btcUsdtTopups ?? [],
+    btcDcaPlans: (state.btcDcaPlans ?? []).map(normalizeDcaPlan),
+    btcTrades: state.btcTrades ?? [],
+    btcTransfers: state.btcTransfers ?? [],
+    market: {
+      ...state.market,
+      btcUsdt: state.market?.btcUsdt ?? 0,
+      usdtVnd: state.market?.usdtVnd ?? state.market?.usdVnd ?? 0,
+      usdVnd: state.market?.usdVnd ?? state.market?.usdtVnd ?? 0,
+    },
   };
 }
 
@@ -828,10 +1182,16 @@ const initialState: AppState = {
   stockPurchases: [],
   stockSales: [],
   stockMarketPrices: [],
+  btcUsdtTopups: [],
+  btcDcaPlans: [],
+  btcTrades: [],
+  btcTransfers: [],
   bankDeposits: [],
   solTransactions: [],
   market: {
     solUsd: 0,
+    btcUsdt: 0,
+    usdtVnd: 0,
     usdVnd: 0,
     updatedAt: "",
   },
@@ -923,6 +1283,177 @@ function monthlySummary(state: AppState, month: string) {
 function activePrincipal(deposit: BankDeposit) {
   if (deposit.status === "active") return deposit.principal;
   return 0;
+}
+
+type AssetPnlRow = {
+  id: string;
+  label: string;
+  principal: number;
+  current: number;
+  pnl: number;
+  pnlPercent: number;
+};
+
+function originalDepositPrincipal(deposit: BankDeposit, deposits: BankDeposit[]) {
+  let cursor = deposit;
+  const visited = new Set<string>();
+  while (cursor.parentId && !visited.has(cursor.id)) {
+    visited.add(cursor.id);
+    const parent = deposits.find((item) => item.id === cursor.parentId);
+    if (!parent) break;
+    cursor = parent;
+  }
+  return cursor.principal;
+}
+
+function depositFundPnl(state: AppState, fund?: DepositFund) {
+  const activeDeposits = state.bankDeposits.filter((item) => item.status === "active" && (!fund || item.fund === fund));
+  const pending =
+    fund
+      ? pendingSolDepositTotal(state, fund) + pendingStockSaleDepositTotal(state, fund) + pendingBtcTransferDepositTotal(state, fund)
+      : 0;
+  const principal = activeDeposits.reduce((sum, item) => sum + originalDepositPrincipal(item, state.bankDeposits), 0) + pending;
+  const current = activeDeposits.reduce((sum, item) => sum + item.principal, 0) + pending;
+  return { principal, current };
+}
+
+function makeAssetPnlRow(id: string, label: string, principal: number, current: number): AssetPnlRow {
+  const pnl = current - principal;
+  return {
+    id,
+    label,
+    principal,
+    current,
+    pnl,
+    pnlPercent: principal ? (pnl / principal) * 100 : 0,
+  };
+}
+
+function assetPnlRows(state: AppState) {
+  const btcStats = btcPortfolioStats(state);
+  const stockStats = stockPortfolioStats(state);
+  const sol = solPosition(state.solTransactions);
+  const solPrincipal = sol.cost * state.market.usdVnd;
+  const solCurrent = sol.balance * state.market.solUsd * state.market.usdVnd;
+  const saving = depositFundPnl(state, "saving");
+  const emergency = depositFundPnl(state, "emergency");
+  const rows = [
+    makeAssetPnlRow("btc", "BTC", btcStats.capitalVnd, btcStats.reportValueVnd),
+    makeAssetPnlRow("stock", "CK", stockStats.fundCash, stockStats.totalValue),
+    makeAssetPnlRow("sol", "SOL", solPrincipal, solCurrent),
+    makeAssetPnlRow("saving", "Tiết kiệm", saving.principal, saving.current),
+    makeAssetPnlRow("emergency", "Dự phòng", emergency.principal, emergency.current),
+  ];
+  const totalPrincipal = rows.reduce((sum, item) => sum + item.principal, 0);
+  const totalCurrent = rows.reduce((sum, item) => sum + item.current, 0);
+  return [makeAssetPnlRow("total", "Tổng tài sản", totalPrincipal, totalCurrent), ...rows];
+}
+
+type DashboardTask = {
+  id: string;
+  title: string;
+  detail: string;
+  action: string;
+  tone?: "warning" | "danger";
+  page?: Page;
+  tab?: InvestmentTab;
+};
+
+function dashboardTasks(state: AppState, month: string): DashboardTask[] {
+  const tasks: DashboardTask[] = [];
+  const btcStats = btcPortfolioStats(state);
+  const stockStats = stockPortfolioStats(state);
+  const summary = monthlySummary(state, month);
+
+  if (summary.saving > 0 && !summary.allocation.confirmedAt) {
+    tasks.push({ id: "allocation", title: "Tháng này chưa chia quỹ", detail: `Có thể chia ${formatVnd(summary.saving)}`, action: "Chia quỹ", page: "dashboard" });
+  }
+
+  const pendingAllocationDeposits = state.allocations
+    .filter((allocation) => allocation.confirmedAt)
+    .flatMap((allocation) =>
+      (["saving", "emergency"] as DepositFund[]).map((fund) => ({
+        fund,
+        month: allocation.month,
+        amount: fund === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
+        requestedAt: allocation[depositRequestedField(fund)],
+        createdAt: allocation[depositCreatedField(fund)],
+      }))
+    )
+    .filter(
+      (item) =>
+        item.amount > 0 &&
+        item.requestedAt &&
+        !item.createdAt &&
+        !state.bankDeposits.some((deposit) => deposit.fund === item.fund && deposit.createdFromMonth === item.month)
+    );
+  const pendingAllocationDepositTotal = pendingAllocationDeposits.reduce((sum, item) => sum + item.amount, 0);
+  if (pendingAllocationDepositTotal > 0) {
+    tasks.push({ id: "allocation-deposit-pending", title: "Sổ MBB chưa tạo từ chia quỹ", detail: formatVnd(pendingAllocationDepositTotal), action: "Tạo sổ", page: "investment", tab: "mbb" });
+  }
+
+  const pendingSolDeposits = pendingSolDepositTotal(state, "saving") + pendingSolDepositTotal(state, "emergency");
+  if (pendingSolDeposits > 0) {
+    tasks.push({ id: "sol-deposit-pending", title: "SOL chuyển về chưa tạo sổ", detail: formatVnd(pendingSolDeposits), action: "Tạo sổ", page: "investment", tab: "mbb" });
+  }
+
+  const pendingStockDeposits = pendingStockSaleDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "emergency");
+  if (pendingStockDeposits > 0) {
+    tasks.push({ id: "stock-deposit-pending", title: "CK chuyển về chưa tạo sổ", detail: formatVnd(pendingStockDeposits), action: "Tạo sổ", page: "investment", tab: "mbb" });
+  }
+
+  const pendingBtcDeposits = pendingBtcTransferDepositTotal(state, "saving") + pendingBtcTransferDepositTotal(state, "emergency");
+  if (pendingBtcDeposits > 0) {
+    tasks.push({ id: "btc-deposit-pending", title: "BTC chuyển về chưa tạo sổ", detail: formatVnd(pendingBtcDeposits), action: "Tạo sổ", page: "investment", tab: "mbb" });
+  }
+
+  const dueDeposit = state.bankDeposits
+    .filter((item) => item.status === "active")
+    .map((item) => ({ ...item, dueDays: daysUntil(item.maturityDate) }))
+    .filter((item) => item.dueDays <= 30)
+    .sort((a, b) => a.dueDays - b.dueDays)[0];
+  if (dueDeposit) {
+    tasks.push({
+      id: "deposit-due",
+      title: dueDeposit.dueDays <= 0 ? "Sổ MBB đã đáo hạn" : "Sổ MBB sắp đáo hạn",
+      detail: `${formatVnd(dueDeposit.principal)} · ${dueDeposit.dueDays <= 0 ? "cần xử lý" : `${dueDeposit.dueDays} ngày nữa`}`,
+      action: "Xem sổ",
+      tone: dueDeposit.dueDays <= 7 ? "warning" : undefined,
+      page: "investment",
+      tab: "mbb",
+    });
+  }
+
+  if (btcStats.pendingVnd > 0) {
+    tasks.push({ id: "btc-pending", title: "BTC đã chia quỹ chưa mua USDT", detail: `Còn ${formatVnd(btcStats.pendingVnd)} chờ đổi sang USDT`, action: "Mua USDT", page: "investment", tab: "btc" });
+  }
+
+  const pendingSolStockCash = pendingStockCashFromTransfer(state, "SOL", stockStats.cash);
+  if (pendingSolStockCash > 0) {
+    tasks.push({ id: "sol-stock-cash", title: "SOL chuyển về CK chưa mua cổ phiếu", detail: `Còn ${formatVnd(pendingSolStockCash)} trong số dư CK`, action: "Mua CK", page: "investment", tab: "stock" });
+  }
+
+  const pendingBtcStockCash = pendingStockCashFromTransfer(state, "BTC", stockStats.cash - pendingSolStockCash);
+  if (pendingBtcStockCash > 0) {
+    tasks.push({ id: "btc-stock-cash", title: "BTC chuyển về CK chưa mua cổ phiếu", detail: `Còn ${formatVnd(pendingBtcStockCash)} trong số dư CK`, action: "Mua CK", page: "investment", tab: "stock" });
+  }
+
+  const pendingAllocationStockCash = Math.max(stockStats.cash - pendingSolStockCash - pendingBtcStockCash, 0);
+  if (pendingAllocationStockCash > 0) {
+    tasks.push({ id: "stock-cash", title: "CK đã chia quỹ chưa mua cổ phiếu", detail: `Còn ${formatVnd(pendingAllocationStockCash)} trong số dư CK`, action: "Mua CK", page: "investment", tab: "stock" });
+  }
+
+  const activePlans = state.btcDcaPlans.filter((plan) => plan.isActive);
+  const dailyNeed = activePlans.reduce((sum, plan) => sum + (plan.frequency === "daily" ? plan.amountUsdt : 0), 0);
+  if (dailyNeed > 0) {
+    const daysLeft = Math.floor(btcStats.usdtBalance / dailyNeed);
+    if (daysLeft < 5) tasks.push({ id: "usdt-days", title: "USDT cho DCA sắp hết", detail: `Còn đủ khoảng ${daysLeft} ngày với lịch hiện tại`, action: "Mua USDT", tone: daysLeft <= 2 ? "danger" : "warning", page: "investment", tab: "btc" });
+  }
+
+  const marketAgeMs = state.market.updatedAt ? Date.now() - new Date(state.market.updatedAt).getTime() : Infinity;
+  if (marketAgeMs > 5 * MARKET_PRICE_REFRESH_MS || state.market.isFallback) tasks.push({ id: "market-stale", title: "Giá thị trường cần kiểm tra", detail: state.market.isFallback ? "Đang dùng một phần giá fallback" : "Giá đã quá 5 phút", action: "Cập nhật giá", tone: "warning" });
+
+  return tasks.slice(0, 12);
 }
 
 const depositCreatedField = (fund: DepositFund) =>
@@ -1310,6 +1841,7 @@ function UnifiedDashboardPage({
   setMonth,
   setPage,
   setAssetTab,
+  onRefreshMarket,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
@@ -1317,6 +1849,7 @@ function UnifiedDashboardPage({
   setMonth: (month: string) => void;
   setPage: (page: Page) => void;
   setAssetTab: (tab: InvestmentTab) => void;
+  onRefreshMarket: (silent?: boolean) => Promise<boolean>;
 }) {
   const summary = monthlySummary(state, month);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
@@ -1365,12 +1898,6 @@ function UnifiedDashboardPage({
     });
   }, [month, summary.expenseRows, summary.incomeRows]);
 
-  const dueSoon = state.bankDeposits
-    .filter((item) => item.status === "active")
-    .map((item) => ({ ...item, dueDays: daysUntil(item.maturityDate) }))
-    .filter((item) => item.dueDays <= 30)
-    .sort((a, b) => a.dueDays - b.dueDays)
-    .slice(0, 3);
   const selectedIncome = summary.incomeRows.find((row) => row.id === selectedIncomeId) ?? null;
   const selectedExpense = summary.expenseRows.find((row) => row.id === selectedExpenseId) ?? null;
   const fixedCategories = state.expenseCategories.filter((category) => isFixedCategoryVisibleInMonth(state, category, month));
@@ -1390,6 +1917,21 @@ function UnifiedDashboardPage({
   const amountTotalMatchesSaving = Math.abs(allocationAmountTotal - availableAllocationAmount) <= 1;
   const hasCustomAllocationAmounts = allocationAmountRows.some((item) => typeof summary.allocation[item.amountKey] === "number");
   const monthAlreadyConfirmed = Boolean(summary.allocation.confirmedAt);
+  const tasks = dashboardTasks(state, month);
+
+  const openTask = (task: DashboardTask) => {
+    if (task.id === "market-stale") {
+      void onRefreshMarket();
+      return;
+    }
+    if (task.id === "allocation") {
+      setAllocationEditing(true);
+      setPage("dashboard");
+      return;
+    }
+    if (task.tab) setAssetTab(task.tab);
+    if (task.page) setPage(task.page);
+  };
 
   const updateMonthlyExpense = (category: ExpenseCategory, patch: Partial<MonthlyExpense>) => {
     setState((prev) => {
@@ -1414,8 +1956,30 @@ function UnifiedDashboardPage({
   };
 
   const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
-    setAllocationAmountInputs((prev) => ({ ...prev, [key]: value }));
-    updateAllocation({ [key]: value.trim() === "" ? undefined : parseMoney(value) } as Partial<Allocation>);
+    const formattedValue = formatMoneyInput(value);
+    if (key === "savingAmount" || key === "emergencyAmount") {
+      const otherKey: AllocationAmountKey = key === "savingAmount" ? "emergencyAmount" : "savingAmount";
+      if (!formattedValue) {
+        setAllocationAmountInputs((prev) => {
+          const next = { ...prev, [key]: "" };
+          delete next[otherKey];
+          return next;
+        });
+        updateAllocation({ [key]: undefined, [otherKey]: undefined } as Partial<Allocation>);
+        return;
+      }
+      const pairBudget = Math.max(
+        availableAllocationAmount - Math.round(summary.allocationAmounts.btc) - Math.round(summary.allocationAmounts.stock),
+        0
+      );
+      const amount = Math.min(Math.max(parseMoney(formattedValue), 0), pairBudget);
+      const otherAmount = Math.max(pairBudget - amount, 0);
+      setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue, [otherKey]: otherAmount.toLocaleString("vi-VN") }));
+      updateAllocation({ [key]: amount, [otherKey]: otherAmount } as Partial<Allocation>);
+      return;
+    }
+    setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue }));
+    updateAllocation({ [key]: formattedValue ? parseMoney(formattedValue) : undefined } as Partial<Allocation>);
   };
 
   const commitAllocationAmount = (key: AllocationAmountKey) => {
@@ -1567,7 +2131,7 @@ function UnifiedDashboardPage({
 
   const confirmAllocation = () => {
     const existingAllocation = state.allocations.find((item) => item.month === month);
-    if (existingAllocation?.confirmedAt || percentTotal !== 100 || summary.saving <= 0) return;
+    if (existingAllocation?.confirmedAt || percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0) return;
     const confirmedAllocation: Allocation = {
       ...summary.allocation,
       confirmedAt: new Date().toISOString(),
@@ -1668,7 +2232,7 @@ function UnifiedDashboardPage({
                 Tháng chia quỹ
                 <input type="month" value={depositForm.month} onChange={(event) => setDepositForm({ ...depositForm, month: event.target.value })} />
               </label>
-              <button className="primary" onClick={() => setConfirmOpen(true)} disabled={percentTotal !== 100 || summary.saving <= 0 || monthAlreadyConfirmed}>
+              <button className="primary" onClick={() => setConfirmOpen(true)} disabled={percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0 || monthAlreadyConfirmed}>
                 <CheckCircle2 size={17} /> Chia quỹ
               </button>
               {monthAlreadyConfirmed && <small className="ok">Tháng này đã xác nhận chia quỹ.</small>}
@@ -1710,23 +2274,21 @@ function UnifiedDashboardPage({
 
         <article className="panel">
           <div className="panel-title">
-            <h2>Sổ sắp đáo hạn</h2>
-            <button className="ghost" onClick={() => {
-              setAssetTab("mbb");
-              setPage("investment");
-            }}>Xem</button>
+            <h2>Hôm nay cần làm gì</h2>
+            <small>{tasks.length} việc</small>
           </div>
-          {dueSoon.length === 0 ? (
-            <p className="muted">Chưa có sổ nào cần xử lý trong 30 ngày tới.</p>
+          {tasks.length === 0 ? (
+            <p className="muted">Không có việc cần xử lý ngay.</p>
           ) : (
-            <div className="deposit-mini-list">
-              {dueSoon.map((item) => (
-                <div className={item.dueDays <= 7 ? "danger" : "warning"} key={item.id}>
-                  <CalendarClock size={18} />
-                  <span>{item.fund === "saving" ? "Quỹ tiết kiệm" : "Quỹ dự phòng"}</span>
-                  <strong>{formatVnd(item.principal)}</strong>
-                  <small>{item.dueDays <= 0 ? "Đã đáo hạn" : `${item.dueDays} ngày nữa`}</small>
-                </div>
+            <div className="action-task-list">
+              {tasks.map((task) => (
+                <button className={task.tone ?? ""} key={task.id} onClick={() => openTask(task)} type="button">
+                  <div>
+                    <strong>{task.title}</strong>
+                    <small>{task.detail}</small>
+                  </div>
+                  <span>{task.action}</span>
+                </button>
               ))}
             </div>
           )}
@@ -1742,7 +2304,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="form-grid">
               <label>Mục thu<select value={incomeForm.categoryId} onChange={(event) => setIncomeForm({ ...incomeForm, categoryId: event.target.value })}>{state.incomeCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
-              <label>Số tiền<input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: event.target.value })} placeholder="9.000.000" /></label>
+              <label>Số tiền<input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" /></label>
               <label>Ngày<input type="date" value={incomeForm.date} onChange={(event) => setIncomeForm({ ...incomeForm, date: event.target.value })} /></label>
               <label>Ghi chú<input value={incomeForm.note} onChange={(event) => setIncomeForm({ ...incomeForm, note: event.target.value })} placeholder="Fishing, job..." /></label>
             </div>
@@ -1769,7 +2331,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="form-grid">
               <label>Mục chi<select value={expenseEntry.categoryId} onChange={(event) => setExpenseEntry({ ...expenseEntry, categoryId: event.target.value })}>{state.expenseCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
-              <label>Số tiền<input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: event.target.value })} placeholder="500.000" /></label>
+              <label>Số tiền<input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyInput(event.target.value) })} placeholder="500.000" /></label>
               <label>Ngày<input type="date" value={expenseEntry.date} onChange={(event) => setExpenseEntry({ ...expenseEntry, date: event.target.value })} /></label>
               <label>Ghi chú<input value={expenseEntry.note} onChange={(event) => setExpenseEntry({ ...expenseEntry, note: event.target.value })} placeholder="Sửa xe, mua đồ..." /></label>
             </div>
@@ -1779,7 +2341,7 @@ function UnifiedDashboardPage({
             ) : (
               <div className="inline-add modal-inline-add">
                 <input value={newExpense.name} onChange={(event) => setNewExpense({ ...newExpense, name: event.target.value })} placeholder="Mục chi mới" />
-                {newExpense.kind === "fixed" && <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: event.target.value })} placeholder="Số tiền mặc định" />}
+                {newExpense.kind === "fixed" && <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: formatMoneyInput(event.target.value) })} placeholder="Số tiền mặc định" />}
                 <select value={newExpense.kind} onChange={(event) => setNewExpense({ ...newExpense, kind: event.target.value as NewExpenseKind })}><option value="variable">Phát sinh</option><option value="fixed">Cố định</option></select>
                 <button onClick={addExpenseCategory} title="Thêm mục"><Plus size={17} /></button>
               </div>
@@ -1795,7 +2357,7 @@ function UnifiedDashboardPage({
               <h2 id="fixed-edit-title">Sửa khoản cố định</h2>
               <button className="icon-button" title="Đóng" onClick={() => setEditingFixed(null)}><X size={17} /></button>
             </div>
-            <label>Số tiền tháng này<input value={editingFixed.amount} onChange={(event) => setEditingFixed({ ...editingFixed, amount: event.target.value })} /></label>
+            <label>Số tiền tháng này<input value={editingFixed.amount} onChange={(event) => setEditingFixed({ ...editingFixed, amount: formatMoneyInput(event.target.value) })} /></label>
             <div className="modal-actions fixed-edit-actions">
               <button className="ghost" onClick={() => setEditingFixed(null)}>Hủy</button>
               <button className="primary" onClick={saveFixedAmount}><Save size={17} /> Lưu</button>
@@ -1813,7 +2375,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="form-grid">
               <label>Mục<select value={editingTransaction.categoryId} onChange={(event) => setEditingTransaction({ ...editingTransaction, categoryId: event.target.value })}>{(editingTransaction.kind === "income" ? state.incomeCategories : state.expenseCategories).map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
-              <label>Số tiền<input value={editingTransaction.amount} onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: event.target.value })} /></label>
+              <label>Số tiền<input value={editingTransaction.amount} onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: formatMoneyInput(event.target.value) })} /></label>
               <label>Ngày<input type="date" value={editingTransaction.date} onChange={(event) => setEditingTransaction({ ...editingTransaction, date: event.target.value })} /></label>
               <label>Ghi chú<input value={editingTransaction.note} onChange={(event) => setEditingTransaction({ ...editingTransaction, note: event.target.value })} /></label>
             </div>
@@ -1842,7 +2404,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="modal-actions">
               <button className="ghost" onClick={() => setConfirmOpen(false)}>Hủy</button>
-              <button className="primary" onClick={confirmAllocation}><CheckCircle2 size={17} /> Đồng ý chia quỹ</button>
+              <button className="primary" onClick={confirmAllocation} disabled={percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0 || monthAlreadyConfirmed}><CheckCircle2 size={17} /> Đồng ý chia quỹ</button>
             </div>
           </section>
         </div>
@@ -2195,7 +2757,7 @@ function AccumulationPage({
             </label>
             <label>
               Tổng tiền cần dồn
-              <input value={form.target} onChange={(event) => setForm({ ...form, target: event.target.value })} placeholder="9.000.000" />
+              <input value={form.target} onChange={(event) => setForm({ ...form, target: formatMoneyInput(event.target.value) })} placeholder="9.000.000" />
             </label>
             <label>
               Tháng bắt đầu
@@ -2211,7 +2773,7 @@ function AccumulationPage({
             </label>
             <label>
               Tiền mỗi tháng
-              <input value={form.monthlyAmount} onChange={(event) => setForm({ ...form, monthlyAmount: event.target.value, months: form.dueDate ? "" : form.months })} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
+              <input value={form.monthlyAmount} onChange={(event) => setForm({ ...form, monthlyAmount: formatMoneyInput(event.target.value), months: form.dueDate ? "" : form.months })} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
             </label>
             <button className="primary" onClick={saveGoal}>
               <Save size={17} /> {editingGoal ? "Lưu thay đổi" : "Tạo quỹ"}
@@ -2482,8 +3044,30 @@ function MoneyPage({
   };
 
   const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
-    setAllocationAmountInputs((prev) => ({ ...prev, [key]: value }));
-    updateAllocation({ [key]: value.trim() === "" ? undefined : parseMoney(value) } as Partial<Allocation>);
+    const formattedValue = formatMoneyInput(value);
+    if (key === "savingAmount" || key === "emergencyAmount") {
+      const otherKey: AllocationAmountKey = key === "savingAmount" ? "emergencyAmount" : "savingAmount";
+      if (!formattedValue) {
+        setAllocationAmountInputs((prev) => {
+          const next = { ...prev, [key]: "" };
+          delete next[otherKey];
+          return next;
+        });
+        updateAllocation({ [key]: undefined, [otherKey]: undefined } as Partial<Allocation>);
+        return;
+      }
+      const pairBudget = Math.max(
+        availableAllocationAmount - Math.round(summary.allocationAmounts.btc) - Math.round(summary.allocationAmounts.stock),
+        0
+      );
+      const amount = Math.min(Math.max(parseMoney(formattedValue), 0), pairBudget);
+      const otherAmount = Math.max(pairBudget - amount, 0);
+      setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue, [otherKey]: otherAmount.toLocaleString("vi-VN") }));
+      updateAllocation({ [key]: amount, [otherKey]: otherAmount } as Partial<Allocation>);
+      return;
+    }
+    setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue }));
+    updateAllocation({ [key]: formattedValue ? parseMoney(formattedValue) : undefined } as Partial<Allocation>);
   };
 
   const commitAllocationAmount = (key: AllocationAmountKey) => {
@@ -2569,7 +3153,7 @@ function MoneyPage({
       summary.allocation.stockPercent +
       summary.allocation.savingPercent +
       summary.allocation.emergencyPercent;
-    if (totalPercent !== 100 || summary.saving <= 0) return;
+    if (totalPercent !== 100 || !amountTotalMatchesSaving || summary.saving <= 0) return;
 
     const confirmedAllocation: Allocation = {
       ...summary.allocation,
@@ -2675,7 +3259,7 @@ function MoneyPage({
             </label>
             <label>
               Số tiền
-              <input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: event.target.value })} placeholder="9.000.000" />
+              <input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" />
             </label>
             <label>
               Ngày
@@ -2722,7 +3306,7 @@ function MoneyPage({
             </label>
             <label>
               Số tiền
-              <input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: event.target.value })} placeholder="500.000" />
+              <input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyInput(event.target.value) })} placeholder="500.000" />
             </label>
             <label>
               Ngày
@@ -2739,7 +3323,7 @@ function MoneyPage({
 
           <div className="inline-add">
             <input value={newExpense.name} onChange={(event) => setNewExpense({ ...newExpense, name: event.target.value })} placeholder="Mục chi mới" />
-            <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: event.target.value })} placeholder="Số tiền" />
+            <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: formatMoneyInput(event.target.value) })} placeholder="Số tiền" />
             <select value={newExpense.kind} onChange={(event) => setNewExpense({ ...newExpense, kind: event.target.value as ExpenseCategory["kind"] })}>
               <option value="fixed">Cố định</option>
               <option value="variable">Một lần</option>
@@ -2770,7 +3354,7 @@ function MoneyPage({
                   <>
                     <label>
                       Số tiền
-                      <input value={record.amount.toLocaleString("vi-VN")} onChange={(event) => updateMonthlyExpense(category, { amount: parseMoney(event.target.value) })} />
+                      <input value={record.amount.toLocaleString("vi-VN")} onChange={(event) => updateMonthlyExpense(category, { amount: parseMoney(formatMoneyInput(event.target.value)) })} />
                     </label>
                     <button className={record.checked ? "toggle checked" : "toggle"} onClick={() => updateMonthlyExpense(category, { checked: !record.checked })}>
                       <CheckCircle2 size={17} />
@@ -2848,7 +3432,7 @@ function MoneyPage({
                 Số tiền
                 <input
                   value={editingTransaction.amount}
-                  onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: event.target.value })}
+                  onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: formatMoneyInput(event.target.value) })}
                   placeholder="9.000.000"
                 />
               </label>
@@ -2916,7 +3500,7 @@ function MoneyPage({
           <button
             className="primary"
             onClick={() => setConfirmOpen(true)}
-            disabled={percentTotal !== 100 || summary.saving <= 0 || monthAlreadyConfirmed}
+            disabled={percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0 || monthAlreadyConfirmed}
           >
             <CheckCircle2 size={17} /> Chia quỹ
           </button>
@@ -2960,7 +3544,7 @@ function MoneyPage({
               <button className="ghost" onClick={() => setConfirmOpen(false)}>
                 Hủy
               </button>
-              <button className="primary" onClick={confirmAllocation}>
+              <button className="primary" onClick={confirmAllocation} disabled={percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0 || monthAlreadyConfirmed}>
                 <CheckCircle2 size={17} /> Đồng ý chia quỹ
               </button>
             </div>
@@ -3013,6 +3597,722 @@ function makeDeposit(
   };
 }
 
+const btcTransferDestinationLabel = (destination: BtcTransferTarget) => {
+  const labels: Record<BtcTransferTarget, string> = {
+    btc: "BTC",
+    usdt: "USDT",
+    stock: "CK",
+    saving: "Tiết kiệm",
+    emergency: "Dự phòng",
+    cash: "Tiền mặt",
+  };
+  return labels[destination];
+};
+
+function BtcPage({
+  state,
+  setState,
+  onRefreshMarket,
+  marketStatus,
+  btcCloudAccountId,
+  embedded = false,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  onRefreshMarket: (silent?: boolean) => Promise<boolean>;
+  marketStatus: string;
+  btcCloudAccountId: string;
+  embedded?: boolean;
+}) {
+  const stats = btcPortfolioStats(state);
+  const [topupForm, setTopupForm] = useState({ vnd: "", usdt: "", date: today(), note: "" });
+  const [planForm, setPlanForm] = useState({
+    amountUsdt: "2",
+    frequency: "daily" as BtcDcaFrequency,
+    time: "12:00",
+    startDate: today(),
+    note: "",
+  });
+  const [legacyDcaForm, setLegacyDcaForm] = useState({
+    amountUsdt: "2",
+    frequency: "daily" as BtcDcaFrequency,
+    time: "12:00",
+    startDate: "2026-07-13",
+    nextDate: "2026-07-30",
+    activeRuns: "14",
+    btcAmount: "0,00043251",
+    latestPriceUsdt: "64.337,674905",
+    averagePriceUsdt: "64.565,25594748",
+    note: "DCA Binance",
+  });
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [transferForm, setTransferForm] = useState({
+    asset: "btc" as "btc" | "usdt",
+    btc: "",
+    usdt: "",
+    price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+    vnd: "",
+    destination: "usdt" as BtcTransferTarget,
+    date: today(),
+    note: "",
+  });
+  const [btcError, setBtcError] = useState("");
+  const [expandedDcaPlanIds, setExpandedDcaPlanIds] = useState<string[]>([]);
+  const [historyDcaPlanIds, setHistoryDcaPlanIds] = useState<string[]>([]);
+  const [editingDcaAssetPlanId, setEditingDcaAssetPlanId] = useState<string | null>(null);
+  const [dcaAssetForm, setDcaAssetForm] = useState({ btcAmount: "", averagePriceUsdt: "" });
+  const [topupFormOpen, setTopupFormOpen] = useState(false);
+  const [planFormOpen, setPlanFormOpen] = useState(false);
+  const [legacyDcaFormOpen, setLegacyDcaFormOpen] = useState(false);
+  const [transferFormOpen, setTransferFormOpen] = useState(false);
+
+  function transferPriceFor(asset: "btc" | "usdt", destination: BtcTransferTarget) {
+    if (asset === "usdt" && destination !== "btc") return state.market.usdtVnd || state.market.usdVnd;
+    return state.market.btcUsdt;
+  }
+
+  useEffect(() => {
+    const price = transferPriceFor(transferForm.asset, transferForm.destination);
+    if (!price) return;
+    setTransferForm((prev) => ({ ...prev, price: formatDecimalInput(String(price)) }));
+  }, [state.market.btcUsdt, state.market.usdtVnd, state.market.usdVnd, transferForm.asset, transferForm.destination]);
+
+  const syncBtcRow = (table: string, id: string, payload: unknown, columns: Record<string, unknown> = {}) => {
+    if (!btcCloudAccountId) return;
+    void upsertCloudPayloadRow(table, btcCloudAccountId, id, payload, columns).catch(() => {
+      // Local state remains the offline cache when cloud sync is unavailable.
+    });
+  };
+
+  const saveTopup = () => {
+    const vndAmount = parseMoney(topupForm.vnd);
+    const usdtAmount = parseDecimal(topupForm.usdt);
+    if (!vndAmount || !usdtAmount) {
+      setBtcError("Nhập VND và USDT thực nhận hợp lệ.");
+      return;
+    }
+    if (vndAmount > stats.pendingVnd) {
+      setBtcError("Số VND mua USDT đang lớn hơn vốn BTC chưa đổi.");
+      return;
+    }
+    const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: topupForm.date, note: topupForm.note.trim() };
+    setState((prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
+    syncBtcRow("btc_usdt_topups", topup.id, topup);
+    setTopupForm({ vnd: "", usdt: "", date: today(), note: "" });
+    setTopupFormOpen(false);
+    setBtcError("");
+  };
+
+  const savePlan = () => {
+    const amountUsdt = parseDecimal(planForm.amountUsdt);
+    if (!amountUsdt) {
+      setBtcError("Nhập số USDT mỗi kỳ hợp lệ.");
+      return;
+    }
+    const existingPlan = state.btcDcaPlans.find((item) => item.id === editingPlanId);
+    const plan: BtcDcaPlan = normalizeDcaPlan({
+      id: editingPlanId ?? uid(),
+      amountUsdt,
+      frequency: planForm.frequency,
+      time: planForm.time,
+      startDate: planForm.startDate,
+      nextRunAt: nextDcaRunAt(planForm),
+      isActive: true,
+      status: "active",
+      btcAmountOverride: existingPlan?.btcAmountOverride,
+      averagePriceUsdtOverride: existingPlan?.averagePriceUsdtOverride,
+      note: planForm.note.trim(),
+    });
+    setState((prev) => ({
+      ...prev,
+      btcDcaPlans: editingPlanId ? prev.btcDcaPlans.map((item) => (item.id === editingPlanId ? plan : item)) : [...prev.btcDcaPlans, plan],
+    }));
+    syncBtcRow("btc_dca_plans", plan.id, plan, { is_active: plan.isActive, next_run_at: plan.nextRunAt, status: plan.status });
+    setPlanForm({ amountUsdt: "2", frequency: "daily", time: "12:00", startDate: today(), note: "" });
+    setEditingPlanId(null);
+    setPlanFormOpen(false);
+    setBtcError("");
+  };
+
+  const saveLegacyDca = () => {
+    const amountUsdt = parseDecimal(legacyDcaForm.amountUsdt);
+    const activeRuns = Math.floor(parseDecimal(legacyDcaForm.activeRuns));
+    const btcAmount = parseDecimal(legacyDcaForm.btcAmount);
+    const latestPriceUsdt = parseDecimal(legacyDcaForm.latestPriceUsdt);
+    const averagePriceUsdt = parseDecimal(legacyDcaForm.averagePriceUsdt);
+    if (!amountUsdt || !activeRuns || !btcAmount || !latestPriceUsdt || !averagePriceUsdt || !legacyDcaForm.nextDate) {
+      setBtcError("Nhap du so ky, BTC tich luy, gia gan nhat va gia trung binh.");
+      return;
+    }
+
+    const totalInvestedUsdt = amountUsdt * activeRuns;
+    if (totalInvestedUsdt - stats.usdtBalance > 0.000001) {
+      setBtcError(`So du USDT khong du de import DCA nay. Can khoang ${formatUsdt(totalInvestedUsdt)}, hien co ${formatUsdt(stats.usdtBalance)}.`);
+      return;
+    }
+
+    const planId = uid();
+    const plan: BtcDcaPlan = normalizeDcaPlan({
+      id: planId,
+      amountUsdt,
+      frequency: legacyDcaForm.frequency,
+      time: legacyDcaForm.time,
+      startDate: legacyDcaForm.startDate,
+      nextRunAt: localDateTimeIso(legacyDcaForm.nextDate, legacyDcaForm.time),
+      isActive: true,
+      status: "active",
+      btcAmountOverride: btcAmount,
+      averagePriceUsdtOverride: averagePriceUsdt,
+      note: legacyDcaForm.note.trim(),
+    });
+
+    const totalNote = legacyDcaForm.note.trim() || "Import DCA Binance";
+    const perRunUsdt = amountUsdt;
+    let trades: BtcTrade[];
+    if (activeRuns === 1) {
+      trades = [{
+        id: uid(),
+        type: "dca",
+        usdtAmount: totalInvestedUsdt,
+        btcAmount,
+        btcPriceUsdt: averagePriceUsdt,
+        executedAt: localDateTimeIso(shiftDcaDate(legacyDcaForm.nextDate, legacyDcaForm.frequency, -1), legacyDcaForm.time),
+        planId,
+        note: totalNote,
+      }];
+    } else {
+      const latestBtc = perRunUsdt / latestPriceUsdt;
+      const remainingBtc = btcAmount - latestBtc;
+      const remainingUsdt = perRunUsdt * (activeRuns - 1);
+      const previousPriceUsdt = remainingBtc > 0 ? remainingUsdt / remainingBtc : 0;
+      if (!previousPriceUsdt) {
+        setBtcError("Du lieu gia khong hop le de tao lich su DCA.");
+        return;
+      }
+      trades = Array.from({ length: activeRuns }, (_, index) => {
+        const price = index === activeRuns - 1 ? latestPriceUsdt : previousPriceUsdt;
+        const usdtAmount = perRunUsdt;
+        return {
+          id: uid(),
+          type: "dca" as const,
+          usdtAmount,
+          btcAmount: usdtAmount / price,
+          btcPriceUsdt: price,
+          executedAt: localDateTimeIso(shiftDcaDate(legacyDcaForm.nextDate, legacyDcaForm.frequency, index - activeRuns), legacyDcaForm.time),
+          planId,
+          note: totalNote,
+        };
+      });
+    }
+
+    setState((prev) => ({
+      ...prev,
+      btcDcaPlans: [...prev.btcDcaPlans, plan],
+      btcTrades: [...prev.btcTrades, ...trades],
+    }));
+    syncBtcRow("btc_dca_plans", plan.id, plan, { is_active: plan.isActive, next_run_at: plan.nextRunAt, status: plan.status });
+    trades.forEach((trade) => syncBtcRow("btc_trades", trade.id, trade, { executed_at: trade.executedAt, plan_id: plan.id }));
+    setExpandedDcaPlanIds((prev) => [...prev, plan.id]);
+    setLegacyDcaFormOpen(false);
+    setBtcError("");
+  };
+
+  const editPlan = (plan: BtcDcaPlan) => {
+    setEditingPlanId(plan.id);
+    setPlanForm({ amountUsdt: String(plan.amountUsdt), frequency: plan.frequency, time: plan.time, startDate: plan.startDate, note: plan.note });
+    setPlanFormOpen(true);
+  };
+
+  const togglePlan = (plan: BtcDcaPlan) => {
+    const next: BtcDcaPlan = {
+      ...plan,
+      isActive: !plan.isActive,
+      status: !plan.isActive ? "active" : "paused",
+      statusNote: !plan.isActive ? "" : "Đã tạm dừng",
+      nextRunAt: !plan.isActive ? nextDcaRunAt(plan) : plan.nextRunAt,
+    };
+    setState((prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
+    syncBtcRow("btc_dca_plans", next.id, next, { is_active: next.isActive, next_run_at: next.nextRunAt, status: next.status });
+  };
+
+  const togglePlanDetails = (planId: string) => {
+    setExpandedDcaPlanIds((prev) => (prev.includes(planId) ? prev.filter((id) => id !== planId) : [...prev, planId]));
+  };
+
+  const toggleDcaPlanHistory = (planId: string) => {
+    setHistoryDcaPlanIds((prev) => (prev.includes(planId) ? prev.filter((id) => id !== planId) : [...prev, planId]));
+  };
+
+  const editDcaAsset = (plan: BtcDcaPlan) => {
+    const planStats = dcaPlanStats(plan);
+    setEditingDcaAssetPlanId(plan.id);
+    setDcaAssetForm({
+      btcAmount: String(planStats.btcAmount || ""),
+      averagePriceUsdt: String(planStats.averagePriceUsdt || ""),
+    });
+    setExpandedDcaPlanIds((prev) => (prev.includes(plan.id) ? prev : [...prev, plan.id]));
+  };
+
+  const saveDcaAsset = (plan: BtcDcaPlan) => {
+    const btcAmountOverride = parseDecimal(dcaAssetForm.btcAmount);
+    const averagePriceUsdtOverride = parseDecimal(dcaAssetForm.averagePriceUsdt);
+    if (!btcAmountOverride || !averagePriceUsdtOverride) {
+      setBtcError("Nhap BTC tich luy va gia trung binh hop le.");
+      return;
+    }
+    const next: BtcDcaPlan = {
+      ...plan,
+      btcAmountOverride,
+      averagePriceUsdtOverride,
+    };
+    setState((prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
+    syncBtcRow("btc_dca_plans", next.id, next, { is_active: next.isActive, next_run_at: next.nextRunAt, status: next.status });
+    setEditingDcaAssetPlanId(null);
+    setDcaAssetForm({ btcAmount: "", averagePriceUsdt: "" });
+    setBtcError("");
+  };
+
+  const deletePlan = (plan: BtcDcaPlan) => {
+    setState((prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id) }));
+    setExpandedDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
+    setHistoryDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
+    if (editingPlanId === plan.id) {
+      setEditingPlanId(null);
+      setPlanForm({ amountUsdt: "2", frequency: "daily", time: "12:00", startDate: today(), note: "" });
+    }
+    if (!btcCloudAccountId) return;
+    void deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id).catch(() => {
+      // Local deletion still applies; cloud can be reconciled manually if offline.
+    });
+  };
+
+  const transferSourceAmount = () =>
+    transferForm.asset === "btc" ? parseDecimal(transferForm.btc) : parseDecimal(transferForm.usdt);
+
+  const transferPrice = () => parseDecimal(transferForm.price) || transferPriceFor(transferForm.asset, transferForm.destination);
+
+  const transferReceiveUnit = () => {
+    if (transferForm.asset === "usdt" && transferForm.destination === "btc") return "BTC";
+    if (transferForm.asset === "btc" && transferForm.destination === "usdt") return "USDT";
+    return "VND";
+  };
+
+  const transferEstimatedReceive = () => {
+    const source = transferSourceAmount();
+    const price = transferPrice();
+    if (!source || !price) return 0;
+    if (transferForm.asset === "usdt" && transferForm.destination === "btc") return source / price;
+    if (transferForm.asset === "btc" && transferForm.destination === "usdt") return source * price;
+    if (transferForm.asset === "usdt") return source * price;
+    return source * price * (state.market.usdtVnd || state.market.usdVnd);
+  };
+
+  const formatTransferReceive = (value: number) => {
+    const unit = transferReceiveUnit();
+    if (unit === "BTC") return formatBtc(value);
+    if (unit === "USDT") return formatUsdt(value);
+    return formatVnd(value);
+  };
+
+  const resetTransferForm = () => {
+    setTransferForm({
+      asset: "btc",
+      btc: "",
+      usdt: "",
+      price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+      vnd: "",
+      destination: "usdt",
+      date: today(),
+      note: "",
+    });
+  };
+
+  const topupUsdtRate = () => {
+    const vndAmount = parseMoney(topupForm.vnd);
+    const usdtAmount = parseDecimal(topupForm.usdt);
+    return vndAmount && usdtAmount ? vndAmount / usdtAmount : 0;
+  };
+
+  const saveTransfer = () => {
+    const price = transferPrice();
+    const sourceAmount = transferSourceAmount();
+    const receivedInput = transferReceiveUnit() === "VND" ? parseMoney(transferForm.vnd) : parseDecimal(transferForm.vnd);
+    const estimatedReceive = transferEstimatedReceive();
+    const received = receivedInput || estimatedReceive;
+    if (!sourceAmount || !price || !received) {
+      setBtcError("Nhập tài sản, giá và số tiền nhận hợp lệ.");
+      return;
+    }
+    if (transferForm.asset === "btc" && transferForm.destination !== "usdt") {
+      setBtcError("BTC chỉ được đổi sang USDT trong quỹ BTC.");
+      return;
+    }
+    if (transferForm.asset === "btc" && sourceAmount - stats.btcBalance > 0.00000001) {
+      setBtcError("Số BTC rút lớn hơn số BTC đang có.");
+      return;
+    }
+    if (transferForm.asset === "usdt" && sourceAmount > stats.usdtBalance) {
+      setBtcError("Số USDT rút lớn hơn số dư USDT.");
+      return;
+    }
+
+    if (transferForm.asset === "usdt" && transferForm.destination === "btc") {
+      const trade: BtcTrade = {
+        id: uid(),
+        type: "manual-buy",
+        usdtAmount: sourceAmount,
+        btcAmount: received,
+        btcPriceUsdt: price,
+        executedAt: new Date(`${transferForm.date}T00:00:00`).toISOString(),
+        note: transferForm.note.trim() || "Chuyển USDT sang BTC",
+      };
+      setState((prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
+      syncBtcRow("btc_trades", trade.id, trade, { executed_at: trade.executedAt, plan_id: null });
+      resetTransferForm();
+      setTransferFormOpen(false);
+      setBtcError("");
+      return;
+    }
+
+    const btcAmount = transferForm.asset === "btc" ? sourceAmount : 0;
+    const usdtAmount = transferForm.asset === "btc" ? received : sourceAmount;
+    const vndAmount =
+      transferForm.destination === "usdt"
+        ? 0
+        : transferReceiveUnit() === "VND"
+          ? Math.round(received)
+          : Math.round(usdtAmount * (state.market.usdtVnd || state.market.usdVnd));
+    const transfer: BtcTransfer = {
+      id: uid(),
+      asset: transferForm.asset,
+      btcAmount,
+      usdtAmount,
+      btcPriceUsdt: transferForm.asset === "btc" ? price : state.market.btcUsdt,
+      vndAmount,
+      destination: transferForm.destination,
+      date: transferForm.date,
+      note: transferForm.note.trim(),
+    };
+    const transferNote =
+      transfer.destination === "usdt"
+        ? transfer.note
+          ? `Chuyển BTC sang USDT · ${transfer.note} [btc-transfer:${transfer.id}]`
+          : `Chuyển BTC sang USDT [btc-transfer:${transfer.id}]`
+        : transfer.note
+          ? `Rút từ BTC · ${transfer.note} [btc-transfer:${transfer.id}]`
+          : `Rút từ BTC [btc-transfer:${transfer.id}]`;
+    setState((prev) => ({
+      ...prev,
+      btcTransfers: [...prev.btcTransfers, transfer],
+      fundTransactions:
+        transfer.destination === "usdt"
+          ? prev.fundTransactions
+          : [
+              ...prev.fundTransactions,
+              { id: uid(), fund: "btc", type: "withdraw", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote },
+              ...(transfer.destination === "stock"
+                ? [{ id: uid(), fund: "stock" as const, type: "deposit" as const, amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }]
+                : []),
+            ],
+      incomeTransactions:
+        transfer.destination === "cash"
+          ? [
+              ...prev.incomeTransactions,
+              { id: uid(), categoryId: "other-income", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote },
+            ]
+          : prev.incomeTransactions,
+    }));
+    syncBtcRow("btc_transfers", transfer.id, transfer, { transfer_at: `${transfer.date}T00:00:00` });
+    resetTransferForm();
+    setTransferFormOpen(false);
+    setBtcError("");
+  };
+
+  const estimatedTransferReceive = transferEstimatedReceive();
+  const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
+  const dcaPlanStats = (plan: BtcDcaPlan) => {
+    const trades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
+    const investedUsdt = trades.reduce((sum, trade) => sum + trade.usdtAmount, 0);
+    const tradeBtcAmount = trades.reduce((sum, trade) => sum + trade.btcAmount, 0);
+    const tradeAveragePriceUsdt = tradeBtcAmount ? investedUsdt / tradeBtcAmount : 0;
+    const btcAmount = plan.btcAmountOverride && plan.btcAmountOverride > 0 ? plan.btcAmountOverride : tradeBtcAmount;
+    const averagePriceUsdt =
+      plan.averagePriceUsdtOverride && plan.averagePriceUsdtOverride > 0 ? plan.averagePriceUsdtOverride : tradeAveragePriceUsdt;
+    const currentValueUsdt = btcAmount * state.market.btcUsdt;
+    const pnlUsdt = currentValueUsdt - investedUsdt;
+    const pnlPercent = investedUsdt ? (pnlUsdt / investedUsdt) * 100 : 0;
+    const latestTrade = [...trades].sort((a, b) => b.executedAt.localeCompare(a.executedAt))[0];
+    const startAt = new Date(`${plan.startDate}T${plan.time}:00`).toISOString();
+    const activeDays = trades.length;
+    return {
+      activeDays,
+      averagePriceUsdt,
+      btcAmount,
+      currentValueUsdt,
+      investedUsdt,
+      latestPriceUsdt: latestTrade?.btcPriceUsdt || 0,
+      pnlPercent,
+      pnlUsdt,
+      startAt,
+      tradeCount: trades.length,
+    };
+  };
+  const rows = [
+    ...state.btcUsdtTopups.map((item) => ({ kind: "topup" as const, date: item.date, item })),
+    ...state.btcTrades.filter((item) => item.type !== "dca").map((item) => ({ kind: "trade" as const, date: item.executedAt.slice(0, 10), item })),
+    ...state.btcTransfers.map((item) => ({ kind: "transfer" as const, date: item.date, item })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+
+  const content = (
+    <>
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">BTC</p>
+        </div>
+      </header>
+      <section className="metrics-grid stock-metrics-grid">
+        <MetricCard label="Tổng vốn" value={formatVnd(stats.capitalVnd)} icon={<BadgeDollarSign size={20} />} />
+        <MetricCard label="Tổng tài sản BTC" value={formatVnd(stats.totalValueVnd)} icon={<Bitcoin size={20} />} tone="highlight" />
+        <MetricCard label="BTC đang giữ" value={formatBtc(stats.btcBalance)} subValue={formatUsdt(stats.btcValueUsdt)} icon={<Coins size={20} />} />
+        <MetricCard label="Số dư USDT" value={formatUsdt(stats.usdtBalance)} icon={<CircleDollarSign size={20} />} />
+        <MetricCard label="Lãi/lỗ" value={`${formatUsdt(stats.pnlUsdt)} · ${stats.pnlPercent.toFixed(1)}%`} subValue={formatVnd(stats.pnlVnd)} icon={<BarChart3 size={20} />} tone={stats.pnlVnd < 0 ? "loss" : undefined} />
+      </section>
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Giá thị trường</h2>
+          <button className="ghost report-refresh-button" onClick={() => onRefreshMarket()} type="button" aria-label="Cập nhật giá"><RefreshCw size={17} /></button>
+        </div>
+        <small className="market-status">{marketStatus || (state.market.updatedAt ? `Cập nhật ${formatDateTime(state.market.updatedAt)}` : "Chưa cập nhật")}</small>
+        <div className="market-grid">
+          <div><small>BTC/USDT</small><strong>{state.market.btcUsdt ? formatUsdt(state.market.btcUsdt) : "Đang chờ"}</strong></div>
+          <div><small>USDT/VND</small><strong>{state.market.usdtVnd ? formatVnd(state.market.usdtVnd) : "Đang chờ"}</strong></div>
+          <div><small>Giá vốn TB</small><strong>{stats.averageCostUsdt ? formatUsdt(stats.averageCostUsdt) : "0 USDT"}</strong></div>
+        </div>
+      </section>
+      <section className="two-column compact btc-action-grid">
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Mua USDT</h2>
+            <small>Còn {formatVnd(stats.pendingVnd)} vốn BTC chưa đổi</small>
+            {topupFormOpen && <button className="ghost" onClick={() => setTopupFormOpen(false)} type="button">Hủy</button>}
+          </div>
+          {!topupFormOpen ? (
+            <button className="primary asset-open-button" onClick={() => setTopupFormOpen(true)} type="button"><Plus size={16} /> Mua USDT</button>
+          ) : (
+            <div className="form-grid btc-form-grid">
+              <label>VND dùng mua<input value={topupForm.vnd} onChange={(event) => setTopupForm({ ...topupForm, vnd: formatMoneyInput(event.target.value) })} placeholder="1.000.000" /></label>
+              <label>USDT thực nhận<input value={topupForm.usdt} onChange={(event) => setTopupForm({ ...topupForm, usdt: formatDecimalInput(event.target.value) })} placeholder="39,250" /></label>
+              <label>Ngày<input type="date" value={topupForm.date} onChange={(event) => setTopupForm({ ...topupForm, date: event.target.value })} /></label>
+              <label>Giá USDT (VND)<input value={topupUsdtRate() ? formatVnd(topupUsdtRate()) : ""} readOnly placeholder="Tự tính" /></label>
+              <label>Note<input value={topupForm.note} onChange={(event) => setTopupForm({ ...topupForm, note: event.target.value })} placeholder="Binance P2P" /></label>
+              <button className="primary btc-form-submit" onClick={saveTopup} type="button"><Plus size={17} /> Lưu USDT</button>
+            </div>
+          )}
+        </article>
+        <article className="panel">
+          <div className="panel-title">
+            <h2>{editingPlanId ? "Sửa DCA" : "Kế hoạch DCA"}</h2>
+            {planFormOpen && <button className="ghost" onClick={() => {
+              setPlanFormOpen(false);
+              setEditingPlanId(null);
+            }} type="button">Hủy</button>}
+            {legacyDcaFormOpen && <button className="ghost" onClick={() => setLegacyDcaFormOpen(false)} type="button">Hủy import</button>}
+          </div>
+          {!planFormOpen && !legacyDcaFormOpen && (
+            <div className="btc-form-open-actions">
+              <button className="primary asset-open-button" onClick={() => setPlanFormOpen(true)} type="button"><CalendarClock size={16} /> Mở form DCA</button>
+              <button className="ghost asset-open-button" onClick={() => setLegacyDcaFormOpen(true)} type="button"><Upload size={16} /> Nhập DCA cũ</button>
+            </div>
+          )}
+          {planFormOpen && (
+            <div className="form-grid btc-form-grid">
+              <label>USDT mỗi kỳ<input value={planForm.amountUsdt} onChange={(event) => setPlanForm({ ...planForm, amountUsdt: formatDecimalInput(event.target.value) })} placeholder="2" /></label>
+              <label>Tần suất<select value={planForm.frequency} onChange={(event) => setPlanForm({ ...planForm, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
+              <label>Giờ chạy<input type="time" value={planForm.time} onChange={(event) => setPlanForm({ ...planForm, time: event.target.value })} /></label>
+              <label>Ngày bắt đầu<input type="date" value={planForm.startDate} onChange={(event) => setPlanForm({ ...planForm, startDate: event.target.value })} /></label>
+              <label>Note<input value={planForm.note} onChange={(event) => setPlanForm({ ...planForm, note: event.target.value })} placeholder="DCA Binance" /></label>
+              <button className="primary btc-form-submit" onClick={savePlan} type="button"><CalendarClock size={17} /> Lưu kế hoạch</button>
+            </div>
+          )}
+          {legacyDcaFormOpen && (
+            <div className="form-grid btc-form-grid">
+              <label>USDT mỗi kỳ<input value={legacyDcaForm.amountUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, amountUsdt: formatDecimalInput(event.target.value) })} placeholder="2" /></label>
+              <label>Tần suất<select value={legacyDcaForm.frequency} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
+              <label>Giờ chạy<input type="time" value={legacyDcaForm.time} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, time: event.target.value })} /></label>
+              <label>Ngày bắt đầu<input type="date" value={legacyDcaForm.startDate} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, startDate: event.target.value })} /></label>
+              <label>Ngày giao dịch tiếp theo<input type="date" value={legacyDcaForm.nextDate} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, nextDate: event.target.value })} /></label>
+              <label>Số kỳ đã kích hoạt<input value={legacyDcaForm.activeRuns} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, activeRuns: event.target.value })} placeholder="14" /></label>
+              <label>BTC tích lũy<input value={legacyDcaForm.btcAmount} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, btcAmount: formatDecimalInput(event.target.value) })} placeholder="0,00043251" /></label>
+              <label>Giá gần nhất (USDT)<input value={legacyDcaForm.latestPriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, latestPriceUsdt: formatDecimalInput(event.target.value) })} placeholder="64.337,674905" /></label>
+              <label>Giá trung bình (USDT)<input value={legacyDcaForm.averagePriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, averagePriceUsdt: formatDecimalInput(event.target.value) })} placeholder="64.565,25594748" /></label>
+              <label>Note<input value={legacyDcaForm.note} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, note: event.target.value })} placeholder="DCA Binance" /></label>
+              <button className="primary btc-form-submit" onClick={saveLegacyDca} type="button"><Upload size={17} /> Import DCA</button>
+            </div>
+          )}
+        </article>
+      </section>
+      <section className="panel">
+        <div className="panel-title"><h2>Lệnh DCA</h2><small>{state.btcDcaPlans.length} kế hoạch</small></div>
+        <div className="btc-plan-list">
+          {state.btcDcaPlans.length === 0 ? <p className="muted">Chưa có kế hoạch DCA.</p> : state.btcDcaPlans.map((plan) => {
+            const planStats = dcaPlanStats(plan);
+            const isExpanded = expandedDcaPlanIds.includes(plan.id);
+            const isHistoryOpen = historyDcaPlanIds.includes(plan.id);
+            const dcaTrades = state.btcTrades
+              .filter((trade) => trade.type === "dca" && trade.planId === plan.id)
+              .sort((a, b) => b.executedAt.localeCompare(a.executedAt));
+            return (
+              <article className="btc-plan-card" key={plan.id}>
+                <div className="btc-plan-header">
+                  <div>
+                    <div className="btc-plan-top-row">
+                      <span className={`btc-plan-status ${plan.isActive ? "active" : "paused"}`}>{plan.isActive ? "Đang tiến hành" : "Đã tạm dừng"}</span>
+                      <div className="btc-plan-top-actions">
+                        <button className={`btc-plan-icon-button ${isHistoryOpen ? "active" : ""}`} onClick={() => toggleDcaPlanHistory(plan.id)} title="Lịch sử DCA" type="button"><History size={15} /></button>
+                        <button className="btc-plan-delete-button danger-text" onClick={() => deletePlan(plan)} title="Xóa lệnh DCA" type="button"><X size={16} /></button>
+                      </div>
+                    </div>
+                    <div className="btc-plan-title-row">
+                      <h3>BTC Gói định kỳ</h3>
+                      <strong className={`btc-plan-pnl ${planStats.pnlUsdt < 0 ? "stock-pnl loss" : "stock-pnl gain"}`}>
+                        {formatUsdt(planStats.pnlUsdt)} · {planStats.pnlPercent.toFixed(2)}%
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="btc-plan-actions">
+                    <button className="ghost" onClick={() => togglePlanDetails(plan.id)} type="button">{isExpanded ? "Ẩn chi tiết" : "Xem chi tiết"}</button>
+                    <button className="ghost" onClick={() => editPlan(plan)} type="button"><Pencil size={16} /> Sửa</button>
+                    <button className="ghost" onClick={() => togglePlan(plan)} type="button">{plan.isActive ? "Tạm dừng" : "Bật lại"}</button>
+                  </div>
+                </div>
+                <div className="btc-plan-summary">
+                  <span>Tần suất <strong>{dcaFrequencyLabel[plan.frequency]}, {plan.time}</strong></span>
+                  <span>Số tiền đầu tư <strong>{formatUsdt(plan.amountUsdt)}</strong></span>
+                </div>
+                {isExpanded && (
+                  <>
+                    <div className="btc-plan-detail-grid">
+                      <span>Số lượng nắm giữ (USDT) <strong>{formatUsdt(planStats.currentValueUsdt)}</strong></span>
+                      <span>Thời gian kích hoạt <strong>{planStats.activeDays}</strong></span>
+                      <span>Ngày bắt đầu kế hoạch <strong>{formatShortDateTime(planStats.startAt)}</strong></span>
+                      <span>Ngày giao dịch tiếp theo <strong>{plan.isActive ? formatShortDateTime(plan.nextRunAt) : "Đã tạm dừng"}</strong></span>
+                    </div>
+                    <div className="btc-plan-asset">
+                      <div className="btc-plan-asset-title">
+                        <span className="btc-token-mark"><Bitcoin size={16} /></span>
+                        <strong>BTC</strong>
+                        <button className="btc-plan-icon-button" onClick={() => editDcaAsset(plan)} title="Sửa số BTC và giá trung bình" type="button"><Pencil size={15} /></button>
+                      </div>
+                      {editingDcaAssetPlanId === plan.id ? (
+                        <div className="form-grid btc-form-grid btc-dca-asset-edit">
+                          <label>Số lượng tích lũy<input value={dcaAssetForm.btcAmount} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, btcAmount: formatDecimalInput(event.target.value) })} placeholder="0,00043251" /></label>
+                          <label>Giá trung bình (USDT)<input value={dcaAssetForm.averagePriceUsdt} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, averagePriceUsdt: formatDecimalInput(event.target.value) })} placeholder="64.565,25594748" /></label>
+                          <button className="primary btc-form-submit" onClick={() => saveDcaAsset(plan)} type="button"><Save size={16} /> Lưu BTC</button>
+                          <button className="ghost btc-form-submit" onClick={() => {
+                            setEditingDcaAssetPlanId(null);
+                            setDcaAssetForm({ btcAmount: "", averagePriceUsdt: "" });
+                          }} type="button"><X size={16} /> Hủy</button>
+                        </div>
+                      ) : (
+                        <div className="btc-plan-detail-grid">
+                          <span>Số lượng tích lũy <strong>{formatBtc(planStats.btcAmount)}</strong></span>
+                          <span>Giá gần nhất (USDT) <strong>{planStats.latestPriceUsdt ? formatUsdt(planStats.latestPriceUsdt) : "0 USDT"}</strong></span>
+                          <span>Giá trung bình (USDT) <strong>{planStats.averagePriceUsdt ? formatUsdt(planStats.averagePriceUsdt) : "0 USDT"}</strong></span>
+                        </div>
+                      )}
+                    </div>
+                    {plan.statusNote && <small className="muted">{plan.statusNote}</small>}
+                  </>
+                )}
+                {isHistoryOpen && (
+                  <div className="btc-dca-history">
+                    <div className="btc-dca-history-title">
+                      <strong>Lịch sử giao dịch DCA</strong>
+                      <small>{dcaTrades.length} lệnh</small>
+                    </div>
+                    {dcaTrades.length === 0 ? (
+                      <p className="muted">Chưa có giao dịch DCA nào.</p>
+                    ) : (
+                      <div className="btc-dca-history-list">
+                        {dcaTrades.map((trade) => (
+                          <div key={trade.id}>
+                            <span><Bitcoin size={14} /></span>
+                            <div>
+                              <strong>{formatBtc(trade.btcAmount)} · {formatUsdt(trade.usdtAmount)}</strong>
+                              <small>{formatShortDateTime(trade.executedAt)} · Giá mua {formatUsdt(trade.btcPriceUsdt)} · {trade.note || "Không ghi chú"}</small>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+      <section className="two-column compact btc-action-grid">
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Rút / chuyển</h2>
+            <small>Ước tính {formatTransferReceive(estimatedTransferReceive)}</small>
+            {transferFormOpen && <button className="ghost" onClick={() => setTransferFormOpen(false)} type="button">Hủy</button>}
+          </div>
+          {!transferFormOpen ? (
+            <button className="primary asset-open-button" onClick={() => setTransferFormOpen(true)} type="button"><ArrowDownCircle size={16} /> Rút / chuyển</button>
+          ) : (
+            <div className="form-grid btc-form-grid">
+              <label>Tài sản nguồn<select value={transferForm.asset} onChange={(event) => {
+                const asset = event.target.value as "btc" | "usdt";
+                const destination: BtcTransferTarget = asset === "btc" ? "usdt" : "btc";
+                setTransferForm({ ...transferForm, asset, destination, price: formatDecimalInput(String(transferPriceFor(asset, destination) || "")), vnd: "" });
+              }}><option value="btc">BTC</option><option value="usdt">USDT</option></select></label>
+              {transferForm.asset === "btc" ? <label>Số BTC<input value={transferForm.btc} onChange={(event) => setTransferForm({ ...transferForm, btc: formatDecimalInput(event.target.value) })} placeholder="0,0001" /></label> : <label>Số USDT<input value={transferForm.usdt} onChange={(event) => setTransferForm({ ...transferForm, usdt: formatDecimalInput(event.target.value) })} placeholder="10" /></label>}
+              <label>{transferForm.asset === "usdt" && transferForm.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={transferForm.price} onChange={(event) => setTransferForm({ ...transferForm, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(transferPriceFor(transferForm.asset, transferForm.destination) || 0))} /></label>
+              <label>Số tiền nhận<input value={transferForm.vnd} onChange={(event) => setTransferForm({ ...transferForm, vnd: transferReceiveUnit() === "VND" ? formatMoneyInput(event.target.value) : formatDecimalInput(event.target.value) })} placeholder={formatTransferReceive(estimatedTransferReceive)} /></label>
+              <label>Nơi nhận<select value={transferForm.destination} disabled={transferForm.asset === "btc"} onChange={(event) => {
+                const destination = event.target.value as BtcTransferTarget;
+                setTransferForm({ ...transferForm, destination, price: formatDecimalInput(String(transferPriceFor(transferForm.asset, destination) || "")), vnd: "" });
+              }}>
+                {transferForm.asset === "btc" ? <option value="usdt">USDT</option> : <option value="btc">BTC</option>}
+                {transferForm.asset === "usdt" && <>
+                  <option value="stock">CK</option>
+                  <option value="saving">Tiết kiệm</option>
+                  <option value="emergency">Dự phòng</option>
+                  <option value="cash">Tiền mặt</option>
+                </>}
+              </select></label>
+              <label>Ngày<input type="date" value={transferForm.date} onChange={(event) => setTransferForm({ ...transferForm, date: event.target.value })} /></label>
+              <label>Note<input value={transferForm.note} onChange={(event) => setTransferForm({ ...transferForm, note: event.target.value })} placeholder="Chuyển quỹ" /></label>
+              <button className="primary btc-form-submit" onClick={saveTransfer} type="button"><ArrowDownCircle size={17} /> Lưu giao dịch</button>
+            </div>
+          )}
+        </article>
+      </section>
+      {btcError && <span className="form-error">{btcError}</span>}
+      <section className="panel">
+        <div className="panel-title"><h2>Lịch sử BTC</h2><small>{rows.length} giao dịch</small></div>
+        <div className="timeline">
+          {rows.map((row) => (
+            <div key={`${row.kind}-${row.item.id}`}>
+              <span className={row.kind === "transfer" ? "withdraw" : "deposit"}>{row.kind === "transfer" ? "-" : "+"}</span>
+              <div>
+                {row.kind === "topup" && <><strong>{formatUsdt(row.item.usdtAmount)} · {formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · Giá USDT {row.item.usdtAmount ? formatVnd(row.item.vndAmount / row.item.usdtAmount) : "0đ"} · Mua USDT · {row.item.note || "Không ghi chú"}</small></>}
+                {row.kind === "trade" && <><strong>{formatBtc(row.item.btcAmount)} · {formatUsdt(row.item.usdtAmount)}</strong><small>{formatDate(row.item.executedAt.slice(0, 10))} · {row.item.type === "dca" ? "DCA" : "Mua thêm"} @ {formatUsdt(row.item.btcPriceUsdt)} · {row.item.note || "Không ghi chú"}</small></>}
+                {row.kind === "transfer" && <><strong>{row.item.destination === "usdt" ? formatUsdt(row.item.usdtAmount) : formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · {row.item.destination === "usdt" ? "Chuyển" : "Rút"} {row.item.asset.toUpperCase()} về {btcTransferDestinationLabel(row.item.destination)} · {row.item.note || "Không ghi chú"}</small></>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+
+  if (embedded) return content;
+  return <div className="page">{content}</div>;
+}
+
 function FundPage({
   state,
   setState,
@@ -3063,7 +4363,7 @@ function FundPage({
           <div className="form-grid">
             <label>
               Số tiền
-              <input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="5.000.000" />
+              <input value={amount} onChange={(event) => setAmount(formatMoneyInput(event.target.value))} placeholder="5.000.000" />
             </label>
             <label>
               Lý do
@@ -3487,8 +4787,8 @@ function StockPage({
             }} type="button">Hủy</button>}
           </div>
           {!purchaseFormOpen ? (
-            <button className="primary" onClick={() => setPurchaseFormOpen(true)} type="button">
-              <Plus size={17} /> Mua cổ phiếu
+            <button className="primary asset-open-button" onClick={() => setPurchaseFormOpen(true)} type="button">
+              <Plus size={16} /> Mua cổ phiếu
             </button>
           ) : (
             <>
@@ -3541,7 +4841,7 @@ function StockPage({
                       </label>
                       <label>
                         Giá vào
-                        <input value={row.buyPrice} onChange={(event) => updateBuyRow(row.id, { buyPrice: event.target.value })} placeholder="27.5" />
+                        <input value={row.buyPrice} onChange={(event) => updateBuyRow(row.id, { buyPrice: formatDecimalInput(event.target.value) })} placeholder="27,5" />
                       </label>
                       <label>
                         Số cổ phiếu
@@ -3580,7 +4880,7 @@ function StockPage({
       <section className="panel">
         <div className="panel-title">
           <h2>Danh mục cổ phiếu</h2>
-          <button className="ghost" onClick={() => refreshPrices()} type="button"><LineChart size={17} /> Cập nhật giá</button>
+          <button className="ghost report-refresh-button" onClick={() => refreshPrices()} type="button" aria-label="Cập nhật giá"><LineChart size={17} /></button>
         </div>
         {refreshStatus && <p className="muted">{refreshStatus}</p>}
         {stats.holdings.length === 0 ? (
@@ -3625,7 +4925,7 @@ function StockPage({
                     </label>
                     <label>
                       Giá rút
-                      <input value={saleForm.price} onChange={(event) => setSaleForm({ ...saleForm, price: event.target.value })} placeholder={formatStockPrice(holding.marketPrice)} />
+                      <input value={saleForm.price} onChange={(event) => setSaleForm({ ...saleForm, price: formatDecimalInput(event.target.value) })} placeholder={formatStockPrice(holding.marketPrice)} />
                     </label>
                     <label>
                       Nơi nhận
@@ -3693,6 +4993,7 @@ function InvestmentPage({
   setActiveTab,
   onRefreshMarket,
   marketStatus,
+  btcCloudAccountId,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
@@ -3700,6 +5001,7 @@ function InvestmentPage({
   setActiveTab: (tab: InvestmentTab) => void;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
   marketStatus: string;
+  btcCloudAccountId: string;
 }) {
   const tabs: Array<{ id: InvestmentTab; label: string }> = [
     { id: "btc", label: "BTC" },
@@ -3728,10 +5030,10 @@ function InvestmentPage({
           </button>
         ))}
       </div>
-      {activeTab === "btc" && <FundPage state={state} setState={setState} fund="btc" embedded />}
+      {activeTab === "btc" && <BtcPage state={state} setState={setState} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
       {activeTab === "stock" && <StockPage state={state} setState={setState} embedded />}
       {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} embedded fixedFilter="all" />}
-      {activeTab === "sol" && <SolPage state={state} setState={setState} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} embedded />}
+      {activeTab === "sol" && <SolPage state={state} setState={setState} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
     </div>
   );
 }
@@ -3770,7 +5072,7 @@ function BankDepositPage({
   fixedFilter?: DepositFilter;
 }) {
   type PendingDepositRequest = {
-    source: "allocation" | "sol" | "stock";
+    source: "allocation" | "sol" | "stock" | "btc";
     fund: DepositFund;
     month: string;
     amount: number;
@@ -3875,7 +5177,24 @@ function BankDepositPage({
         note: sale.note ? `Rút từ CK ${sale.symbol} · ${sale.note} ${stockSaleDepositMarker(sale.id)}` : `Rút từ CK ${sale.symbol} ${stockSaleDepositMarker(sale.id)}`,
       };
     });
-  const pendingDepositRequests: PendingDepositRequest[] = [...pendingAllocations, ...pendingSolDeposits, ...pendingStockSaleDeposits].sort((a, b) => a.month.localeCompare(b.month));
+  const pendingBtcTransferDeposits = state.btcTransfers
+    .filter(
+      (transfer) =>
+        (transfer.destination === "saving" || transfer.destination === "emergency") &&
+        !state.bankDeposits.some((deposit) => deposit.note.includes(btcTransferDepositMarker(transfer.id)))
+    )
+    .map((transfer) => {
+      const fund = transfer.destination as DepositFund;
+      return {
+        source: "btc" as const,
+        fund,
+        month: monthFromDate(transfer.date),
+        amount: transfer.vndAmount,
+        title: `${fundLabel(fund)} · Rút từ BTC chưa tạo sổ`,
+        note: transfer.note ? `Rút từ BTC · ${transfer.note} ${btcTransferDepositMarker(transfer.id)}` : `Rút từ BTC ${btcTransferDepositMarker(transfer.id)}`,
+      };
+    });
+  const pendingDepositRequests: PendingDepositRequest[] = [...pendingAllocations, ...pendingSolDeposits, ...pendingStockSaleDeposits, ...pendingBtcTransferDeposits].sort((a, b) => a.month.localeCompare(b.month));
 
   const updateDepositDate = (date: string) => {
     setForm((prev) => ({ ...prev, date, maturityDate: addMonths(date, Number(prev.term) || 0) }));
@@ -4121,7 +5440,7 @@ function BankDepositPage({
         <div className="panel-title">
           <h2>Thêm sổ MBB</h2>
           {!formOpen ? (
-            <button className="ghost" onClick={openManualDepositForm}>
+            <button className="ghost asset-open-button" onClick={openManualDepositForm}>
               Mở form
             </button>
           ) : (
@@ -4155,7 +5474,7 @@ function BankDepositPage({
             </div>
             <label>
               Số tiền
-              <input value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="6.000.000" />
+              <input value={form.amount} onChange={(event) => setForm({ ...form, amount: formatMoneyInput(event.target.value) })} placeholder="6.000.000" />
             </label>
             <label>
               Ngày gửi
@@ -4171,7 +5490,7 @@ function BankDepositPage({
             </label>
             <label>
               Lãi suất %
-              <input value={form.rate} onChange={(event) => setForm({ ...form, rate: event.target.value })} />
+              <input value={form.rate} onChange={(event) => setForm({ ...form, rate: formatDecimalInput(event.target.value) })} />
             </label>
             <label>
               Note
@@ -4295,12 +5614,14 @@ function SolPage({
   setState,
   onRefreshMarket,
   marketStatus,
+  btcCloudAccountId,
   embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
   marketStatus: string;
+  btcCloudAccountId: string;
   embedded?: boolean;
 }) {
   type SolFormMode = "buy" | "withdraw";
@@ -4309,7 +5630,7 @@ function SolPage({
   const [formMode, setFormMode] = useState<SolFormMode>("buy");
   const [withdrawForm, setWithdrawForm] = useState({
     sol: "",
-    price: state.market.solUsd ? String(state.market.solUsd) : "",
+    price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "",
     vnd: "",
     destination: "cash" as SolDestination,
     date: today(),
@@ -4322,7 +5643,7 @@ function SolPage({
   const currentUsd = totalSol * state.market.solUsd;
   const pnl = currentUsd - cost;
   const pnlPercent = cost ? (pnl / cost) * 100 : 0;
-  const costVnd = cost * state.market.usdVnd;
+  const currentVnd = currentUsd * state.market.usdVnd;
   const pnlVnd = pnl * state.market.usdVnd;
   const destinationOptions: Array<{ id: SolDestination; label: string }> = [
     { id: "btc", label: "BTC" },
@@ -4335,7 +5656,7 @@ function SolPage({
   useEffect(() => {
     setWithdrawForm((prev) => {
       if (prev.price || !state.market.solUsd) return prev;
-      return { ...prev, price: String(state.market.solUsd) };
+      return { ...prev, price: formatDecimalInput(String(state.market.solUsd)) };
     });
   }, [state.market.solUsd]);
 
@@ -4343,22 +5664,25 @@ function SolPage({
     Math.round(parseDecimal(solInput) * parseDecimal(priceInput) * state.market.usdVnd);
 
   const updateWithdrawSol = (sol: string) => {
-    const estimate = estimatedWithdrawVnd(sol, withdrawForm.price);
-    setWithdrawForm((prev) => ({ ...prev, sol, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
+    const nextSol = formatDecimalInput(sol);
+    const estimate = estimatedWithdrawVnd(nextSol, withdrawForm.price);
+    setWithdrawForm((prev) => ({ ...prev, sol: nextSol, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
     setWithdrawError("");
   };
 
   const updateWithdrawPrice = (price: string) => {
-    const estimate = estimatedWithdrawVnd(withdrawForm.sol, price);
-    setWithdrawForm((prev) => ({ ...prev, price, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
+    const nextPrice = formatDecimalInput(price);
+    const estimate = estimatedWithdrawVnd(withdrawForm.sol, nextPrice);
+    setWithdrawForm((prev) => ({ ...prev, price: nextPrice, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
     setWithdrawError("");
   };
 
   const updateWithdrawVnd = (vnd: string) => {
+    const nextVnd = formatMoneyInput(vnd);
     const sol = parseDecimal(withdrawForm.sol);
-    const vndAmount = parseMoney(vnd);
+    const vndAmount = parseMoney(nextVnd);
     const price = sol && state.market.usdVnd ? vndAmount / sol / state.market.usdVnd : 0;
-    setWithdrawForm((prev) => ({ ...prev, vnd, price: price ? price.toFixed(2) : prev.price }));
+    setWithdrawForm((prev) => ({ ...prev, vnd: nextVnd, price: price ? formatDecimalInput(price.toFixed(2)) : prev.price }));
     setWithdrawError("");
   };
 
@@ -4396,10 +5720,21 @@ function SolPage({
       date: withdrawForm.date,
       note,
     };
+    const btcTopup: BtcUsdtTopup | null =
+      withdrawal.destination === "btc"
+        ? {
+            id: uid(),
+            vndAmount,
+            usdtAmount: sol * sellPrice,
+            date: withdrawal.date,
+            note: `${transferNote} · USDT từ SOL`,
+          }
+        : null;
 
     setState((prev) => ({
       ...prev,
       solTransactions: [...prev.solTransactions, withdrawal],
+      btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
       fundTransactions:
         withdrawal.destination === "btc" || withdrawal.destination === "stock"
           ? [
@@ -4430,10 +5765,15 @@ function SolPage({
             ]
           : prev.incomeTransactions,
     }));
+    if (btcTopup && btcCloudAccountId) {
+      void upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, btcTopup.id, btcTopup).catch(() => {
+        // The encrypted app snapshot still keeps this topup if direct ledger sync is offline.
+      });
+    }
 
     setWithdrawForm({
       sol: "",
-      price: state.market.solUsd ? String(state.market.solUsd) : "",
+      price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "",
       vnd: "",
       destination: "cash",
       date: today(),
@@ -4450,8 +5790,8 @@ function SolPage({
         </div>
       </header>
       <section className="metrics-grid">
-        <MetricCard label="Tổng SOL" value={totalSol.toLocaleString("en-US", { maximumFractionDigits: 4 })} icon={<Coins size={20} />} />
-        <MetricCard label="Vốn" value={formatUsd(cost)} subValue={formatVnd(costVnd)} icon={<CircleDollarSign size={20} />} />
+        <MetricCard label="Tổng SOL" value={totalSol.toLocaleString("vi-VN", { maximumFractionDigits: 4 })} icon={<Coins size={20} />} />
+        <MetricCard label="giá SOL" value={formatUsd(currentUsd)} subValue={formatUsd(cost)} icon={<CircleDollarSign size={20} />} />
         <MetricCard
           label="Lãi/lỗ"
           value={`${formatUsd(pnl)} · ${pnlPercent.toFixed(1)}%`}
@@ -4464,8 +5804,8 @@ function SolPage({
         <article className="panel">
           <div className="panel-title">
             <h2>Giá thị trường</h2>
-            <button className="ghost" onClick={() => onRefreshMarket()} type="button">
-              <RefreshCw size={17} /> Cập nhật giá
+            <button className="ghost report-refresh-button" onClick={() => onRefreshMarket()} type="button" aria-label="Cập nhật giá">
+              <RefreshCw size={17} />
             </button>
           </div>
           <small className="market-status">{marketStatus || (state.market.updatedAt ? `Cập nhật ${formatDateTime(state.market.updatedAt)}` : "Chưa cập nhật")}</small>
@@ -4479,8 +5819,8 @@ function SolPage({
               <strong>{state.market.usdVnd ? formatVnd(state.market.usdVnd) : "Đang chờ"}</strong>
             </div>
             <div>
-              <small>Giá trị VND</small>
-              <strong>{formatVnd(currentUsd * state.market.usdVnd)}</strong>
+              <small>SOL sở hữu</small>
+              <strong>{formatVnd(currentVnd)}</strong>
             </div>
           </div>
         </article>
@@ -4504,11 +5844,11 @@ function SolPage({
               <div className="form-grid">
                 <label>
                   Số SOL
-                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: event.target.value })} placeholder="0.61" />
+                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: formatDecimalInput(event.target.value) })} placeholder="0,61" />
                 </label>
                 <label>
                   Giá mua
-                  <input value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="77.58" />
+                  <input value={form.price} onChange={(event) => setForm({ ...form, price: formatDecimalInput(event.target.value) })} placeholder="77,58" />
                 </label>
                 <label>
                   Ngày
@@ -4528,11 +5868,11 @@ function SolPage({
               <div className="form-grid sol-withdraw-grid">
                 <label>
                   Số SOL rút
-                  <input value={withdrawForm.sol} onChange={(event) => updateWithdrawSol(event.target.value)} placeholder="0.25" />
+                  <input value={withdrawForm.sol} onChange={(event) => updateWithdrawSol(event.target.value)} placeholder="0,25" />
                 </label>
                 <label>
                   Giá SOL lúc rút
-                  <input value={withdrawForm.price} onChange={(event) => updateWithdrawPrice(event.target.value)} placeholder={state.market.solUsd ? String(state.market.solUsd) : "76.43"} />
+                  <input value={withdrawForm.price} onChange={(event) => updateWithdrawPrice(event.target.value)} placeholder={state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "76,43"} />
                 </label>
                 <label>
                   Tiền VND nhận
@@ -4639,12 +5979,12 @@ function ReportsPage({
     return series;
   }, [state]);
 
-  const btc = state.fundTransactions.filter((item) => item.fund === "btc").reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
+  const btc = btcPortfolioStats(state).reportValueVnd;
   const stock = stockPortfolioStats(state).totalValue;
   const savingActive = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
   const emergencyActive = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
-  const saving = savingActive + pendingSolDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "saving");
-  const emergency = emergencyActive + pendingSolDepositTotal(state, "emergency") + pendingStockSaleDepositTotal(state, "emergency");
+  const saving = savingActive + pendingSolDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "saving") + pendingBtcTransferDepositTotal(state, "saving");
+  const emergency = emergencyActive + pendingSolDepositTotal(state, "emergency") + pendingStockSaleDepositTotal(state, "emergency") + pendingBtcTransferDepositTotal(state, "emergency");
   const solVnd = solPosition(state.solTransactions).balance * state.market.solUsd * state.market.usdVnd;
   const totalAssets = btc + stock + saving + emergency + solVnd;
   const assetPercent = (value: number) => totalAssets ? Math.round((value / totalAssets) * 100) : 0;
@@ -4662,6 +6002,7 @@ function ReportsPage({
     { id: "saving" as const, label: "Quỹ tiết kiệm", value: saving },
     { id: "emergency" as const, label: "Quỹ dự phòng", value: emergency },
   ];
+  const pnlRows = assetPnlRows(state);
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
 
   useEffect(() => () => {
@@ -4709,8 +6050,16 @@ function ReportsPage({
         return !deposit || month < monthFromDate(deposit.startDate);
       })
       .reduce((sum, sale) => sum + sale.vndAmount, 0);
+  const pendingBtcTransferDepositAtMonth = (fund: DepositFund, month: string) =>
+    state.btcTransfers
+      .filter((transfer) => {
+        if (transfer.destination !== fund || monthFromDate(transfer.date) > month) return false;
+        const deposit = state.bankDeposits.find((item) => item.note.includes(btcTransferDepositMarker(transfer.id)));
+        return !deposit || month < monthFromDate(deposit.startDate);
+      })
+      .reduce((sum, transfer) => sum + transfer.vndAmount, 0);
   const depositFundBalanceAtMonth = (fund: DepositFund, month: string) =>
-    depositBalanceAtMonth(fund, month) + pendingSolDepositAtMonth(fund, month) + pendingStockSaleDepositAtMonth(fund, month);
+    depositBalanceAtMonth(fund, month) + pendingSolDepositAtMonth(fund, month) + pendingStockSaleDepositAtMonth(fund, month) + pendingBtcTransferDepositAtMonth(fund, month);
   const solValueAtMonth = (month: string) =>
     solPosition(state.solTransactions.filter((item) => monthFromDate(item.date) <= month)).balance * state.market.solUsd * state.market.usdVnd;
   const withdrawalAtMonth = (key: ReportChartKey, month: string) => {
@@ -4745,7 +6094,7 @@ function ReportsPage({
       const summary = monthlySummary(state, month);
       const withdrawn = monthlyWithdrawal(state, month);
       const previousNetAccumulation = rows[rows.length - 1]?.netAccumulation ?? 0;
-      const rowBtc = fundBalanceAtMonth("btc", month);
+      const rowBtc = btcPortfolioStats(state, month).reportValueVnd;
       const rowStock = stockPortfolioStats(state, month).totalValue;
       const rowSaving = depositFundBalanceAtMonth("saving", month);
       const rowEmergency = depositFundBalanceAtMonth("emergency", month);
@@ -4845,6 +6194,29 @@ function ReportsPage({
             onClick={() => setActiveReportChart(fund.id)}
           />
         ))}
+      </section>
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Lãi/lỗ theo gốc</h2>
+        </div>
+        <div className="asset-pnl-table">
+          <div>
+            <strong>Tên quỹ</strong>
+            <strong>Gốc đầu tư</strong>
+            <strong>Giá trị hiện tại</strong>
+            <strong>Lãi/lỗ</strong>
+            <strong>%</strong>
+          </div>
+          {pnlRows.map((row) => (
+            <div className={row.id === "total" ? "total" : ""} key={row.id}>
+              <span>{row.label}</span>
+              <span>{formatVnd(row.principal)}</span>
+              <span>{formatVnd(row.current)}</span>
+              <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(row.pnl)}</span>
+              <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{row.principal ? `${row.pnlPercent.toFixed(1)}%` : "0.0%"}</span>
+            </div>
+          ))}
+        </div>
       </section>
       <section className="panel">
         <div className="panel-title">
@@ -5237,6 +6609,628 @@ function SettingsPage({
   );
 }
 
+type QuickActionGroup = "income" | "expense" | "btc" | "stock" | "mbb" | "sol";
+type QuickActionKind =
+  | "income"
+  | "expense"
+  | "btc-usdt"
+  | "btc-dca"
+  | "btc-transfer"
+  | "stock-buy"
+  | "stock-transfer"
+  | "deposit"
+  | "sol-buy"
+  | "sol-transfer";
+
+function QuickActionButton({
+  state,
+  setState,
+  btcCloudAccountId,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  btcCloudAccountId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [group, setGroup] = useState<QuickActionGroup>("income");
+  const [kind, setKind] = useState<QuickActionKind>("income");
+  const [error, setError] = useState("");
+  const [income, setIncome] = useState({ categoryId: state.incomeCategories[0]?.id ?? "", amount: "", date: today(), note: "" });
+  const [expense, setExpense] = useState({ categoryId: state.expenseCategories[0]?.id ?? "", amount: "", date: today(), note: "" });
+  const [usdt, setUsdt] = useState({ vnd: "", amount: "", date: today(), note: "Binance P2P" });
+  const [dca, setDca] = useState({ amount: "2", frequency: "daily" as BtcDcaFrequency, time: "12:00", startDate: today(), note: "DCA Binance" });
+  const [btcTransfer, setBtcTransfer] = useState({
+    asset: "usdt" as "btc" | "usdt",
+    btc: "",
+    usdt: "",
+    price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+    received: "",
+    destination: "btc" as BtcTransferTarget,
+    date: today(),
+    note: "",
+  });
+  const [quickStockRows, setQuickStockRows] = useState<StockBuyRow[]>(() => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }]);
+  const [quickStockMeta, setQuickStockMeta] = useState({ date: today(), note: "" });
+  const [stockTransfer, setStockTransfer] = useState({ symbol: "", shares: "", price: "", destination: "stock" as SolDestination, date: today(), note: "" });
+  const [deposit, setDeposit] = useState({ fund: "saving" as DepositFund, amount: "", rate: "6", term: "12", date: today(), mbLast4: "", note: "" });
+  const [sol, setSol] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", date: today(), note: "" });
+  const [solTransfer, setSolTransfer] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", destination: "cash" as SolDestination, date: today(), note: "" });
+  const groups: Array<{ id: QuickActionGroup; label: string; defaultKind: QuickActionKind }> = [
+    { id: "income", label: "Thu nhập", defaultKind: "income" },
+    { id: "expense", label: "Chi tiêu", defaultKind: "expense" },
+    { id: "btc", label: "BTC", defaultKind: "btc-usdt" },
+    { id: "stock", label: "CK", defaultKind: "stock-buy" },
+    { id: "mbb", label: "Sổ MBB", defaultKind: "deposit" },
+    { id: "sol", label: "SOL", defaultKind: "sol-buy" },
+  ];
+  const subActions: Record<QuickActionGroup, Array<{ id: QuickActionKind; label: string }>> = {
+    income: [{ id: "income", label: "Thêm thu nhập" }],
+    expense: [{ id: "expense", label: "Thêm chi tiêu" }],
+    btc: [
+      { id: "btc-usdt", label: "Mua USDT" },
+      { id: "btc-dca", label: "Tạo DCA" },
+      { id: "btc-transfer", label: "Rút / chuyển" },
+    ],
+    stock: [
+      { id: "stock-buy", label: "Mua CK" },
+      { id: "stock-transfer", label: "Rút / chuyển" },
+    ],
+    mbb: [{ id: "deposit", label: "Tạo sổ" }],
+    sol: [
+      { id: "sol-buy", label: "Mua SOL" },
+      { id: "sol-transfer", label: "Rút / chuyển" },
+    ],
+  };
+  const btcStats = btcPortfolioStats(state);
+  const stockStats = stockPortfolioStats(state);
+  const solStats = solPosition(state.solTransactions);
+  const quickStockPlannedValue = quickStockRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: parseDecimal(row.buyPrice) }), 0);
+  const quickStockPlannedPercent = stockStats.cash ? Math.round((quickStockPlannedValue / stockStats.cash) * 100) : 0;
+  const stockDestinationOptions: Array<{ id: SolDestination; label: string }> = [
+    { id: "stock", label: "CK" },
+    { id: "btc", label: "BTC" },
+    { id: "saving", label: "Tiết kiệm" },
+    { id: "emergency", label: "Dự phòng" },
+    { id: "cash", label: "Tiền mặt" },
+  ];
+  const solDestinationOptions: Array<{ id: SolDestination; label: string }> = [
+    { id: "btc", label: "BTC" },
+    { id: "stock", label: "CK" },
+    { id: "saving", label: "Tiết kiệm" },
+    { id: "emergency", label: "Dự phòng" },
+    { id: "cash", label: "Tiền mặt" },
+  ];
+
+  const close = () => {
+    setOpen(false);
+    setError("");
+  };
+
+  const selectGroup = (next: (typeof groups)[number]) => {
+    setGroup(next.id);
+    setKind(next.defaultKind);
+    setError("");
+  };
+
+  const btcTransferPriceFor = (asset: "btc" | "usdt", destination: BtcTransferTarget) => {
+    if (asset === "btc" || destination === "btc") return state.market.btcUsdt;
+    return state.market.usdtVnd || state.market.usdVnd;
+  };
+
+  const updateBtcTransferAsset = (asset: "btc" | "usdt") => {
+    const destination: BtcTransferTarget = asset === "btc" ? "usdt" : "btc";
+    setBtcTransfer((prev) => ({ ...prev, asset, destination, price: formatDecimalInput(String(btcTransferPriceFor(asset, destination) || "")), received: "" }));
+    setError("");
+  };
+
+  const updateBtcTransferDestination = (destination: BtcTransferTarget) => {
+    setBtcTransfer((prev) => ({ ...prev, destination, price: formatDecimalInput(String(btcTransferPriceFor(prev.asset, destination) || "")), received: "" }));
+    setError("");
+  };
+
+  const btcTransferSource = () => (btcTransfer.asset === "btc" ? parseDecimal(btcTransfer.btc) : parseDecimal(btcTransfer.usdt));
+  const btcTransferPrice = () => parseDecimal(btcTransfer.price) || btcTransferPriceFor(btcTransfer.asset, btcTransfer.destination);
+  const btcTransferReceiveUnit = () => {
+    if (btcTransfer.asset === "usdt" && btcTransfer.destination === "btc") return "BTC";
+    if (btcTransfer.asset === "btc" && btcTransfer.destination === "usdt") return "USDT";
+    return "VND";
+  };
+  const btcTransferEstimate = () => {
+    const source = btcTransferSource();
+    const price = btcTransferPrice();
+    if (!source || !price) return 0;
+    if (btcTransfer.asset === "usdt" && btcTransfer.destination === "btc") return source / price;
+    if (btcTransfer.asset === "btc" && btcTransfer.destination === "usdt") return source * price;
+    if (btcTransfer.asset === "usdt") return source * price;
+    return 0;
+  };
+  const formatBtcTransferEstimate = () => {
+    const value = btcTransferEstimate();
+    const unit = btcTransferReceiveUnit();
+    if (unit === "BTC") return formatBtc(value);
+    if (unit === "USDT") return formatUsdt(value);
+    return formatVnd(value);
+  };
+
+  const resetBtcTransfer = () => {
+    setBtcTransfer({
+      asset: "usdt",
+      btc: "",
+      usdt: "",
+      price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+      received: "",
+      destination: "btc",
+      date: today(),
+      note: "",
+    });
+  };
+
+  const quickStockAutoShares = (percentInput: string, priceInput: string) => {
+    const percent = Number(percentInput) || 0;
+    const price = parseDecimal(priceInput);
+    if (!stockStats.cash || !percent || !price) return "";
+    const rawShares = Math.floor((stockStats.cash * percent) / 100 / (price * STOCK_PRICE_UNIT));
+    const shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
+    return shares > 0 ? String(shares) : "";
+  };
+
+  const recalculateQuickStockShares = (row: StockBuyRow): StockBuyRow => ({
+    ...row,
+    shares: quickStockAutoShares(row.percent, row.buyPrice),
+  });
+
+  const updateQuickStockRow = (id: string, patch: Partial<Omit<StockBuyRow, "id">>) => {
+    setQuickStockRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const next = { ...row, ...patch };
+        if ("percent" in patch || "buyPrice" in patch) return recalculateQuickStockShares(next);
+        return next;
+      })
+    );
+  };
+
+  const updateQuickStockPercent = (id: string, value: string) => {
+    const nextPercent = Math.max(Math.min(Number(value) || 0, 100), 0);
+    setQuickStockRows((prev) => {
+      const others = prev.filter((row) => row.id !== id);
+      if (others.length === 0) {
+        return prev.map((row) => (row.id === id ? recalculateQuickStockShares({ ...row, percent: String(nextPercent) }) : row));
+      }
+      const remaining = Math.max(100 - nextPercent, 0);
+      const otherCurrentTotal = others.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+      let assigned = 0;
+      return prev.map((row) => {
+        if (row.id === id) return recalculateQuickStockShares({ ...row, percent: String(nextPercent) });
+        const isLastOther = others[others.length - 1]?.id === row.id;
+        const percent = isLastOther
+          ? remaining - assigned
+          : Math.round((otherCurrentTotal ? ((Number(row.percent) || 0) / otherCurrentTotal) * remaining : remaining / others.length) * 100) / 100;
+        assigned += percent;
+        return recalculateQuickStockShares({ ...row, percent: String(Math.max(percent, 0)) });
+      });
+    });
+  };
+
+  const addQuickStockRow = () => {
+    setQuickStockRows((prev) => {
+      if (prev.length === 1) {
+        const firstPercent = prev[0].percent === "100" ? "50" : prev[0].percent;
+        return [
+          recalculateQuickStockShares({ ...prev[0], percent: firstPercent }),
+          { id: uid(), symbol: "", percent: String(Math.max(100 - (Number(firstPercent) || 0), 0)), shares: "", buyPrice: "" },
+        ];
+      }
+      return [...prev, { id: uid(), symbol: "", percent: "0", shares: "", buyPrice: "" }];
+    });
+  };
+
+  const removeQuickStockRow = (id: string) => {
+    setQuickStockRows((prev) => {
+      if (prev.length === 1) return prev;
+      const next = prev.filter((row) => row.id !== id);
+      if (next.length === 1) return [recalculateQuickStockShares({ ...next[0], percent: "100" })];
+      const total = next.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+      if (!total) return next;
+      let assigned = 0;
+      return next.map((row, index) => {
+        const percent = index === next.length - 1 ? 100 - assigned : Math.round(((Number(row.percent) || 0) / total) * 10000) / 100;
+        assigned += percent;
+        return recalculateQuickStockShares({ ...row, percent: String(Math.max(percent, 0)) });
+      });
+    });
+  };
+
+  const resetQuickStockForm = () => {
+    setQuickStockRows([{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }]);
+    setQuickStockMeta({ date: today(), note: "" });
+  };
+
+  const save = () => {
+    setError("");
+    if (kind === "income") {
+      const amount = parseMoney(income.amount);
+      if (!amount || !income.categoryId) return setError("Nhập thu nhập hợp lệ.");
+      setState((prev) => ({ ...prev, incomeTransactions: [...prev.incomeTransactions, { id: uid(), categoryId: income.categoryId, amount, date: income.date, month: monthFromDate(income.date), note: income.note.trim() }] }));
+      setIncome((prev) => ({ ...prev, amount: "", note: "" }));
+      close();
+      return;
+    }
+    if (kind === "expense") {
+      const amount = parseMoney(expense.amount);
+      if (!amount || !expense.categoryId) return setError("Nhập khoản chi hợp lệ.");
+      setState((prev) => ({ ...prev, expenseEntries: [...prev.expenseEntries, { id: uid(), categoryId: expense.categoryId, amount, date: expense.date, month: monthFromDate(expense.date), note: expense.note.trim() }] }));
+      setExpense((prev) => ({ ...prev, amount: "", note: "" }));
+      close();
+      return;
+    }
+    if (kind === "btc-usdt") {
+      const vndAmount = parseMoney(usdt.vnd);
+      const usdtAmount = parseDecimal(usdt.amount);
+      if (!vndAmount || !usdtAmount) return setError("Nhập VND và USDT hợp lệ.");
+      const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: usdt.date, note: usdt.note.trim() };
+      setState((prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
+      if (btcCloudAccountId) void upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, topup.id, topup);
+      setUsdt((prev) => ({ ...prev, vnd: "", amount: "" }));
+      close();
+      return;
+    }
+    if (kind === "btc-dca") {
+      const amountUsdt = parseDecimal(dca.amount);
+      if (!amountUsdt) return setError("Nhập số USDT mỗi kỳ hợp lệ.");
+      const plan = normalizeDcaPlan({ id: uid(), amountUsdt, frequency: dca.frequency, time: dca.time, startDate: dca.startDate, nextRunAt: nextDcaRunAt(dca), isActive: true, status: "active", note: dca.note.trim() });
+      setState((prev) => ({ ...prev, btcDcaPlans: [...prev.btcDcaPlans, plan] }));
+      if (btcCloudAccountId) void upsertCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id, plan, { is_active: plan.isActive, next_run_at: plan.nextRunAt, status: plan.status });
+      close();
+      return;
+    }
+    if (kind === "btc-transfer") {
+      const source = btcTransferSource();
+      const price = btcTransferPrice();
+      const unit = btcTransferReceiveUnit();
+      const receivedInput = unit === "VND" ? parseMoney(btcTransfer.received) : parseDecimal(btcTransfer.received);
+      const received = receivedInput || btcTransferEstimate();
+      if (!source || !price || !received) return setError("Nhập tài sản, giá và số tiền nhận hợp lệ.");
+      if (btcTransfer.asset === "btc" && btcTransfer.destination !== "usdt") return setError("BTC chỉ được đổi sang USDT trong quỹ BTC.");
+      if (btcTransfer.asset === "btc" && source - btcStats.btcBalance > 0.00000001) return setError("Số BTC lớn hơn số BTC đang có.");
+      if (btcTransfer.asset === "usdt" && source > btcStats.usdtBalance) return setError("Số USDT lớn hơn số dư USDT.");
+
+      if (btcTransfer.asset === "usdt" && btcTransfer.destination === "btc") {
+        const trade: BtcTrade = {
+          id: uid(),
+          type: "manual-buy",
+          usdtAmount: source,
+          btcAmount: received,
+          btcPriceUsdt: price,
+          executedAt: new Date(`${btcTransfer.date}T00:00:00`).toISOString(),
+          note: btcTransfer.note.trim() || "Chuyển USDT sang BTC",
+        };
+        setState((prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
+        if (btcCloudAccountId) void upsertCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id, trade, { executed_at: trade.executedAt, plan_id: null });
+        resetBtcTransfer();
+        close();
+        return;
+      }
+
+      const btcAmount = btcTransfer.asset === "btc" ? source : 0;
+      const usdtAmount = btcTransfer.asset === "btc" ? received : source;
+      const vndAmount = btcTransfer.destination === "usdt" ? 0 : unit === "VND" ? Math.round(received) : Math.round(usdtAmount * (state.market.usdtVnd || state.market.usdVnd));
+      const transfer: BtcTransfer = {
+        id: uid(),
+        asset: btcTransfer.asset,
+        btcAmount,
+        usdtAmount,
+        btcPriceUsdt: btcTransfer.asset === "btc" ? price : state.market.btcUsdt,
+        vndAmount,
+        destination: btcTransfer.destination,
+        date: btcTransfer.date,
+        note: btcTransfer.note.trim(),
+      };
+      const transferNote =
+        transfer.destination === "usdt"
+          ? transfer.note
+            ? `Chuyển BTC sang USDT · ${transfer.note} [btc-transfer:${transfer.id}]`
+            : `Chuyển BTC sang USDT [btc-transfer:${transfer.id}]`
+          : transfer.note
+            ? `Rút từ BTC · ${transfer.note} [btc-transfer:${transfer.id}]`
+            : `Rút từ BTC [btc-transfer:${transfer.id}]`;
+      setState((prev) => ({
+        ...prev,
+        btcTransfers: [...prev.btcTransfers, transfer],
+        fundTransactions:
+          transfer.destination === "usdt"
+            ? prev.fundTransactions
+            : [
+                ...prev.fundTransactions,
+                { id: uid(), fund: "btc", type: "withdraw", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote },
+                ...(transfer.destination === "stock"
+                  ? [{ id: uid(), fund: "stock" as const, type: "deposit" as const, amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }]
+                  : []),
+              ],
+        incomeTransactions:
+          transfer.destination === "cash"
+            ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }]
+            : prev.incomeTransactions,
+      }));
+      if (btcCloudAccountId) void upsertCloudPayloadRow("btc_transfers", btcCloudAccountId, transfer.id, transfer, { transfer_at: `${transfer.date}T00:00:00` });
+      resetBtcTransfer();
+      close();
+      return;
+    }
+    if (kind === "stock-buy") {
+      const lines = quickStockRows
+        .map((row) => ({
+          symbol: row.symbol.trim().toUpperCase(),
+          shares: Number(row.shares) || 0,
+          buyPrice: parseDecimal(row.buyPrice),
+        }))
+        .filter((line) => line.symbol && line.shares > 0 && line.buyPrice > 0);
+      const total = lines.reduce((sum, line) => sum + stockLineValue(line), 0);
+      if (!lines.length) return setError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
+      if (total > stockStats.cash) return setError("Tổng giá trị mua đang vượt quá tiền dư CK.");
+      const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: quickStockMeta.note.trim(), lines };
+      setState((prev) => ({ ...prev, stockPurchases: [...prev.stockPurchases, purchase] }));
+      resetQuickStockForm();
+      close();
+      return;
+    }
+    if (kind === "stock-transfer") {
+      const symbol = stockTransfer.symbol.trim().toUpperCase();
+      const holding = stockStats.holdings.find((item) => item.symbol === symbol);
+      const shares = parseDecimal(stockTransfer.shares);
+      const sellPrice = parseDecimal(stockTransfer.price);
+      if (!holding || !shares || !sellPrice) return setError("Chọn mã đang giữ, số lượng và giá hợp lệ.");
+      if (shares > holding.shares) return setError("Số cổ phiếu rút lớn hơn số đang có.");
+      const vndAmount = Math.round(shares * sellPrice * STOCK_PRICE_UNIT);
+      const note = stockTransfer.note.trim();
+      const transferNote = note ? `Rút từ CK ${holding.symbol} · ${note}` : `Rút từ CK ${holding.symbol}`;
+      const sale: StockSale = {
+        id: uid(),
+        symbol: holding.symbol,
+        shares,
+        sellPrice,
+        vndAmount,
+        destination: stockTransfer.destination,
+        date: stockTransfer.date,
+        note,
+      };
+      setState((prev) => ({
+        ...prev,
+        stockSales: [...prev.stockSales, sale],
+        fundTransactions:
+          sale.destination === "stock" || sale.destination === "btc"
+            ? [...prev.fundTransactions, { id: uid(), fund: sale.destination, type: "deposit", amount: vndAmount, date: sale.date, month: monthFromDate(sale.date), note: transferNote }]
+            : prev.fundTransactions,
+        incomeTransactions:
+          sale.destination === "cash"
+            ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: sale.date, month: monthFromDate(sale.date), note: transferNote }]
+            : prev.incomeTransactions,
+      }));
+      setStockTransfer({ symbol: "", shares: "", price: "", destination: "stock", date: today(), note: "" });
+      close();
+      return;
+    }
+    if (kind === "sol-buy") {
+      const solAmount = parseDecimal(sol.amount);
+      const buyPrice = parseDecimal(sol.price);
+      if (!solAmount || !buyPrice) return setError("Nhập số SOL và giá mua hợp lệ.");
+      setState((prev) => ({ ...prev, solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount, buyPrice, date: sol.date, note: sol.note.trim() }] }));
+      setSol((prev) => ({ ...prev, amount: "", note: "" }));
+      close();
+      return;
+    }
+    if (kind === "sol-transfer") {
+      const solAmount = parseDecimal(solTransfer.amount);
+      const sellPrice = parseDecimal(solTransfer.price);
+      const vndAmount = parseMoney(solTransfer.vnd) || Math.round(solAmount * sellPrice * state.market.usdVnd);
+      if (!solAmount || !sellPrice || !vndAmount) return setError("Nhập số SOL, giá và số tiền nhận hợp lệ.");
+      if (solAmount - solStats.balance > 0.00000001) return setError("Số SOL rút lớn hơn số SOL đang có.");
+      const userNote = solTransfer.note.trim();
+      const note = userNote || "Rút từ SOL";
+      const transferNote = userNote ? `Rút từ SOL · ${userNote}` : "Rút từ SOL";
+      const withdrawal: SolWithdrawTransaction = {
+        id: uid(),
+        type: "withdraw",
+        solAmount,
+        sellPrice,
+        vndAmount,
+        destination: solTransfer.destination,
+        date: solTransfer.date,
+        note,
+      };
+      const btcTopup: BtcUsdtTopup | null =
+        withdrawal.destination === "btc"
+          ? { id: uid(), vndAmount, usdtAmount: solAmount * sellPrice, date: withdrawal.date, note: `${transferNote} · USDT từ SOL` }
+          : null;
+      setState((prev) => ({
+        ...prev,
+        solTransactions: [...prev.solTransactions, withdrawal],
+        btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
+        fundTransactions:
+          withdrawal.destination === "btc" || withdrawal.destination === "stock"
+            ? [...prev.fundTransactions, { id: uid(), fund: withdrawal.destination, type: "deposit", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }]
+            : prev.fundTransactions,
+        incomeTransactions:
+          withdrawal.destination === "cash"
+            ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }]
+            : prev.incomeTransactions,
+      }));
+      if (btcTopup && btcCloudAccountId) void upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, btcTopup.id, btcTopup);
+      setSolTransfer({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", destination: "cash", date: today(), note: "" });
+      close();
+      return;
+    }
+    const amount = parseMoney(deposit.amount);
+    const term = Number(deposit.term) || 0;
+    if (!amount || !term) return setError("Nhập sổ MBB hợp lệ.");
+    const next = {
+      ...makeDeposit(state.bankDeposits, deposit.fund, amount, Number(deposit.rate) || 0, term, deposit.date, addMonths(deposit.date, term), monthFromDate(deposit.date), deposit.note.trim()),
+      mbLast4: deposit.mbLast4.replace(/\D/g, "").slice(0, 4),
+    };
+    setState((prev) => ({ ...prev, bankDeposits: [...prev.bankDeposits, next] }));
+    setDeposit((prev) => ({ ...prev, amount: "", note: "" }));
+    close();
+  };
+
+  return (
+    <>
+      <button className="quick-action-fab" onClick={() => setOpen(true)} title="Thêm nhanh" type="button"><Plus size={24} /></button>
+      {open && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="quick-action-title">
+          <section className="modal-card quick-action-modal">
+            <div className="panel-title">
+              <h2 id="quick-action-title">Thêm nhanh</h2>
+              <button className="icon-button" onClick={close} title="Đóng" type="button"><X size={17} /></button>
+            </div>
+            <div className="quick-action-tabs">
+              {groups.map((item) => <button className={group === item.id ? "active" : ""} key={item.id} onClick={() => selectGroup(item)} type="button">{item.label}</button>)}
+            </div>
+            {subActions[group].length > 1 && (
+              <div className="quick-action-subtabs">
+                {subActions[group].map((item) => <button className={kind === item.id ? "active" : ""} key={item.id} onClick={() => { setKind(item.id); setError(""); }} type="button">{item.label}</button>)}
+              </div>
+            )}
+            <div className="form-grid">
+              {kind === "income" && <>
+                <label>Mục thu<select value={income.categoryId} onChange={(event) => setIncome({ ...income, categoryId: event.target.value })}>{state.incomeCategories.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+                <label>Số tiền<input value={income.amount} onChange={(event) => setIncome({ ...income, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" /></label>
+                <label>Ngày<input type="date" value={income.date} onChange={(event) => setIncome({ ...income, date: event.target.value })} /></label>
+                <label>Note<input value={income.note} onChange={(event) => setIncome({ ...income, note: event.target.value })} /></label>
+              </>}
+              {kind === "expense" && <>
+                <label>Mục chi<select value={expense.categoryId} onChange={(event) => setExpense({ ...expense, categoryId: event.target.value })}>{state.expenseCategories.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+                <label>Số tiền<input value={expense.amount} onChange={(event) => setExpense({ ...expense, amount: formatMoneyInput(event.target.value) })} placeholder="500.000" /></label>
+                <label>Ngày<input type="date" value={expense.date} onChange={(event) => setExpense({ ...expense, date: event.target.value })} /></label>
+                <label>Note<input value={expense.note} onChange={(event) => setExpense({ ...expense, note: event.target.value })} /></label>
+              </>}
+              {kind === "btc-usdt" && <>
+                <label>VND dùng mua<input value={usdt.vnd} onChange={(event) => setUsdt({ ...usdt, vnd: formatMoneyInput(event.target.value) })} placeholder="1.000.000" /></label>
+                <label>USDT nhận<input value={usdt.amount} onChange={(event) => setUsdt({ ...usdt, amount: formatDecimalInput(event.target.value) })} placeholder="39,25" /></label>
+                <label>Ngày<input type="date" value={usdt.date} onChange={(event) => setUsdt({ ...usdt, date: event.target.value })} /></label>
+                <label>Note<input value={usdt.note} onChange={(event) => setUsdt({ ...usdt, note: event.target.value })} /></label>
+              </>}
+              {kind === "btc-dca" && <>
+                <label>USDT mỗi kỳ<input value={dca.amount} onChange={(event) => setDca({ ...dca, amount: formatDecimalInput(event.target.value) })} /></label>
+                <label>Tần suất<select value={dca.frequency} onChange={(event) => setDca({ ...dca, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
+                <label>Giờ chạy<input type="time" value={dca.time} onChange={(event) => setDca({ ...dca, time: event.target.value })} /></label>
+                <label>Ngày bắt đầu<input type="date" value={dca.startDate} onChange={(event) => setDca({ ...dca, startDate: event.target.value })} /></label>
+                <label>Note<input value={dca.note} onChange={(event) => setDca({ ...dca, note: event.target.value })} /></label>
+              </>}
+              {kind === "btc-transfer" && <>
+                <label>Tài sản nguồn<select value={btcTransfer.asset} onChange={(event) => updateBtcTransferAsset(event.target.value as "btc" | "usdt")}><option value="usdt">USDT</option><option value="btc">BTC</option></select></label>
+                {btcTransfer.asset === "btc" ? <label>Số BTC<input value={btcTransfer.btc} onChange={(event) => setBtcTransfer({ ...btcTransfer, btc: formatDecimalInput(event.target.value) })} placeholder="0,0001" /></label> : <label>Số USDT<input value={btcTransfer.usdt} onChange={(event) => setBtcTransfer({ ...btcTransfer, usdt: formatDecimalInput(event.target.value) })} placeholder="10" /></label>}
+                <label>Nơi nhận<select value={btcTransfer.destination} disabled={btcTransfer.asset === "btc"} onChange={(event) => updateBtcTransferDestination(event.target.value as BtcTransferTarget)}>
+                  {btcTransfer.asset === "btc" ? <option value="usdt">USDT</option> : <option value="btc">BTC</option>}
+                  {btcTransfer.asset === "usdt" && <><option value="stock">CK</option><option value="saving">Tiết kiệm</option><option value="emergency">Dự phòng</option><option value="cash">Tiền mặt</option></>}
+                </select></label>
+                <label>{btcTransfer.asset === "usdt" && btcTransfer.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={btcTransfer.price} onChange={(event) => setBtcTransfer({ ...btcTransfer, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(btcTransferPriceFor(btcTransfer.asset, btcTransfer.destination) || 0))} /></label>
+                <label>Số tiền nhận<input value={btcTransfer.received} onChange={(event) => setBtcTransfer({ ...btcTransfer, received: btcTransferReceiveUnit() === "VND" ? formatMoneyInput(event.target.value) : formatDecimalInput(event.target.value) })} placeholder={formatBtcTransferEstimate()} /></label>
+                <label>Ngày<input type="date" value={btcTransfer.date} onChange={(event) => setBtcTransfer({ ...btcTransfer, date: event.target.value })} /></label>
+                <label>Note<input value={btcTransfer.note} onChange={(event) => setBtcTransfer({ ...btcTransfer, note: event.target.value })} /></label>
+              </>}
+              {kind === "stock-buy" && <>
+                <div className="confirm-summary stock-confirm-summary">
+                  <div>
+                    <span>Tỷ lệ</span>
+                    <strong>{quickStockPlannedPercent}%</strong>
+                  </div>
+                  <div>
+                    <span>Tổng tiền</span>
+                    <strong>{formatVnd(quickStockPlannedValue)} / {formatVnd(stockStats.cash)}</strong>
+                  </div>
+                </div>
+                <div className="stock-buy-list">
+                  {quickStockRows.map((row, index) => {
+                    const value = stockLineValue({ shares: Number(row.shares) || 0, buyPrice: parseDecimal(row.buyPrice) });
+                    return (
+                      <div className="stock-buy-row" key={row.id}>
+                        <label>
+                          Cổ phiếu
+                          <input value={row.symbol} onChange={(event) => updateQuickStockRow(row.id, { symbol: event.target.value.toUpperCase() })} placeholder="MBB" />
+                        </label>
+                        <label>
+                          %
+                          <input value={row.percent} onChange={(event) => updateQuickStockPercent(row.id, event.target.value)} placeholder={index === 0 ? "100" : "0"} />
+                        </label>
+                        <label>
+                          Giá vào
+                          <input value={row.buyPrice} onChange={(event) => updateQuickStockRow(row.id, { buyPrice: formatDecimalInput(event.target.value) })} placeholder="27,5" />
+                        </label>
+                        <label>
+                          Số cổ phiếu
+                          <input value={row.shares} onChange={(event) => updateQuickStockRow(row.id, { shares: event.target.value.replace(/\D/g, "") })} placeholder="100" />
+                        </label>
+                        <div className="stock-row-value">
+                          <span>Giá trị</span>
+                          <strong>{formatVnd(value)}</strong>
+                        </div>
+                        <button className="row-icon-button danger-text" onClick={() => removeQuickStockRow(row.id)} title="Xóa dòng" type="button">
+                          <X size={16} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="stock-form-actions">
+                  <button className="ghost" onClick={addQuickStockRow} type="button"><Plus size={17} /> Thêm cổ phiếu</button>
+                </div>
+                <div className="form-grid stock-buy-meta-grid">
+                  <label>Ngày mua<input type="date" value={quickStockMeta.date} onChange={(event) => setQuickStockMeta({ ...quickStockMeta, date: event.target.value })} /></label>
+                  <label>Note<input value={quickStockMeta.note} onChange={(event) => setQuickStockMeta({ ...quickStockMeta, note: event.target.value })} placeholder="Mua trên MBS" /></label>
+                </div>
+              </>}
+              {kind === "stock-transfer" && <>
+                <label>Mã đang giữ<select value={stockTransfer.symbol} onChange={(event) => {
+                  const holding = stockStats.holdings.find((item) => item.symbol === event.target.value);
+                  setStockTransfer({ ...stockTransfer, symbol: event.target.value, price: holding ? formatStockPrice(holding.marketPrice) : stockTransfer.price });
+                }}><option value="">Chọn mã</option>{stockStats.holdings.map((item) => <option value={item.symbol} key={item.symbol}>{item.symbol} · {item.shares.toLocaleString("vi-VN")}</option>)}</select></label>
+                <label>Số lượng<input value={stockTransfer.shares} onChange={(event) => setStockTransfer({ ...stockTransfer, shares: event.target.value.replace(/\D/g, "") })} /></label>
+                <label>Giá rút<input value={stockTransfer.price} onChange={(event) => setStockTransfer({ ...stockTransfer, price: formatDecimalInput(event.target.value) })} /></label>
+                <label>Nơi nhận<select value={stockTransfer.destination} onChange={(event) => setStockTransfer({ ...stockTransfer, destination: event.target.value as SolDestination })}>{stockDestinationOptions.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+                <label>Ngày<input type="date" value={stockTransfer.date} onChange={(event) => setStockTransfer({ ...stockTransfer, date: event.target.value })} /></label>
+                <label>Note<input value={stockTransfer.note} onChange={(event) => setStockTransfer({ ...stockTransfer, note: event.target.value })} /></label>
+              </>}
+              {kind === "deposit" && <>
+                <label>Quỹ<select value={deposit.fund} onChange={(event) => setDeposit({ ...deposit, fund: event.target.value as DepositFund })}><option value="saving">Tiết kiệm</option><option value="emergency">Dự phòng</option></select></label>
+                <label>Số tiền<input value={deposit.amount} onChange={(event) => setDeposit({ ...deposit, amount: formatMoneyInput(event.target.value) })} placeholder="6.000.000" /></label>
+                <label>Lãi suất %<input value={deposit.rate} onChange={(event) => setDeposit({ ...deposit, rate: formatDecimalInput(event.target.value) })} /></label>
+                <label>Kỳ hạn tháng<input value={deposit.term} onChange={(event) => setDeposit({ ...deposit, term: event.target.value })} /></label>
+                <label>Ngày gửi<input type="date" value={deposit.date} onChange={(event) => setDeposit({ ...deposit, date: event.target.value })} /></label>
+                <label>4 số MB<input value={deposit.mbLast4} onChange={(event) => setDeposit({ ...deposit, mbLast4: event.target.value.replace(/\D/g, "").slice(0, 4) })} inputMode="numeric" maxLength={4} /></label>
+                <label>Note<input value={deposit.note} onChange={(event) => setDeposit({ ...deposit, note: event.target.value })} /></label>
+              </>}
+              {kind === "sol-buy" && <>
+                <label>Số SOL<input value={sol.amount} onChange={(event) => setSol({ ...sol, amount: formatDecimalInput(event.target.value) })} placeholder="0,5" /></label>
+                <label>Giá mua USDT<input value={sol.price} onChange={(event) => setSol({ ...sol, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(state.market.solUsd || 0))} /></label>
+                <label>Ngày<input type="date" value={sol.date} onChange={(event) => setSol({ ...sol, date: event.target.value })} /></label>
+                <label>Note<input value={sol.note} onChange={(event) => setSol({ ...sol, note: event.target.value })} /></label>
+              </>}
+              {kind === "sol-transfer" && <>
+                <label>Số SOL<input value={solTransfer.amount} onChange={(event) => {
+                  const amount = formatDecimalInput(event.target.value);
+                  const estimate = Math.round(parseDecimal(amount) * parseDecimal(solTransfer.price) * state.market.usdVnd);
+                  setSolTransfer({ ...solTransfer, amount, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" });
+                }} placeholder="0,1" /></label>
+                <label>Giá SOL/USDT<input value={solTransfer.price} onChange={(event) => {
+                  const price = formatDecimalInput(event.target.value);
+                  const estimate = Math.round(parseDecimal(solTransfer.amount) * parseDecimal(price) * state.market.usdVnd);
+                  setSolTransfer({ ...solTransfer, price, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" });
+                }} /></label>
+                <label>Số tiền nhận<input value={solTransfer.vnd} onChange={(event) => setSolTransfer({ ...solTransfer, vnd: formatMoneyInput(event.target.value) })} /></label>
+                <label>Nơi nhận<select value={solTransfer.destination} onChange={(event) => setSolTransfer({ ...solTransfer, destination: event.target.value as SolDestination })}>{solDestinationOptions.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+                <label>Ngày<input type="date" value={solTransfer.date} onChange={(event) => setSolTransfer({ ...solTransfer, date: event.target.value })} /></label>
+                <label>Note<input value={solTransfer.note} onChange={(event) => setSolTransfer({ ...solTransfer, note: event.target.value })} /></label>
+              </>}
+            </div>
+            {error && <span className="form-error">{error}</span>}
+            <button className="primary full" onClick={save} type="button"><Save size={17} /> Lưu nhanh</button>
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function App() {
   const [state, setState] = useStoredState();
   const [unlocked, setUnlocked] = useState(false);
@@ -5246,8 +7240,12 @@ export function App() {
   const [activePin, setActivePin] = useState("");
   const [cloudStatus, setCloudStatus] = useState("");
   const [marketStatus, setMarketStatus] = useState("");
+  const [btcCloudAccountId, setBtcCloudAccountId] = useState("");
+  const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
+  const [lastCloudSyncAt, setLastCloudSyncAt] = useState("");
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
+  const marketRef = useRef(state.market);
   const cloudConfigured = isCloudSyncConfigured();
   const cloudAccountKey = activePin ? cloudAccountKeyForPin(activePin) : "";
   const stateForCloud = (): AppState => (activePin ? stateForAccountPin(state, activePin) : state);
@@ -5259,6 +7257,58 @@ export function App() {
     if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("btc");
     setPage(nextPage);
     if (nextPage === "dashboard") setMonth(currentMonth());
+  };
+
+  useEffect(() => {
+    marketRef.current = state.market;
+  }, [state.market]);
+
+  const mergeBtcCloudLedger = async (accountId: string) => {
+    const ledger = await loadBtcCloudLedger(accountId);
+    setState((prev) => {
+      const next = {
+        ...prev,
+        btcUsdtTopups: mergeById(prev.btcUsdtTopups, ledger.topups),
+        btcDcaPlans: mergeById(prev.btcDcaPlans, ledger.dcaPlans).map(normalizeDcaPlan),
+        btcTrades: mergeById(prev.btcTrades, ledger.trades),
+        btcTransfers: mergeById(prev.btcTransfers, ledger.transfers),
+      };
+      return JSON.stringify(btcCloudLedgerFromState(next)) === JSON.stringify(btcCloudLedgerFromState(prev)) ? prev : next;
+    });
+  };
+
+  const syncBtcLedgerNow = async () => {
+    if (!btcCloudAccountId) return false;
+    try {
+      setCloudStatus("Đang đồng bộ BTC ledger...");
+      await Promise.all([
+        ...state.btcUsdtTopups.map((item) => upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, item.id, item)),
+        ...state.btcDcaPlans.map((item) => upsertCloudPayloadRow("btc_dca_plans", btcCloudAccountId, item.id, item, { is_active: item.isActive, next_run_at: item.nextRunAt, status: item.status })),
+        ...state.btcTrades.map((item) => upsertCloudPayloadRow("btc_trades", btcCloudAccountId, item.id, item, { executed_at: item.executedAt, plan_id: item.planId ?? null })),
+        ...state.btcTransfers.map((item) => upsertCloudPayloadRow("btc_transfers", btcCloudAccountId, item.id, item, { transfer_at: `${item.date}T00:00:00` })),
+      ]);
+      setLastCloudSyncAt(new Date().toISOString());
+      setCloudStatus("Đã đồng bộ BTC ledger.");
+      setDataStatus(await loadDataStatus(btcCloudAccountId));
+      return true;
+    } catch {
+      setCloudStatus("Không đồng bộ được BTC ledger.");
+      return false;
+    }
+  };
+
+  const reloadBtcLedgerNow = async () => {
+    if (!btcCloudAccountId) return false;
+    try {
+      setCloudStatus("Đang tải lại BTC ledger...");
+      await mergeBtcCloudLedger(btcCloudAccountId);
+      setDataStatus(await loadDataStatus(btcCloudAccountId));
+      setCloudStatus("Đã tải lại BTC ledger.");
+      return true;
+    } catch {
+      setCloudStatus("Không tải lại được BTC ledger.");
+      return false;
+    }
   };
 
   const unlockWithPin = async (pin: string) => {
@@ -5291,6 +7341,7 @@ export function App() {
       lastCloudSnapshot.current = JSON.stringify(nextState);
       cloudLoaded.current = true;
       setCloudStatus("Đã mở dữ liệu cloud.");
+      setLastCloudSyncAt(new Date().toISOString());
       setUnlocked(true);
       return null;
     } catch {
@@ -5319,6 +7370,7 @@ export function App() {
     try {
       await saveCloudState(nextKey, nextState);
       if (previousKey !== nextKey) await deleteCloudState(previousKey);
+      setLastCloudSyncAt(new Date().toISOString());
       setCloudStatus("Đã đổi PIN và đồng bộ cloud.");
     } catch {
       setCloudStatus("Không đổi được PIN cloud. Vào /admin để đổi PIN lại.");
@@ -5340,6 +7392,7 @@ export function App() {
       await saveCloudState(cloudAccountKey, nextSnapshot);
       lastCloudSnapshot.current = JSON.stringify(nextSnapshot);
       cloudLoaded.current = true;
+      setLastCloudSyncAt(new Date().toISOString());
       setCloudStatus(`Đã đồng bộ ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
     } catch {
       setCloudStatus("Không lưu được dữ liệu cloud.");
@@ -5347,15 +7400,15 @@ export function App() {
   };
 
   const refreshMarket = async (silent = false) => {
-    if (!silent) setMarketStatus("Đang cập nhật giá SOL...");
+    if (!silent) setMarketStatus("Đang cập nhật giá BTC/SOL...");
     try {
-      const market = await fetchSolMarket(state.market);
+      const market = await fetchMarket(marketRef.current);
       setState((prev) => ({ ...prev, market }));
       const time = new Date(market.updatedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      setMarketStatus(silent ? `Tự động cập nhật SOL lúc ${time}.` : `Đã cập nhật giá SOL lúc ${time}.`);
+      setMarketStatus(silent ? `Tự động cập nhật BTC/SOL lúc ${time}.` : `Đã cập nhật giá BTC/SOL lúc ${time}.`);
       return true;
     } catch {
-      if (!silent) setMarketStatus("Không cập nhật được giá SOL.");
+      if (!silent) setMarketStatus("Không cập nhật được giá BTC/SOL.");
       return false;
     }
   };
@@ -5364,14 +7417,14 @@ export function App() {
     let cancelled = false;
     async function loadMarket(silent = true) {
       try {
-        const market = await fetchSolMarket(state.market);
+        const market = await fetchMarket(marketRef.current);
         if (!cancelled) {
           setState((prev) => ({
             ...prev,
             market,
           }));
           const time = new Date(market.updatedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-          setMarketStatus(silent ? `Tự động cập nhật SOL lúc ${time}.` : `Đã cập nhật giá SOL lúc ${time}.`);
+          setMarketStatus(silent ? `Tự động cập nhật BTC/SOL lúc ${time}.` : `Đã cập nhật giá BTC/SOL lúc ${time}.`);
         }
       } catch {
         // Keep the latest saved price when the network or API is unavailable.
@@ -5384,6 +7437,34 @@ export function App() {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    if (!unlocked || !cloudConfigured || !cloudAccountKey) {
+      setBtcCloudAccountId("");
+      return () => undefined;
+    }
+
+    async function loadBtcLedger() {
+      try {
+        const accountId = await cloudAccountIdForKey(cloudAccountKey);
+        if (cancelled) return;
+        setBtcCloudAccountId(accountId);
+        await mergeBtcCloudLedger(accountId);
+        if (!cancelled) setDataStatus(await loadDataStatus(accountId));
+      } catch {
+        // BTC stays available from local cache if the cloud ledger cannot be reached.
+      }
+    }
+
+    void loadBtcLedger();
+    timer = window.setInterval(loadBtcLedger, MARKET_PRICE_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [unlocked, cloudConfigured, cloudAccountKey]);
 
   useEffect(() => {
     if (!unlocked || !autoStockSymbols) return;
@@ -5409,6 +7490,7 @@ export function App() {
       try {
         await saveCloudState(cloudAccountKey, nextSnapshot);
         lastCloudSnapshot.current = snapshot;
+        setLastCloudSyncAt(new Date().toISOString());
         setCloudStatus(`Đã đồng bộ ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
       } catch {
         setCloudStatus("Không lưu được dữ liệu cloud.");
@@ -5426,11 +7508,12 @@ export function App() {
     <div className="app-shell">
       <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
-        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} />}
+        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} onRefreshMarket={refreshMarket} />}
         {page === "accumulation" && <AccumulationPage state={state} setState={setState} />}
-        {page === "investment" && <InvestmentPage state={state} setState={setState} activeTab={assetTab} setActiveTab={setAssetTab} onRefreshMarket={refreshMarket} marketStatus={marketStatus} />}
+        {page === "investment" && <InvestmentPage state={state} setState={setState} activeTab={assetTab} setActiveTab={setAssetTab} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
         {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} />}
       </main>
+      <QuickActionButton state={state} setState={setState} btcCloudAccountId={btcCloudAccountId} />
     </div>
   );
 }

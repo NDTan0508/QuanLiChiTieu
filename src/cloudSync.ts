@@ -14,6 +14,30 @@ type AdminSettingsRow = {
   password_hash: string;
 };
 
+export type BtcLedgerStatus = {
+  topups: number;
+  dcaPlans: number;
+  trades: number;
+  transfers: number;
+  activePlans: number;
+  btcBalance: number;
+  usdtBalance: number;
+  latestTradeAt: string;
+  latestTopupAt: string;
+};
+
+export type DataStatus = {
+  btcLedger: BtcLedgerStatus | null;
+  lastJobRun: {
+    jobName: string;
+    lastRunAt: string;
+    processed: number;
+    created: number;
+    skipped: number;
+    error: string;
+  } | null;
+};
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -87,6 +111,136 @@ export async function loadAdminPasswordHash(fallbackHash: string) {
 
   const rows = (await response.json()) as AdminSettingsRow[];
   return rows[0]?.password_hash || fallbackHash;
+}
+
+export async function cloudAccountIdForKey(syncKey: string) {
+  return syncKeyId(syncKey);
+}
+
+export async function loadCloudPayloadRows<T>(table: string, accountId: string): Promise<T[]> {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const response = await fetch(
+    `${config.url}/rest/v1/${encodeURIComponent(table)}?account_id=eq.${encodeURIComponent(accountId)}&select=payload&order=updated_at.asc`,
+    {
+      headers: supabaseHeaders(config),
+    }
+  );
+
+  if (!response.ok) throw new Error("Khong tai duoc du lieu cloud.");
+
+  const rows = (await response.json()) as Array<{ payload: T }>;
+  return rows.map((row) => row.payload);
+}
+
+export async function upsertCloudPayloadRow(
+  table: string,
+  accountId: string,
+  id: string,
+  payload: unknown,
+  columns: Record<string, unknown> = {}
+) {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const response = await fetch(`${config.url}/rest/v1/${encodeURIComponent(table)}`, {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(config),
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates",
+    },
+    body: JSON.stringify({
+      id,
+      account_id: accountId,
+      payload,
+      updated_at: new Date().toISOString(),
+      ...columns,
+    }),
+  });
+
+  if (!response.ok) throw new Error("Khong luu duoc du lieu cloud.");
+}
+
+export async function deleteCloudPayloadRow(table: string, accountId: string, id: string) {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const response = await fetch(
+    `${config.url}/rest/v1/${encodeURIComponent(table)}?account_id=eq.${encodeURIComponent(accountId)}&id=eq.${encodeURIComponent(id)}`,
+    {
+      method: "DELETE",
+      headers: supabaseHeaders(config),
+    }
+  );
+
+  if (!response.ok) throw new Error("Khong xoa duoc du lieu cloud.");
+}
+
+export async function loadDataStatus(accountId: string): Promise<DataStatus> {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const query = `account_id=eq.${encodeURIComponent(accountId)}&select=payload&order=updated_at.asc`;
+  const fetchRows = async <T>(table: string): Promise<T[]> => {
+    const response = await fetch(`${config.url}/rest/v1/${encodeURIComponent(table)}?${query}`, {
+      headers: supabaseHeaders(config),
+    });
+    if (!response.ok) return [];
+    const rows = (await response.json()) as Array<{ payload: T }>;
+    return rows.map((row) => row.payload);
+  };
+
+  const [topups, plans, trades, transfers] = await Promise.all([
+    fetchRows<{ usdtAmount: number; date: string }>("btc_usdt_topups"),
+    fetchRows<{ isActive?: boolean }>("btc_dca_plans"),
+    fetchRows<{ usdtAmount: number; btcAmount: number; executedAt: string }>("btc_trades"),
+    fetchRows<{ asset: "btc" | "usdt"; btcAmount: number; usdtAmount: number; destination?: string }>("btc_transfers"),
+  ]);
+  const topupUsdt = topups.reduce((sum, item) => sum + (Number(item.usdtAmount) || 0), 0);
+  const spentUsdt = trades.reduce((sum, item) => sum + (Number(item.usdtAmount) || 0), 0);
+  const transferredUsdt = transfers.reduce((sum, item) => sum + (item.asset === "usdt" ? Number(item.usdtAmount) || 0 : 0), 0);
+  const convertedToUsdt = transfers.reduce((sum, item) => sum + (item.asset === "btc" && item.destination === "usdt" ? Number(item.usdtAmount) || 0 : 0), 0);
+  const btcBought = trades.reduce((sum, item) => sum + (Number(item.btcAmount) || 0), 0);
+  const btcMoved = transfers.reduce((sum, item) => sum + (item.asset === "btc" ? Number(item.btcAmount) || 0 : 0), 0);
+  const tradeDates = trades.map((item) => item.executedAt).filter(Boolean).sort();
+  const topupDates = topups.map((item) => item.date).filter(Boolean).sort();
+
+  let lastJobRun: DataStatus["lastJobRun"] = null;
+  const jobResponse = await fetch(
+    `${config.url}/rest/v1/app_job_runs?job_name=eq.btc-dca-runner&select=job_name,last_run_at,processed,created,skipped,error&order=last_run_at.desc&limit=1`,
+    { headers: supabaseHeaders(config) }
+  );
+  if (jobResponse.ok) {
+    const jobRows = (await jobResponse.json()) as Array<{ job_name: string; last_run_at: string; processed: number; created: number; skipped: number; error: string | null }>;
+    const job = jobRows[0];
+    if (job) {
+      lastJobRun = {
+        jobName: job.job_name,
+        lastRunAt: job.last_run_at,
+        processed: job.processed,
+        created: job.created,
+        skipped: job.skipped,
+        error: job.error ?? "",
+      };
+    }
+  }
+
+  return {
+    btcLedger: {
+      topups: topups.length,
+      dcaPlans: plans.length,
+      trades: trades.length,
+      transfers: transfers.length,
+      activePlans: plans.filter((item) => item.isActive).length,
+      btcBalance: Math.max(btcBought - btcMoved, 0),
+      usdtBalance: Math.max(topupUsdt + convertedToUsdt - spentUsdt - transferredUsdt, 0),
+      latestTradeAt: tradeDates[tradeDates.length - 1] ?? "",
+      latestTopupAt: topupDates[topupDates.length - 1] ?? "",
+    },
+    lastJobRun,
+  };
 }
 
 function getSupabaseConfig() {

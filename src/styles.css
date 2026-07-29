@@ -191,7 +191,22 @@ label strong {
 
 .report-refresh-button {
   width: 42px;
+  min-width: 42px;
+  min-height: 40px;
   padding: 0;
+}
+
+.asset-open-button {
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.asset-open-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .report-header-actions {
@@ -320,6 +335,157 @@ label strong {
 
 .metrics-grid.report-metrics {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.asset-pnl-table {
+  overflow-x: auto;
+}
+
+.action-task-list {
+  display: grid;
+  gap: 8px;
+}
+
+.action-task-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: #14110f;
+  color: #f6efe8;
+  padding: 12px;
+  text-align: left;
+}
+
+.action-task-list button.warning {
+  border-color: rgba(234, 179, 8, 0.45);
+}
+
+.action-task-list button.danger {
+  border-color: rgba(244, 63, 94, 0.55);
+}
+
+.action-task-list strong,
+.action-task-list small {
+  display: block;
+}
+
+.action-task-list small {
+  margin-top: 4px;
+  color: #a59b91;
+}
+
+.action-task-list span {
+  color: #f97316;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.asset-pnl-table {
+  display: grid;
+  gap: 8px;
+}
+
+.asset-pnl-table > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) repeat(4, minmax(110px, 1fr));
+  gap: 10px;
+  align-items: center;
+  min-width: 640px;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: #14110f;
+  padding: 10px 12px;
+}
+
+.asset-pnl-table > div:first-child,
+.asset-pnl-table > div.total {
+  background: #1b1511;
+}
+
+.asset-pnl-table span,
+.asset-pnl-table strong {
+  font-size: 0.82rem;
+}
+
+.asset-pnl-table span:not(:first-child),
+.asset-pnl-table strong:not(:first-child) {
+  text-align: right;
+}
+
+.quick-action-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 30;
+  display: grid;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  border-radius: 999px;
+  background: #f97316;
+  color: #080706;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.38);
+}
+
+.quick-action-modal {
+  max-width: 720px;
+}
+
+.quick-action-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.quick-action-tabs button {
+  min-height: 34px;
+  border-radius: 8px;
+  background: #171310;
+  color: #b9afa5;
+  padding: 0 10px;
+  font-weight: 800;
+}
+
+.quick-action-tabs button.active {
+  background: #f97316;
+  color: #080706;
+}
+
+.quick-action-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 12px;
+}
+
+.quick-action-subtabs button {
+  min-height: 32px;
+  border: 1px solid #332c26;
+  border-radius: 8px;
+  background: #120f0d;
+  color: #b9afa5;
+  padding: 0 10px;
+  font-weight: 800;
+}
+
+.quick-action-subtabs button.active {
+  border-color: rgba(249, 115, 22, 0.65);
+  color: #fb923c;
+}
+
+.quick-action-modal .stock-confirm-summary,
+.quick-action-modal .stock-buy-list,
+.quick-action-modal .stock-form-actions,
+.quick-action-modal .stock-buy-meta-grid {
+  grid-column: 1 / -1;
+}
+
+.quick-action-modal .stock-form-actions {
+  margin-top: 0;
 }
 
 .metric,
@@ -1438,6 +1604,283 @@ label strong {
   display: block;
 }
 
+.btc-action-grid {
+  margin-bottom: 12px;
+}
+
+.btc-action-grid > .panel:only-child {
+  grid-column: 1 / -1;
+}
+
+.btc-form-grid {
+  margin-bottom: 0;
+}
+
+.btc-form-open-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.btc-form-submit {
+  align-self: end;
+  min-width: 148px;
+}
+
+.btc-plan-list {
+  display: grid;
+  gap: 10px;
+}
+
+.btc-plan-card {
+  display: grid;
+  gap: 16px;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: #100d0b;
+  padding: 16px;
+}
+
+.btc-plan-card strong,
+.btc-plan-card small {
+  display: block;
+}
+
+.btc-plan-card small {
+  margin-top: 4px;
+  color: #a59b91;
+}
+
+.btc-plan-header,
+.btc-plan-summary,
+.btc-plan-asset-title {
+  display: grid;
+  gap: 12px;
+}
+
+.btc-plan-header h3 {
+  margin: 0;
+  color: #fff7ed;
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.btc-plan-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.btc-plan-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.btc-plan-top-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.btc-plan-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding-right: 0;
+}
+
+.btc-plan-actions .ghost {
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.btc-plan-pnl {
+  flex-shrink: 0;
+  font-size: 0.94rem;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.btc-plan-status {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 26px;
+  align-items: center;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.btc-plan-status.active {
+  background: rgba(20, 184, 166, 0.14);
+  color: #5eead4;
+}
+
+.btc-plan-status.paused {
+  background: rgba(234, 179, 8, 0.12);
+  color: #facc15;
+}
+
+.btc-plan-card .stock-pnl.gain {
+  color: #14b8a6;
+}
+
+.btc-plan-card .stock-pnl.loss {
+  color: #fb7185;
+}
+
+.btc-plan-summary {
+  border-top: 1px solid #2b251f;
+  border-bottom: 1px solid #2b251f;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 12px 0;
+}
+
+.btc-plan-summary span,
+.btc-plan-detail-grid span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+.btc-plan-summary strong,
+.btc-plan-detail-grid strong {
+  color: #fff7ed;
+  font-size: 0.86rem;
+  text-align: right;
+  word-break: keep-all;
+}
+
+.btc-plan-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.btc-plan-asset {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.btc-plan-asset-title {
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  color: #fff7ed;
+}
+
+.btc-plan-icon-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #332c26;
+  border-radius: 8px;
+  background: #171310;
+  color: #fff7ed;
+}
+
+.btc-plan-icon-button.active {
+  border-color: rgba(249, 115, 22, 0.7);
+  color: #fb923c;
+}
+
+.btc-dca-asset-edit {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.btc-token-mark {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #100d0b;
+}
+
+.btc-plan-delete-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #332c26;
+  border-radius: 8px;
+  background: #171310;
+  padding: 0;
+}
+
+.btc-dca-history {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #2b251f;
+  padding-top: 12px;
+}
+
+.btc-dca-history-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.btc-dca-history-title strong {
+  color: #fff7ed;
+  font-size: 0.9rem;
+}
+
+.btc-dca-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.btc-dca-history-list > div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: #14110f;
+  padding: 10px;
+}
+
+.btc-dca-history-list > div > span {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #100d0b;
+}
+
+.btc-dca-history-list strong {
+  color: #fff7ed;
+  font-size: 0.84rem;
+  line-height: 1.25;
+}
+
+.btc-dca-history-list small {
+  color: #a59b91;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 .growth-tooltip {
   min-width: 190px;
   border: 1px solid #332c26;
@@ -1772,6 +2215,19 @@ input.pin-input {
     gap: 8px;
   }
 
+  .quick-action-fab {
+    right: 18px;
+    bottom: 82px;
+    width: 28px;
+    height: 28px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  }
+
+  .quick-action-fab svg {
+    width: 15px;
+    height: 15px;
+  }
+
   .allocation-grid,
   .asset-grid,
   .market-grid,
@@ -1938,6 +2394,48 @@ input.pin-input {
 
   .stock-sale-actions {
     grid-column: 1 / -1;
+  }
+
+  .btc-plan-card {
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .btc-plan-title-row {
+    gap: 8px;
+  }
+
+  .btc-plan-header h3 {
+    font-size: 0.98rem;
+  }
+
+  .btc-plan-pnl {
+    font-size: 0.84rem;
+  }
+
+  .btc-plan-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .btc-plan-actions .ghost {
+    min-height: 32px;
+    padding: 0 5px;
+    font-size: 0.74rem;
+  }
+
+  .btc-plan-summary {
+    gap: 10px;
+  }
+
+  .btc-plan-summary span,
+  .btc-plan-detail-grid span {
+    font-size: 0.74rem;
+  }
+
+  .btc-plan-summary strong,
+  .btc-plan-detail-grid strong {
+    font-size: 0.8rem;
   }
 
   .stock-holding-card {
