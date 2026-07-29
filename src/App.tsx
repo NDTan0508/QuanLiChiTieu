@@ -136,7 +136,7 @@ type Allocation = {
 
 type FundKey = "btc" | "stock";
 type InvestmentTab = FundKey | "mbb" | "sol";
-type SolDestination = FundKey | DepositFund | "cash";
+type SolDestination = FundKey | DepositFund | "cash" | "btc-direct";
 type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | DepositFund;
 
 type StockPurchaseLine = {
@@ -310,6 +310,7 @@ type BtcTrade = {
   usdtAmount: number;
   btcAmount: number;
   btcPriceUsdt: number;
+  costVnd?: number;
   executedAt: string;
   planId?: string;
   note: string;
@@ -502,6 +503,9 @@ const formatUsdt = (value: number) =>
 const formatBtc = (value: number) =>
   `${value.toLocaleString("vi-VN", { maximumFractionDigits: 7 })} BTC`;
 
+const formatSolAmount = (value: number) =>
+  `${value.toLocaleString("vi-VN", { maximumFractionDigits: 5 })} SOL`;
+
 const formatStockPrice = (value: number) =>
   value.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
 
@@ -530,6 +534,13 @@ const formatDecimalInput = (value: string) => {
   return integerPart;
 };
 
+const formatSolInput = (value: string) => {
+  const formatted = formatDecimalInput(value);
+  if (!formatted.includes(",")) return formatted;
+  const [integerPart, decimalPart = ""] = formatted.split(",");
+  return `${integerPart},${decimalPart.slice(0, 5)}`;
+};
+
 const parseMoney = (value: string) => Number(value.replace(/[^\d]/g, "")) || 0;
 const parseDecimal = (value: string) => {
   const cleaned = value.trim().replace(/[^\d.,]/g, "");
@@ -549,6 +560,11 @@ const parseDecimal = (value: string) => {
   const integerPart = cleaned.slice(0, decimalIndex).replace(/[.,]/g, "");
   const decimalPart = cleaned.slice(decimalIndex + 1).replace(/[.,]/g, "");
   return Number(`${integerPart || "0"}.${decimalPart}`) || 0;
+};
+
+const estimateBtcFromSolInput = (solInput: string, solPriceInput: string, btcPriceUsdt: number) => {
+  const usdtAmount = parseDecimal(solInput) * parseDecimal(solPriceInput);
+  return usdtAmount && btcPriceUsdt ? formatDecimalInput((usdtAmount / btcPriceUsdt).toFixed(7)) : "";
 };
 const cloudAccountKeyForPin = (pin: string) => `${CLOUD_ACCOUNT_NAMESPACE}:${pin}`;
 const stateForAccountPin = (state: AppState, pin: string): AppState => ({
@@ -589,6 +605,7 @@ const isSolWithdrawal = (transaction: SolTransaction): transaction is SolWithdra
 const solDestinationLabel = (destination: SolDestination) => {
   const labels: Record<SolDestination, string> = {
     btc: "BTC",
+    "btc-direct": "BTC trực tiếp",
     stock: "CK",
     saving: "Tiết kiệm",
     emergency: "Dự phòng",
@@ -739,7 +756,8 @@ function btcPortfolioStats(state: AppState, upToMonth?: string) {
   const plans = state.btcDcaPlans.filter((item) => !upToMonth || monthFromDate(item.startDate) <= upToMonth);
   const topupVnd = topups.reduce((sum, item) => sum + item.vndAmount, 0);
   const topupUsdt = topups.reduce((sum, item) => sum + item.usdtAmount, 0);
-  const spentUsdt = trades.reduce((sum, item) => sum + item.usdtAmount, 0);
+  const directTradeCostVnd = trades.reduce((sum, item) => sum + (item.costVnd ?? 0), 0);
+  const spentUsdt = trades.reduce((sum, item) => sum + (item.costVnd ? 0 : item.usdtAmount), 0);
   const transferredUsdt = transfers.reduce((sum, item) => sum + (item.asset === "usdt" ? item.usdtAmount : 0), 0);
   const convertedToUsdt = transfers.reduce((sum, item) => sum + (item.asset === "btc" && item.destination === "usdt" ? item.usdtAmount : 0), 0);
   const usdtBalance = Math.max(topupUsdt + convertedToUsdt - spentUsdt - transferredUsdt, 0);
@@ -748,15 +766,17 @@ function btcPortfolioStats(state: AppState, upToMonth?: string) {
   const totalValueUsdt = usdtBalance + btcValueUsdt;
   const usdtVndRate = state.market.usdtVnd || state.market.usdVnd;
   const totalValueVnd = totalValueUsdt * usdtVndRate;
-  const reportValueVnd = totalValueVnd + Math.max(fundCapital - topupVnd, 0);
-  const investedValueVnd = topupVnd;
+  const pendingVnd = Math.max(fundCapital - topupVnd - directTradeCostVnd, 0);
+  const reportValueVnd = totalValueVnd + pendingVnd;
+  const investedValueVnd = topupVnd + directTradeCostVnd;
   const pnl = totalValueVnd - investedValueVnd;
   const pnlUsdt = usdtVndRate ? pnl / usdtVndRate : 0;
 
   return {
     capitalVnd: fundCapital,
-    pendingVnd: Math.max(fundCapital - topupVnd, 0),
+    pendingVnd,
     topupVnd,
+    directTradeCostVnd,
     topupUsdt,
     investedValueVnd,
     usdtBalance,
@@ -978,6 +998,7 @@ function pendingSolDepositTotal(state: AppState, fund: DepositFund) {
 
 const stockSaleDepositMarker = (saleId: string) => `[stock-sale:${saleId}]`;
 const btcTransferDepositMarker = (transferId: string) => `[btc-transfer:${transferId}]`;
+const solBtcTradeMarker = (withdrawalId: string) => `[sol-btc:${withdrawalId}]`;
 
 function pendingStockSaleDepositTotal(state: AppState, fund: DepositFund) {
   return state.stockSales
@@ -1726,7 +1747,7 @@ function DashboardPage({
     });
     setSelectedExpenseId((current) => {
       if (current && summary.expenseRows.some((row) => row.id === current)) return current;
-      return summary.expenseRows.find((row) => row.id === "phat-sinh" && row.value > 0)?.id ?? summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
+      return summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
     });
   }, [month, summary.expenseRows, summary.incomeRows]);
 
@@ -1877,6 +1898,7 @@ function UnifiedDashboardPage({
   const [showNewExpenseCategory, setShowNewExpenseCategory] = useState(false);
   const [allocationEditing, setAllocationEditing] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [moneyDetail, setMoneyDetail] = useState<"income" | "expense" | null>(null);
   const [allocationAmountInputs, setAllocationAmountInputs] = useState<Partial<Record<AllocationAmountKey, string>>>({});
   const [editingFixed, setEditingFixed] = useState<{ categoryId: string; amount: string } | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<
@@ -1912,13 +1934,16 @@ function UnifiedDashboardPage({
     });
     setSelectedExpenseId((current) => {
       if (current && summary.expenseRows.some((row) => row.id === current)) return current;
-      return summary.expenseRows.find((row) => row.id === "phat-sinh" && row.value > 0)?.id ?? summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
+      return summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
     });
   }, [month, summary.expenseRows, summary.incomeRows]);
 
   const selectedIncome = summary.incomeRows.find((row) => row.id === selectedIncomeId) ?? null;
   const selectedExpense = summary.expenseRows.find((row) => row.id === selectedExpenseId) ?? null;
   const fixedCategories = state.expenseCategories.filter((category) => isFixedCategoryVisibleInMonth(state, category, month));
+  const selectedFixedExpenseCategory = fixedCategories.find((category) => category.id === selectedExpense?.id) ?? null;
+  const selectedFixedExpenseRecord = selectedFixedExpenseCategory ? getMonthlyExpense(state, selectedFixedExpenseCategory, month) : null;
+  const selectedFixedExpenseCanDelete = selectedFixedExpenseCategory ? !accumulationGoalForCategory(state, selectedFixedExpenseCategory.id) : false;
   const percentTotal =
     summary.allocation.btcPercent +
     summary.allocation.stockPercent +
@@ -1950,6 +1975,36 @@ function UnifiedDashboardPage({
     if (task.tab) setAssetTab(task.tab);
     if (task.tab && task.investmentAction) setInvestmentAction({ id: uid(), tab: task.tab, action: task.investmentAction });
     if (task.page) setPage(task.page);
+  };
+
+  const taskPanel = (className = "") => (
+    <article className={`panel dashboard-task-panel ${className}`}>
+      <div className="panel-title">
+        <h2>Hôm nay cần làm gì</h2>
+        <small>{tasks.length} việc</small>
+      </div>
+      {tasks.length === 0 ? (
+        <p className="muted">Không có việc cần xử lý ngay.</p>
+      ) : (
+        <div className="action-task-list">
+          {tasks.map((task) => (
+            <button className={task.tone ?? ""} key={task.id} onClick={() => openTask(task)} type="button">
+              <div>
+                <strong><span className={`status-badge task-badge ${task.tone ?? "neutral"}`}>{task.badge}</span>{task.title}</strong>
+                <small>{task.detail}</small>
+              </div>
+              <span>{task.action}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+
+  const openMoneyDetail = (kind: "income" | "expense", rowId?: string) => {
+    if (kind === "income" && rowId) setSelectedIncomeId(rowId);
+    if (kind === "expense" && rowId) setSelectedExpenseId(rowId);
+    setMoneyDetail(kind);
   };
 
   const updateMonthlyExpense = (category: ExpenseCategory, patch: Partial<MonthlyExpense>) => {
@@ -2189,30 +2244,29 @@ function UnifiedDashboardPage({
         <MetricCard label="Tiết kiệm" value={formatVnd(summary.saving)} icon={<PiggyBank size={20} />} tone="highlight" />
       </section>
 
-      <section className="two-column">
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Thu nhập</h2>
-            <button className="icon-button" title="Thêm thu nhập" onClick={() => setEntryModal("income")}>
-              <Plus size={18} />
-            </button>
-          </div>
-          <BreakdownPie data={summary.incomeRows} />
-          <DetailList rows={summary.incomeRows} selectedId={selectedIncomeId} onSelect={setSelectedIncomeId} />
-          <CategoryHistoryPanel title={selectedIncome?.name ?? "Thu nhập"} rows={selectedIncome?.transactions ?? []} emptyText="Chưa có khoản thu nào trong tháng này." itemTone="income" onEdit={(item) => openIncomeEdit(item as IncomeTransaction)} onDelete={deleteIncomeTransaction} />
-        </article>
+      {taskPanel("dashboard-task-mobile")}
 
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Chi tiêu</h2>
-            <button className="icon-button" title="Thêm khoản chi" onClick={() => setEntryModal("expense")}>
-              <Plus size={18} />
-            </button>
-          </div>
-          <BreakdownPie data={summary.expenseRows} />
-          <DetailList rows={summary.expenseRows} selectedId={selectedExpenseId} onSelect={setSelectedExpenseId} />
-          <CategoryHistoryPanel title={selectedExpense?.name ?? "Chi tiêu"} rows={selectedExpense?.transactions ?? []} emptyText="Chưa có khoản phát sinh nào trong tháng này." itemTone="expense" onEdit={(item) => openExpenseEdit(item as ExpenseEntry)} onDelete={deleteExpenseTransaction} />
-        </article>
+      <section className="dashboard-money-grid">
+        <DashboardMoneyCard
+          title="Thu nhập"
+          tone="income"
+          total={summary.income}
+          rows={summary.incomeRows}
+          selectedId={selectedIncomeId}
+          onAdd={() => setEntryModal("income")}
+          onDetail={() => openMoneyDetail("income")}
+          onSelect={(id) => openMoneyDetail("income", id)}
+        />
+        <DashboardMoneyCard
+          title="Chi tiêu"
+          tone="expense"
+          total={summary.expense}
+          rows={summary.expenseRows}
+          selectedId={selectedExpenseId}
+          onAdd={() => setEntryModal("expense")}
+          onDetail={() => openMoneyDetail("expense")}
+          onSelect={(id) => openMoneyDetail("expense", id)}
+        />
       </section>
 
       <section className="panel">
@@ -2260,11 +2314,10 @@ function UnifiedDashboardPage({
         )}
       </section>
 
-      <section className="two-column compact">
+      <section className="two-column compact dashboard-lower-grid">
         <article className="panel">
           <div className="panel-title">
             <h2>Checklist khoản cố định</h2>
-            <small>Tick mới tính vào chi tiêu</small>
           </div>
           <div className="check-list">
             {fixedCategories.map((category) => {
@@ -2291,28 +2344,46 @@ function UnifiedDashboardPage({
           </div>
         </article>
 
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Hôm nay cần làm gì</h2>
-            <small>{tasks.length} việc</small>
-          </div>
-          {tasks.length === 0 ? (
-            <p className="muted">Không có việc cần xử lý ngay.</p>
-          ) : (
-            <div className="action-task-list">
-              {tasks.map((task) => (
-                <button className={task.tone ?? ""} key={task.id} onClick={() => openTask(task)} type="button">
-                  <div>
-                    <strong><span className={`status-badge task-badge ${task.tone ?? "neutral"}`}>{task.badge}</span>{task.title}</strong>
-                    <small>{task.detail}</small>
-                  </div>
-                  <span>{task.action}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </article>
+        {taskPanel("dashboard-task-desktop")}
       </section>
+
+      {moneyDetail && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="money-detail-title">
+          <section className={`modal-card dashboard-money-modal ${moneyDetail}`}>
+            <div className="panel-title">
+              <h2 id="money-detail-title">{moneyDetail === "income" ? "Chi tiết thu nhập" : "Chi tiết chi tiêu"}</h2>
+              <button className="icon-button" title="Đóng" onClick={() => setMoneyDetail(null)}><X size={17} /></button>
+            </div>
+            <div className="dashboard-money-modal-grid">
+              <DetailList
+                rows={moneyDetail === "income" ? summary.incomeRows : summary.expenseRows}
+                selectedId={moneyDetail === "income" ? selectedIncomeId : selectedExpenseId}
+                onSelect={moneyDetail === "income" ? setSelectedIncomeId : setSelectedExpenseId}
+              />
+              <CategoryHistoryPanel
+                title={moneyDetail === "income" ? selectedIncome?.name ?? "Thu nhập" : selectedExpense?.name ?? "Chi tiêu"}
+                rows={moneyDetail === "income" ? selectedIncome?.transactions ?? [] : selectedExpense?.transactions ?? []}
+                emptyText={moneyDetail === "income" ? "Chưa có khoản thu nào trong tháng này." : "Chưa có khoản phát sinh nào trong tháng này."}
+                itemTone={moneyDetail}
+                onEdit={(item) => moneyDetail === "income" ? openIncomeEdit(item as IncomeTransaction) : openExpenseEdit(item as ExpenseEntry)}
+                onDelete={(item) => moneyDetail === "income" ? deleteIncomeTransaction(item) : deleteExpenseTransaction(item)}
+                fixedItem={
+                  moneyDetail === "expense" && selectedFixedExpenseCategory && selectedFixedExpenseRecord?.checked
+                    ? {
+                        amount: selectedFixedExpenseRecord.amount,
+                        note: "Khoản cố định",
+                        dateLabel: formatMonth(month),
+                        canDelete: selectedFixedExpenseCanDelete,
+                        onEdit: () => setEditingFixed({ categoryId: selectedFixedExpenseCategory.id, amount: selectedFixedExpenseRecord.amount.toLocaleString("vi-VN") }),
+                        onDelete: () => deleteExpenseCategory(selectedFixedExpenseCategory),
+                      }
+                    : undefined
+                }
+              />
+            </div>
+          </section>
+        </div>
+      )}
 
       {entryModal === "income" && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="income-modal-title">
@@ -2432,6 +2503,73 @@ function UnifiedDashboardPage({
   );
 }
 
+function DashboardMoneyCard({
+  title,
+  tone,
+  total,
+  rows,
+  selectedId,
+  onAdd,
+  onDetail,
+  onSelect,
+}: {
+  title: string;
+  tone: "income" | "expense";
+  total: number;
+  rows: Array<{ id: string; name: string; value: number; transactions: Array<{ id: string }> }>;
+  selectedId: string | null;
+  onAdd: () => void;
+  onDetail: () => void;
+  onSelect: (id: string) => void;
+}) {
+  const activeRows = rows.filter((item) => item.value > 0).sort((a, b) => b.value - a.value);
+
+  return (
+    <article className={`panel dashboard-money-card ${tone}`}>
+      <div className="panel-title dashboard-money-card-title">
+        <div>
+          <h2>{title}</h2>
+        </div>
+        <div className="dashboard-money-actions">
+          <button className="ghost action-button-sm" onClick={onDetail} type="button">Chi tiết</button>
+          <button className="icon-button" title={`Thêm ${title.toLowerCase()}`} onClick={onAdd} type="button">
+            <Plus size={18} />
+          </button>
+        </div>
+      </div>
+      {activeRows.length === 0 ? (
+        <p className="muted dashboard-money-empty">Chưa có dữ liệu trong tháng này.</p>
+      ) : (
+        <div className="dashboard-money-list">
+          {activeRows.map((item, index) => {
+            const share = total ? Math.min((item.value / total) * 100, 100) : 0;
+            return (
+              <div
+                className={selectedId === item.id ? "selected" : ""}
+                key={item.id}
+                onClick={() => onSelect(item.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(item.id);
+                  }
+                }}
+                role="button"
+                style={{ "--dot": COLORS[index % COLORS.length] } as React.CSSProperties}
+                tabIndex={0}
+              >
+                <span>{item.name}</span>
+                <strong>{formatVnd(item.value)}</strong>
+                <small>{share.toFixed(1)}%</small>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </article>
+  );
+}
+
 function DetailList({
   rows,
   selectedId,
@@ -2441,22 +2579,23 @@ function DetailList({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
+  const total = rows.reduce((sum, item) => sum + item.value, 0);
   return (
     <div className="detail-list">
       {rows
         .filter((item) => item.value > 0)
-        .map((item, index) => (
-          <button
-            className={selectedId === item.id ? "selected" : ""}
-            key={item.id}
-            onClick={() => onSelect(item.id)}
-            type="button"
-          >
-            <span style={{ "--dot": COLORS[index % COLORS.length] } as React.CSSProperties}>{item.name}</span>
-            <strong>{formatVnd(item.value)}</strong>
-            <small>{item.transactions.length} mục</small>
-          </button>
-        ))}
+        .map((item, index) => {
+          const percent = total ? (item.value / total) * 100 : 0;
+          return (
+            <div className={selectedId === item.id ? "selected detail-row" : "detail-row"} key={item.id}>
+              <button className="detail-row-main" onClick={() => onSelect(item.id)} type="button">
+                <span style={{ "--dot": COLORS[index % COLORS.length] } as React.CSSProperties}>{item.name}</span>
+                <strong>{formatVnd(item.value)}</strong>
+                <small>{percent.toFixed(1)}%</small>
+              </button>
+            </div>
+          );
+        })}
     </div>
   );
 }
@@ -2468,6 +2607,7 @@ function CategoryHistoryPanel({
   itemTone,
   onEdit,
   onDelete,
+  fixedItem,
 }: {
   title: string;
   rows: Array<{ id: string; categoryId?: string; amount: number; date: string; note: string }>;
@@ -2475,17 +2615,38 @@ function CategoryHistoryPanel({
   itemTone: "income" | "expense";
   onEdit?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string }) => void;
   onDelete?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string }) => void;
+  fixedItem?: { amount: number; dateLabel: string; note: string; canDelete: boolean; onEdit: () => void; onDelete: () => void };
 }) {
+  const totalRows = rows.length + (fixedItem ? 1 : 0);
   return (
     <div className="category-history">
       <div className="panel-title compact-title">
         <h3>{title}</h3>
-        <small>{rows.length} giao dịch</small>
+        <small>{totalRows} giao dịch</small>
       </div>
-      {rows.length === 0 ? (
+      {totalRows === 0 ? (
         <p className="muted">{emptyText}</p>
       ) : (
         <div className="timeline history-timeline">
+          {fixedItem && (
+            <div className={itemTone}>
+              <span className={itemTone}>{itemTone === "income" ? "+" : "-"}</span>
+              <div className="history-row-body">
+                <div>
+                  <strong>{formatVnd(fixedItem.amount)}</strong>
+                  <small>{fixedItem.dateLabel} · {fixedItem.note}</small>
+                </div>
+                <button className="row-icon-button history-edit-button" onClick={fixedItem.onEdit} title="Sửa khoản cố định" type="button">
+                  <Pencil size={15} />
+                </button>
+                {fixedItem.canDelete && (
+                  <button className="row-icon-button history-delete-button danger-text" onClick={fixedItem.onDelete} title="Xóa mục" type="button">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           {rows.map((item) => (
             <div key={item.id} className={itemTone}>
               <span className={itemTone}>{itemTone === "income" ? "+" : "-"}</span>
@@ -2950,7 +3111,7 @@ function MoneyPage({
     });
     setHistoryExpenseId((current) => {
       if (current && summary.expenseRows.some((row) => row.id === current)) return current;
-      return summary.expenseRows.find((row) => row.id === "phat-sinh" && row.value > 0)?.id ?? summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
+      return summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
     });
   }, [month, summary.expenseRows, summary.incomeRows]);
 
@@ -4877,16 +5038,18 @@ function StockPage({
         <article className="panel stock-buy-panel">
           <div className="panel-title">
             <h2>Mua cổ phiếu</h2>
-            {purchaseFormOpen && <button className="ghost" onClick={() => {
-              resetPurchaseForm();
-              setPurchaseFormOpen(false);
-            }} type="button">Hủy</button>}
+            {purchaseFormOpen ? (
+              <button className="ghost" onClick={() => {
+                resetPurchaseForm();
+                setPurchaseFormOpen(false);
+              }} type="button">Hủy</button>
+            ) : (
+              <button className="primary asset-open-button action-button-sm" onClick={() => setPurchaseFormOpen(true)} type="button">
+                <Plus size={16} /> Mua cổ phiếu
+              </button>
+            )}
           </div>
-          {!purchaseFormOpen ? (
-            <button className="primary asset-open-button action-button-sm" onClick={() => setPurchaseFormOpen(true)} type="button">
-              <Plus size={16} /> Mua cổ phiếu
-            </button>
-          ) : (
+          {purchaseFormOpen && (
             <>
               <div className="confirm-summary stock-confirm-summary">
                 <div>
@@ -5110,6 +5273,9 @@ function InvestmentPage({
   marketStatus: string;
   btcCloudAccountId: string;
 }) {
+  const [investmentRefreshSuccess, setInvestmentRefreshSuccess] = useState(false);
+  const [investmentRefreshing, setInvestmentRefreshing] = useState(false);
+  const investmentRefreshTimer = useRef<number | null>(null);
   const tabs: Array<{ id: InvestmentTab; label: string }> = [
     { id: "btc", label: "BTC" },
     { id: "stock", label: "CK" },
@@ -5117,10 +5283,41 @@ function InvestmentPage({
     { id: "sol", label: "SOL" },
   ];
 
+  useEffect(() => () => {
+    if (investmentRefreshTimer.current) window.clearTimeout(investmentRefreshTimer.current);
+  }, []);
+
+  const refreshInvestmentPrices = async () => {
+    if (investmentRefreshing) return;
+    setInvestmentRefreshing(true);
+    const symbols = stockPortfolioStats(state).holdings.map((item) => item.symbol);
+    const [stockResult, marketUpdated] = await Promise.all([
+      refreshStockMarketPrices(symbols, setState),
+      onRefreshMarket(true),
+    ]);
+    setInvestmentRefreshing(false);
+    if (marketUpdated || stockResult.updated > 0) {
+      setInvestmentRefreshSuccess(true);
+      if (investmentRefreshTimer.current) window.clearTimeout(investmentRefreshTimer.current);
+      investmentRefreshTimer.current = window.setTimeout(() => setInvestmentRefreshSuccess(false), 2000);
+    }
+  };
+
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-header report-page-header investment-page-header">
         <div>
+          <p className="eyebrow">Tài sản</p>
+        </div>
+        <div className="page-header-actions report-header-actions">
+          <button className="ghost report-refresh-button" onClick={refreshInvestmentPrices} disabled={investmentRefreshing} type="button" aria-label="Cập nhật giá BTC, CK, SOL">
+            <RefreshCw size={17} />
+          </button>
+          {investmentRefreshSuccess && (
+            <span className="refresh-success-pill">
+              <CheckCircle2 size={14} /> Đã cập nhật
+            </span>
+          )}
         </div>
       </header>
       <div className="deposit-tabs investment-tabs" role="tablist" aria-label="Chọn danh mục tài sản">
@@ -5753,10 +5950,12 @@ function SolPage({
     sol: "",
     price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "",
     vnd: "",
+    btc: "",
     destination: "cash" as SolDestination,
     date: today(),
     note: "",
   });
+  const [withdrawBtcTouched, setWithdrawBtcTouched] = useState(false);
   const [withdrawError, setWithdrawError] = useState("");
   const solStats = solPosition(state.solTransactions);
   const totalSol = solStats.balance;
@@ -5767,7 +5966,8 @@ function SolPage({
   const currentVnd = currentUsd * state.market.usdVnd;
   const pnlVnd = pnl * state.market.usdVnd;
   const destinationOptions: Array<{ id: SolDestination; label: string }> = [
-    { id: "btc", label: "BTC" },
+    { id: "btc", label: "BTC - về USDT" },
+    { id: "btc-direct", label: "BTC - mua BTC trực tiếp" },
     { id: "stock", label: "CK" },
     { id: "saving", label: "Tiết kiệm" },
     { id: "emergency", label: "Dự phòng" },
@@ -5775,26 +5975,48 @@ function SolPage({
   ];
 
   useEffect(() => {
+    if (!state.market.solUsd) return;
+    const nextPrice = formatDecimalInput(String(state.market.solUsd));
+    setForm((prev) => (prev.price === nextPrice ? prev : { ...prev, price: nextPrice }));
     setWithdrawForm((prev) => {
-      if (prev.price || !state.market.solUsd) return prev;
-      return { ...prev, price: formatDecimalInput(String(state.market.solUsd)) };
+      const estimate = prev.sol ? Math.round(parseDecimal(prev.sol) * parseDecimal(nextPrice) * state.market.usdVnd) : 0;
+      const nextVnd = estimate ? estimate.toLocaleString("vi-VN") : prev.vnd;
+      const nextBtc = prev.destination === "btc-direct" && !withdrawBtcTouched ? estimateBtcFromSolInput(prev.sol, nextPrice, state.market.btcUsdt) : prev.btc;
+      if (prev.price === nextPrice && prev.vnd === nextVnd && prev.btc === nextBtc) return prev;
+      return { ...prev, price: nextPrice, vnd: nextVnd, btc: nextBtc };
     });
-  }, [state.market.solUsd]);
+  }, [state.market.solUsd, state.market.usdVnd, state.market.btcUsdt, withdrawBtcTouched]);
 
   const estimatedWithdrawVnd = (solInput: string, priceInput: string) =>
     Math.round(parseDecimal(solInput) * parseDecimal(priceInput) * state.market.usdVnd);
 
   const updateWithdrawSol = (sol: string) => {
-    const nextSol = formatDecimalInput(sol);
-    const estimate = estimatedWithdrawVnd(nextSol, withdrawForm.price);
-    setWithdrawForm((prev) => ({ ...prev, sol: nextSol, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
+    const nextSol = formatSolInput(sol);
+    setWithdrawBtcTouched(false);
+    setWithdrawForm((prev) => {
+      const estimate = estimatedWithdrawVnd(nextSol, prev.price);
+      return {
+        ...prev,
+        sol: nextSol,
+        vnd: estimate ? estimate.toLocaleString("vi-VN") : "",
+        btc: prev.destination === "btc-direct" ? estimateBtcFromSolInput(nextSol, prev.price, state.market.btcUsdt) : prev.btc,
+      };
+    });
     setWithdrawError("");
   };
 
   const updateWithdrawPrice = (price: string) => {
     const nextPrice = formatDecimalInput(price);
-    const estimate = estimatedWithdrawVnd(withdrawForm.sol, nextPrice);
-    setWithdrawForm((prev) => ({ ...prev, price: nextPrice, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" }));
+    setWithdrawBtcTouched(false);
+    setWithdrawForm((prev) => {
+      const estimate = estimatedWithdrawVnd(prev.sol, nextPrice);
+      return {
+        ...prev,
+        price: nextPrice,
+        vnd: estimate ? estimate.toLocaleString("vi-VN") : "",
+        btc: prev.destination === "btc-direct" ? estimateBtcFromSolInput(prev.sol, nextPrice, state.market.btcUsdt) : prev.btc,
+      };
+    });
     setWithdrawError("");
   };
 
@@ -5803,8 +6025,26 @@ function SolPage({
     const sol = parseDecimal(withdrawForm.sol);
     const vndAmount = parseMoney(nextVnd);
     const price = sol && state.market.usdVnd ? vndAmount / sol / state.market.usdVnd : 0;
-    setWithdrawForm((prev) => ({ ...prev, vnd: nextVnd, price: price ? formatDecimalInput(price.toFixed(2)) : prev.price }));
+    setWithdrawBtcTouched(false);
+    setWithdrawForm((prev) => {
+      const nextPrice = price ? formatDecimalInput(price.toFixed(2)) : prev.price;
+      return {
+        ...prev,
+        vnd: nextVnd,
+        price: nextPrice,
+        btc: prev.destination === "btc-direct" ? estimateBtcFromSolInput(prev.sol, nextPrice, state.market.btcUsdt) : prev.btc,
+      };
+    });
     setWithdrawError("");
+  };
+
+  const updateWithdrawDestination = (destination: SolDestination) => {
+    setWithdrawBtcTouched(false);
+    setWithdrawForm((prev) => ({
+      ...prev,
+      destination,
+      btc: destination === "btc-direct" ? estimateBtcFromSolInput(prev.sol, prev.price, state.market.btcUsdt) : "",
+    }));
   };
 
   const addSol = () => {
@@ -5815,14 +6055,16 @@ function SolPage({
       ...prev,
       solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount: sol, buyPrice: price, date: form.date, note: form.note }],
     }));
-    setForm({ sol: "", price: "", date: today(), note: "" });
+    setForm({ sol: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", date: today(), note: "" });
   };
 
   const withdrawSol = () => {
     const sol = parseDecimal(withdrawForm.sol);
     const sellPrice = parseDecimal(withdrawForm.price);
     const vndAmount = parseMoney(withdrawForm.vnd);
-    if (!sol || !sellPrice || !vndAmount) return;
+    const btcAmount = parseDecimal(withdrawForm.btc);
+    const usdtAmount = sol * sellPrice;
+    if (!sol || !sellPrice || !vndAmount || (withdrawForm.destination === "btc-direct" && !btcAmount)) return;
     if (sol - totalSol > 0.00000001) {
       setWithdrawError("Số SOL rút lớn hơn số SOL đang có.");
       return;
@@ -5851,18 +6093,32 @@ function SolPage({
             note: `${transferNote} · USDT từ SOL`,
           }
         : null;
+    const btcTrade: BtcTrade | null =
+      withdrawal.destination === "btc-direct" && btcAmount
+        ? {
+            id: uid(),
+            type: "manual-buy",
+            usdtAmount,
+            btcAmount,
+            btcPriceUsdt: usdtAmount / btcAmount,
+            costVnd: vndAmount,
+            executedAt: new Date(`${withdrawal.date}T00:00:00`).toISOString(),
+            note: `${transferNote} · Mua BTC trực tiếp ${solBtcTradeMarker(withdrawal.id)}`,
+          }
+        : null;
 
     commitWithUndo("Đã rút/chuyển SOL.", (prev) => ({
       ...prev,
       solTransactions: [...prev.solTransactions, withdrawal],
       btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
+      btcTrades: btcTrade ? [...prev.btcTrades, btcTrade] : prev.btcTrades,
       fundTransactions:
-        withdrawal.destination === "btc" || withdrawal.destination === "stock"
+        withdrawal.destination === "btc" || withdrawal.destination === "btc-direct" || withdrawal.destination === "stock"
           ? [
               ...prev.fundTransactions,
               {
                 id: uid(),
-                fund: withdrawal.destination,
+                fund: withdrawal.destination === "btc-direct" ? "btc" : withdrawal.destination,
                 type: "deposit",
                 amount: vndAmount,
                 date: withdrawal.date,
@@ -5891,15 +6147,22 @@ function SolPage({
         // The encrypted app snapshot still keeps this topup if direct ledger sync is offline.
       });
     }
+    if (btcTrade && btcCloudAccountId) {
+      void upsertCloudPayloadRow("btc_trades", btcCloudAccountId, btcTrade.id, btcTrade, { executed_at: btcTrade.executedAt, plan_id: null }).catch(() => {
+        // Local snapshot keeps the direct BTC buy if cloud ledger sync is offline.
+      });
+    }
 
     setWithdrawForm({
       sol: "",
       price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "",
       vnd: "",
+      btc: "",
       destination: "cash",
       date: today(),
       note: "",
     });
+    setWithdrawBtcTouched(false);
     setWithdrawError("");
   };
 
@@ -5920,6 +6183,10 @@ function SolPage({
             );
           })
         : [];
+    const relatedBtcTrades =
+      isSolWithdrawal(item) && item.destination === "btc-direct"
+        ? state.btcTrades.filter((trade) => trade.note.includes(solBtcTradeMarker(item.id)))
+        : [];
 
     commitWithUndo(isSolWithdrawal(item) ? "Đã xóa lệnh rút/chuyển SOL." : "Đã xóa lệnh thêm SOL.", (prev) => {
       if (!isSolWithdrawal(item)) {
@@ -5930,16 +6197,18 @@ function SolPage({
       }
       const transferNote = solTransferNoteForHistory(item);
       const relatedBtcTopupIds = new Set(relatedBtcTopups.map((topup) => topup.id));
+      const relatedBtcTradeIds = new Set(relatedBtcTrades.map((trade) => trade.id));
       return {
         ...prev,
         solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
         btcUsdtTopups: relatedBtcTopupIds.size ? prev.btcUsdtTopups.filter((topup) => !relatedBtcTopupIds.has(topup.id)) : prev.btcUsdtTopups,
+        btcTrades: relatedBtcTradeIds.size ? prev.btcTrades.filter((trade) => !relatedBtcTradeIds.has(trade.id)) : prev.btcTrades,
         fundTransactions:
-          item.destination === "btc" || item.destination === "stock"
+          item.destination === "btc" || item.destination === "btc-direct" || item.destination === "stock"
             ? prev.fundTransactions.filter(
                 (transaction) =>
                   !(
-                    transaction.fund === item.destination &&
+                    transaction.fund === (item.destination === "btc-direct" ? "btc" : item.destination) &&
                     transaction.type === "deposit" &&
                     transaction.amount === item.vndAmount &&
                     transaction.date === item.date &&
@@ -5967,6 +6236,11 @@ function SolPage({
           setWithdrawError("Đã xóa local, nhưng chưa xóa được USDT từ SOL trên BTC cloud.");
         });
       });
+      relatedBtcTrades.forEach((trade) => {
+        void deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id).catch(() => {
+          setWithdrawError("Đã xóa local, nhưng chưa xóa được BTC mua từ SOL trên BTC cloud.");
+        });
+      });
     }
   };
 
@@ -5978,7 +6252,7 @@ function SolPage({
         </div>
       </header>
       <section className="metrics-grid">
-        <MetricCard label="Tổng SOL" value={totalSol.toLocaleString("vi-VN", { maximumFractionDigits: 4 })} icon={<Coins size={20} />} />
+        <MetricCard label="Tổng SOL" value={formatSolAmount(totalSol)} icon={<Coins size={20} />} />
         <MetricCard label="giá SOL" value={formatUsd(currentUsd)} subValue={formatUsd(cost)} icon={<CircleDollarSign size={20} />} />
         <MetricCard
           label="Lãi/lỗ"
@@ -6032,7 +6306,7 @@ function SolPage({
               <div className="form-grid">
                 <label>
                   Số SOL
-                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: formatDecimalInput(event.target.value) })} placeholder="0,61" />
+                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: formatSolInput(event.target.value) })} placeholder="0,61" />
                 </label>
                 <label>
                   Giá mua
@@ -6066,9 +6340,15 @@ function SolPage({
                   Tiền VND nhận
                   <input value={withdrawForm.vnd} onChange={(event) => updateWithdrawVnd(event.target.value)} placeholder="5.000.000" />
                 </label>
+                {withdrawForm.destination === "btc-direct" && (
+                  <label>
+                    Số BTC nhận
+                    <input value={withdrawForm.btc} onChange={(event) => { setWithdrawBtcTouched(true); setWithdrawForm({ ...withdrawForm, btc: formatDecimalInput(event.target.value) }); }} placeholder="0,0001234" />
+                  </label>
+                )}
                 <label>
                   Nơi nhận
-                  <select value={withdrawForm.destination} onChange={(event) => setWithdrawForm({ ...withdrawForm, destination: event.target.value as SolDestination })}>
+                  <select value={withdrawForm.destination} onChange={(event) => updateWithdrawDestination(event.target.value as SolDestination)}>
                     {destinationOptions.map((option) => (
                       <option key={option.id} value={option.id}>
                         {option.label}
@@ -6106,12 +6386,12 @@ function SolPage({
                 <div>
                   {isSolWithdrawal(item) ? (
                     <>
-                      <strong>-{item.solAmount} SOL · {formatVnd(item.vndAmount)}</strong>
+                      <strong>-{formatSolAmount(item.solAmount)} · {formatVnd(item.vndAmount)}</strong>
                       <small>{formatDate(item.date)} · Rút về {solDestinationLabel(item.destination)} · Giá rút {formatUsd(item.sellPrice)} · {item.note || "Không ghi chú"}</small>
                     </>
                   ) : (
                     <>
-                      <strong>{item.solAmount} SOL · {formatUsd(item.solAmount * item.buyPrice)}</strong>
+                      <strong>{formatSolAmount(item.solAmount)} · {formatUsd(item.solAmount * item.buyPrice)}</strong>
                       <small>{formatDate(item.date)} · Giá mua {formatUsd(item.buyPrice)} · {item.note || "Không ghi chú"}</small>
                     </>
                   )}
@@ -6212,6 +6492,7 @@ function ReportsPage({
         detail("Vốn BTC", formatVnd(btcStats.capitalVnd)),
         detail("VND chờ mua USDT", formatVnd(btcStats.pendingVnd)),
         detail("USDT còn", formatUsdt(btcStats.usdtBalance)),
+        detail("BTC đang nắm giữ", formatBtc(btcStats.btcBalance)),
         detail("BTC giữ quy VND", formatVnd(btcStats.btcValueUsdt * (state.market.usdtVnd || state.market.usdVnd))),
         detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
       ];
@@ -6223,13 +6504,16 @@ function ReportsPage({
         detail("Giá trị cổ phiếu", formatVnd(stockStats.stockValue)),
         detail("Giá vốn cổ phiếu", formatVnd(stockStats.totalCost)),
         detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
+        ...stockStats.holdings.map((holding) =>
+          detail(holding.symbol, `${holding.shares.toLocaleString("vi-VN")} cp · ${formatVnd(holding.marketValue)}`)
+        ),
       ];
     }
     if (row.id === "sol") {
       const sol = solPosition(state.solTransactions);
       const solCurrentUsd = sol.balance * state.market.solUsd;
       return [
-        detail("SOL đang giữ", `${sol.balance.toLocaleString("vi-VN", { maximumFractionDigits: 4 })} SOL`),
+        detail("SOL đang giữ", formatSolAmount(sol.balance)),
         detail("Giá thị trường", formatUsd(state.market.solUsd)),
         detail("Giá trị hiện tại", `${formatUsd(solCurrentUsd)} · ${formatVnd(solCurrentUsd * state.market.usdVnd)}`),
         detail("Gốc SOL", `${formatUsd(sol.cost)} · ${formatVnd(sol.cost * state.market.usdVnd)}`),
@@ -6443,45 +6727,6 @@ function ReportsPage({
       </section>
       <section className="panel">
         <div className="panel-title">
-          <h2>Lãi/lỗ theo gốc</h2>
-        </div>
-        <div className="asset-pnl-table">
-          <div className="asset-pnl-header">
-            <strong>Tên quỹ</strong>
-            <strong>Gốc đầu tư</strong>
-            <strong>Giá trị hiện tại</strong>
-            <strong>Lãi/lỗ</strong>
-            <strong>%</strong>
-          </div>
-          {pnlRows.map((row) => {
-            const isExpanded = expandedPnlRowId === row.id;
-            const details = pnlRowDetails(row);
-            return (
-              <div className="asset-pnl-row-group" key={row.id}>
-                <button className={`asset-pnl-row ${row.id === "total" ? "total" : ""} ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedPnlRowId(isExpanded ? null : row.id)} type="button">
-                  <span>{row.label}</span>
-                  <span>{formatVnd(row.principal)}</span>
-                  <span>{formatVnd(row.current)}</span>
-                  <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(row.pnl)}</span>
-                  <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{row.principal ? `${row.pnlPercent.toFixed(1)}%` : "0.0%"}</span>
-                </button>
-                {isExpanded && (
-                  <div className="asset-pnl-drilldown">
-                    {details.map((item) => (
-                      <div key={item.label}>
-                        <span>{item.label}</span>
-                        <strong>{item.value}</strong>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-      <section className="panel">
-        <div className="panel-title">
           <h2>Tích lũy</h2>
           <small>Các mục đang dồn tiền</small>
         </div>
@@ -6515,6 +6760,45 @@ function ReportsPage({
             })}
           </div>
         )}
+      </section>
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Lãi/lỗ theo gốc</h2>
+        </div>
+        <div className="asset-pnl-table">
+          <div className="asset-pnl-header">
+            <strong>Tên quỹ</strong>
+            <strong>Gốc đầu tư</strong>
+            <strong>Giá trị hiện tại</strong>
+            <strong>Lãi/lỗ</strong>
+            <strong>%</strong>
+          </div>
+          {pnlRows.map((row) => {
+            const isExpanded = expandedPnlRowId === row.id;
+            const details = pnlRowDetails(row);
+            return (
+              <div className="asset-pnl-row-group" key={row.id}>
+                <button className={`asset-pnl-row ${row.id === "total" ? "total" : ""} ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedPnlRowId(isExpanded ? null : row.id)} type="button">
+                  <span data-label="Tên quỹ">{row.label}</span>
+                  <span data-label="Gốc đầu tư">{formatVnd(row.principal)}</span>
+                  <span data-label="Giá trị hiện tại">{formatVnd(row.current)}</span>
+                  <span data-label="Lãi/lỗ" className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(row.pnl)}</span>
+                  <span data-label="% lãi/lỗ" className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{row.principal ? `${row.pnlPercent.toFixed(1)}%` : "0.0%"}</span>
+                </button>
+                {isExpanded && (
+                  <div className="asset-pnl-drilldown">
+                    {details.map((item) => (
+                      <div key={item.label}>
+                        <span>{item.label}</span>
+                        <strong>{item.value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </section>
     </div>
   );
@@ -6923,7 +7207,8 @@ function QuickActionButton({
   const [stockTransfer, setStockTransfer] = useState({ symbol: "", shares: "", price: "", destination: "stock" as SolDestination, date: today(), note: "" });
   const [deposit, setDeposit] = useState({ fund: "saving" as DepositFund, amount: "", rate: "6", term: "12", date: today(), mbLast4: "", note: "" });
   const [sol, setSol] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", date: today(), note: "" });
-  const [solTransfer, setSolTransfer] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", destination: "cash" as SolDestination, date: today(), note: "" });
+  const [solTransfer, setSolTransfer] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", btc: "", destination: "cash" as SolDestination, date: today(), note: "" });
+  const [solTransferBtcTouched, setSolTransferBtcTouched] = useState(false);
   const groups: Array<{ id: QuickActionGroup; label: string; defaultKind: QuickActionKind }> = [
     { id: "income", label: "Thu nhập", defaultKind: "income" },
     { id: "expense", label: "Chi tiêu", defaultKind: "expense" },
@@ -6965,7 +7250,8 @@ function QuickActionButton({
     { id: "cash", label: "Tiền mặt" },
   ];
   const solDestinationOptions: Array<{ id: SolDestination; label: string }> = [
-    { id: "btc", label: "BTC" },
+    { id: "btc", label: "BTC - về USDT" },
+    { id: "btc-direct", label: "BTC - mua BTC trực tiếp" },
     { id: "stock", label: "CK" },
     { id: "saving", label: "Tiết kiệm" },
     { id: "emergency", label: "Dự phòng" },
@@ -7050,6 +7336,56 @@ function QuickActionButton({
     const estimatedUsdt = estimateQuickUsdtFromVnd(usdt.vnd);
     if (estimatedUsdt) setUsdt((prev) => ({ ...prev, amount: estimatedUsdt }));
   }, [state.market.usdtVnd, state.market.usdVnd, open, kind]);
+
+  useEffect(() => {
+    if (!state.market.solUsd) return;
+    const nextPrice = formatDecimalInput(String(state.market.solUsd));
+    setSol((prev) => (prev.price === nextPrice ? prev : { ...prev, price: nextPrice }));
+    setSolTransfer((prev) => {
+      const estimate = prev.amount ? Math.round(parseDecimal(prev.amount) * parseDecimal(nextPrice) * state.market.usdVnd) : 0;
+      const nextVnd = estimate ? estimate.toLocaleString("vi-VN") : prev.vnd;
+      const nextBtc = prev.destination === "btc-direct" && !solTransferBtcTouched ? estimateBtcFromSolInput(prev.amount, nextPrice, state.market.btcUsdt) : prev.btc;
+      if (prev.price === nextPrice && prev.vnd === nextVnd && prev.btc === nextBtc) return prev;
+      return { ...prev, price: nextPrice, vnd: nextVnd, btc: nextBtc };
+    });
+  }, [state.market.solUsd, state.market.usdVnd, state.market.btcUsdt, solTransferBtcTouched]);
+
+  const updateQuickSolTransferAmount = (value: string) => {
+    const amount = formatSolInput(value);
+    setSolTransferBtcTouched(false);
+    setSolTransfer((prev) => {
+      const estimate = Math.round(parseDecimal(amount) * parseDecimal(prev.price) * state.market.usdVnd);
+      return {
+        ...prev,
+        amount,
+        vnd: estimate ? estimate.toLocaleString("vi-VN") : "",
+        btc: prev.destination === "btc-direct" ? estimateBtcFromSolInput(amount, prev.price, state.market.btcUsdt) : prev.btc,
+      };
+    });
+  };
+
+  const updateQuickSolTransferPrice = (value: string) => {
+    const price = formatDecimalInput(value);
+    setSolTransferBtcTouched(false);
+    setSolTransfer((prev) => {
+      const estimate = Math.round(parseDecimal(prev.amount) * parseDecimal(price) * state.market.usdVnd);
+      return {
+        ...prev,
+        price,
+        vnd: estimate ? estimate.toLocaleString("vi-VN") : "",
+        btc: prev.destination === "btc-direct" ? estimateBtcFromSolInput(prev.amount, price, state.market.btcUsdt) : prev.btc,
+      };
+    });
+  };
+
+  const updateQuickSolTransferDestination = (destination: SolDestination) => {
+    setSolTransferBtcTouched(false);
+    setSolTransfer((prev) => ({
+      ...prev,
+      destination,
+      btc: destination === "btc-direct" ? estimateBtcFromSolInput(prev.amount, prev.price, state.market.btcUsdt) : "",
+    }));
+  };
 
   const resetBtcTransfer = () => {
     setBtcTransfer({
@@ -7323,7 +7659,9 @@ function QuickActionButton({
       const solAmount = parseDecimal(solTransfer.amount);
       const sellPrice = parseDecimal(solTransfer.price);
       const vndAmount = parseMoney(solTransfer.vnd) || Math.round(solAmount * sellPrice * state.market.usdVnd);
-      if (!solAmount || !sellPrice || !vndAmount) return setError("Nhập số SOL, giá và số tiền nhận hợp lệ.");
+      const btcAmount = parseDecimal(solTransfer.btc);
+      const usdtAmount = solAmount * sellPrice;
+      if (!solAmount || !sellPrice || !vndAmount || (solTransfer.destination === "btc-direct" && !btcAmount)) return setError("Nhập số SOL, giá và số tiền nhận hợp lệ.");
       if (solAmount - solStats.balance > 0.00000001) return setError("Số SOL rút lớn hơn số SOL đang có.");
       const userNote = solTransfer.note.trim();
       const note = userNote || "Rút từ SOL";
@@ -7342,13 +7680,27 @@ function QuickActionButton({
         withdrawal.destination === "btc"
           ? { id: uid(), vndAmount, usdtAmount: solAmount * sellPrice, date: withdrawal.date, note: `${transferNote} · USDT từ SOL` }
           : null;
+      const btcTrade: BtcTrade | null =
+        withdrawal.destination === "btc-direct" && btcAmount
+          ? {
+              id: uid(),
+              type: "manual-buy",
+              usdtAmount,
+              btcAmount,
+              btcPriceUsdt: usdtAmount / btcAmount,
+              costVnd: vndAmount,
+              executedAt: new Date(`${withdrawal.date}T00:00:00`).toISOString(),
+              note: `${transferNote} · Mua BTC trực tiếp ${solBtcTradeMarker(withdrawal.id)}`,
+            }
+          : null;
       commitWithUndo("Đã rút/chuyển SOL.", (prev) => ({
         ...prev,
         solTransactions: [...prev.solTransactions, withdrawal],
         btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
+        btcTrades: btcTrade ? [...prev.btcTrades, btcTrade] : prev.btcTrades,
         fundTransactions:
-          withdrawal.destination === "btc" || withdrawal.destination === "stock"
-            ? [...prev.fundTransactions, { id: uid(), fund: withdrawal.destination, type: "deposit", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }]
+          withdrawal.destination === "btc" || withdrawal.destination === "btc-direct" || withdrawal.destination === "stock"
+            ? [...prev.fundTransactions, { id: uid(), fund: withdrawal.destination === "btc-direct" ? "btc" : withdrawal.destination, type: "deposit", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }]
             : prev.fundTransactions,
         incomeTransactions:
           withdrawal.destination === "cash"
@@ -7356,7 +7708,9 @@ function QuickActionButton({
             : prev.incomeTransactions,
       }));
       if (btcTopup && btcCloudAccountId) void upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, btcTopup.id, btcTopup);
-      setSolTransfer({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", destination: "cash", date: today(), note: "" });
+      if (btcTrade && btcCloudAccountId) void upsertCloudPayloadRow("btc_trades", btcCloudAccountId, btcTrade.id, btcTrade, { executed_at: btcTrade.executedAt, plan_id: null });
+      setSolTransfer({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", btc: "", destination: "cash", date: today(), note: "" });
+      setSolTransferBtcTouched(false);
       close();
       return;
     }
@@ -7517,24 +7871,17 @@ function QuickActionButton({
                 <label>Note<input value={deposit.note} onChange={(event) => setDeposit({ ...deposit, note: event.target.value })} /></label>
               </>}
               {kind === "sol-buy" && <>
-                <label>Số SOL<input value={sol.amount} onChange={(event) => setSol({ ...sol, amount: formatDecimalInput(event.target.value) })} placeholder="0,5" /></label>
+                <label>Số SOL<input value={sol.amount} onChange={(event) => setSol({ ...sol, amount: formatSolInput(event.target.value) })} placeholder="0,5" /></label>
                 <label>Giá mua USDT<input value={sol.price} onChange={(event) => setSol({ ...sol, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(state.market.solUsd || 0))} /></label>
                 <label>Ngày<input type="date" value={sol.date} onChange={(event) => setSol({ ...sol, date: event.target.value })} /></label>
                 <label>Note<input value={sol.note} onChange={(event) => setSol({ ...sol, note: event.target.value })} /></label>
               </>}
               {kind === "sol-transfer" && <>
-                <label>Số SOL<input value={solTransfer.amount} onChange={(event) => {
-                  const amount = formatDecimalInput(event.target.value);
-                  const estimate = Math.round(parseDecimal(amount) * parseDecimal(solTransfer.price) * state.market.usdVnd);
-                  setSolTransfer({ ...solTransfer, amount, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" });
-                }} placeholder="0,1" /></label>
-                <label>Giá SOL/USDT<input value={solTransfer.price} onChange={(event) => {
-                  const price = formatDecimalInput(event.target.value);
-                  const estimate = Math.round(parseDecimal(solTransfer.amount) * parseDecimal(price) * state.market.usdVnd);
-                  setSolTransfer({ ...solTransfer, price, vnd: estimate ? estimate.toLocaleString("vi-VN") : "" });
-                }} /></label>
+                <label>Số SOL<input value={solTransfer.amount} onChange={(event) => updateQuickSolTransferAmount(event.target.value)} placeholder="0,1" /></label>
+                <label>Giá SOL/USDT<input value={solTransfer.price} onChange={(event) => updateQuickSolTransferPrice(event.target.value)} /></label>
                 <label>Số tiền nhận<input value={solTransfer.vnd} onChange={(event) => setSolTransfer({ ...solTransfer, vnd: formatMoneyInput(event.target.value) })} /></label>
-                <label>Nơi nhận<select value={solTransfer.destination} onChange={(event) => setSolTransfer({ ...solTransfer, destination: event.target.value as SolDestination })}>{solDestinationOptions.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+                {solTransfer.destination === "btc-direct" && <label>Số BTC nhận<input value={solTransfer.btc} onChange={(event) => { setSolTransferBtcTouched(true); setSolTransfer({ ...solTransfer, btc: formatDecimalInput(event.target.value) }); }} placeholder="0,0001234" /></label>}
+                <label>Nơi nhận<select value={solTransfer.destination} onChange={(event) => updateQuickSolTransferDestination(event.target.value as SolDestination)}>{solDestinationOptions.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
                 <label>Ngày<input type="date" value={solTransfer.date} onChange={(event) => setSolTransfer({ ...solTransfer, date: event.target.value })} /></label>
                 <label>Note<input value={solTransfer.note} onChange={(event) => setSolTransfer({ ...solTransfer, note: event.target.value })} /></label>
               </>}
