@@ -378,6 +378,20 @@ type AppState = {
   settings: SettingsState;
 };
 
+type UndoEntry = {
+  id: string;
+  label: string;
+  state: AppState;
+  createdAt: string;
+};
+type CommitWithUndo = (label: string, updater: React.SetStateAction<AppState>) => void;
+type InvestmentActionKind = "btc-topup" | "stock-purchase" | "mbb-deposit";
+type InvestmentActionIntent = {
+  id: string;
+  tab: InvestmentTab;
+  action: InvestmentActionKind;
+};
+
 const STORAGE_KEY = "quan-li-chi-tieu-state-v3-account-pin-reset";
 const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
@@ -1354,9 +1368,11 @@ type DashboardTask = {
   title: string;
   detail: string;
   action: string;
+  badge: string;
   tone?: "warning" | "danger";
   page?: Page;
   tab?: InvestmentTab;
+  investmentAction?: InvestmentActionKind;
 };
 
 function dashboardTasks(state: AppState, month: string): DashboardTask[] {
@@ -1366,7 +1382,7 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   const summary = monthlySummary(state, month);
 
   if (summary.saving > 0 && !summary.allocation.confirmedAt) {
-    tasks.push({ id: "allocation", title: "Tháng này chưa chia quỹ", detail: `Có thể chia ${formatVnd(summary.saving)}`, action: "Chia quỹ", page: "dashboard" });
+    tasks.push({ id: "allocation", title: "Tháng này chưa chia quỹ", detail: `Có thể chia ${formatVnd(summary.saving)}`, action: "Chia quỹ", badge: "Chia quỹ", page: "dashboard" });
   }
 
   const pendingAllocationDeposits = state.allocations
@@ -1389,22 +1405,22 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
     );
   const pendingAllocationDepositTotal = pendingAllocationDeposits.reduce((sum, item) => sum + item.amount, 0);
   if (pendingAllocationDepositTotal > 0) {
-    tasks.push({ id: "allocation-deposit-pending", title: "Sổ MBB chưa tạo từ chia quỹ", detail: formatVnd(pendingAllocationDepositTotal), action: "Tạo sổ", page: "investment", tab: "mbb" });
+    tasks.push({ id: "allocation-deposit-pending", title: "Tiền chia quỹ chưa tạo sổ", detail: formatVnd(pendingAllocationDepositTotal), action: "Tạo sổ", badge: "MBB", page: "investment", tab: "mbb", investmentAction: "mbb-deposit" });
   }
 
   const pendingSolDeposits = pendingSolDepositTotal(state, "saving") + pendingSolDepositTotal(state, "emergency");
   if (pendingSolDeposits > 0) {
-    tasks.push({ id: "sol-deposit-pending", title: "SOL chuyển về chưa tạo sổ", detail: formatVnd(pendingSolDeposits), action: "Tạo sổ", page: "investment", tab: "mbb" });
+    tasks.push({ id: "sol-deposit-pending", title: "Tiền SOL chuyển về chưa tạo sổ", detail: formatVnd(pendingSolDeposits), action: "Tạo sổ", badge: "SOL", page: "investment", tab: "mbb", investmentAction: "mbb-deposit" });
   }
 
   const pendingStockDeposits = pendingStockSaleDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "emergency");
   if (pendingStockDeposits > 0) {
-    tasks.push({ id: "stock-deposit-pending", title: "CK chuyển về chưa tạo sổ", detail: formatVnd(pendingStockDeposits), action: "Tạo sổ", page: "investment", tab: "mbb" });
+    tasks.push({ id: "stock-deposit-pending", title: "Tiền CK chuyển về chưa tạo sổ", detail: formatVnd(pendingStockDeposits), action: "Tạo sổ", badge: "CK", page: "investment", tab: "mbb", investmentAction: "mbb-deposit" });
   }
 
   const pendingBtcDeposits = pendingBtcTransferDepositTotal(state, "saving") + pendingBtcTransferDepositTotal(state, "emergency");
   if (pendingBtcDeposits > 0) {
-    tasks.push({ id: "btc-deposit-pending", title: "BTC chuyển về chưa tạo sổ", detail: formatVnd(pendingBtcDeposits), action: "Tạo sổ", page: "investment", tab: "mbb" });
+    tasks.push({ id: "btc-deposit-pending", title: "Tiền BTC chuyển về chưa tạo sổ", detail: formatVnd(pendingBtcDeposits), action: "Tạo sổ", badge: "BTC", page: "investment", tab: "mbb", investmentAction: "mbb-deposit" });
   }
 
   const dueDeposit = state.bankDeposits
@@ -1415,9 +1431,10 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   if (dueDeposit) {
     tasks.push({
       id: "deposit-due",
-      title: dueDeposit.dueDays <= 0 ? "Sổ MBB đã đáo hạn" : "Sổ MBB sắp đáo hạn",
+      title: dueDeposit.dueDays <= 0 ? "Sổ MBB: đã đáo hạn" : "Sổ MBB: sắp đáo hạn",
       detail: `${formatVnd(dueDeposit.principal)} · ${dueDeposit.dueDays <= 0 ? "cần xử lý" : `${dueDeposit.dueDays} ngày nữa`}`,
       action: "Xem sổ",
+      badge: "MBB",
       tone: dueDeposit.dueDays <= 7 ? "warning" : undefined,
       page: "investment",
       tab: "mbb",
@@ -1425,33 +1442,30 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   }
 
   if (btcStats.pendingVnd > 0) {
-    tasks.push({ id: "btc-pending", title: "BTC đã chia quỹ chưa mua USDT", detail: `Còn ${formatVnd(btcStats.pendingVnd)} chờ đổi sang USDT`, action: "Mua USDT", page: "investment", tab: "btc" });
+    tasks.push({ id: "btc-pending", title: "Còn VND chưa đổi USDT", detail: `Còn ${formatVnd(btcStats.pendingVnd)} chờ đổi sang USDT`, action: "Mua USDT", badge: "BTC", page: "investment", tab: "btc", investmentAction: "btc-topup" });
   }
 
   const pendingSolStockCash = pendingStockCashFromTransfer(state, "SOL", stockStats.cash);
   if (pendingSolStockCash > 0) {
-    tasks.push({ id: "sol-stock-cash", title: "SOL chuyển về CK chưa mua cổ phiếu", detail: `Còn ${formatVnd(pendingSolStockCash)} trong số dư CK`, action: "Mua CK", page: "investment", tab: "stock" });
+    tasks.push({ id: "sol-stock-cash", title: "Tiền từ SOL chuyển về chưa mua cổ", detail: `Còn ${formatVnd(pendingSolStockCash)} trong số dư CK`, action: "Mua CK", badge: "SOL", page: "investment", tab: "stock", investmentAction: "stock-purchase" });
   }
 
   const pendingBtcStockCash = pendingStockCashFromTransfer(state, "BTC", stockStats.cash - pendingSolStockCash);
   if (pendingBtcStockCash > 0) {
-    tasks.push({ id: "btc-stock-cash", title: "BTC chuyển về CK chưa mua cổ phiếu", detail: `Còn ${formatVnd(pendingBtcStockCash)} trong số dư CK`, action: "Mua CK", page: "investment", tab: "stock" });
+    tasks.push({ id: "btc-stock-cash", title: "Tiền từ BTC/USDT chuyển về chưa mua cổ", detail: `Còn ${formatVnd(pendingBtcStockCash)} trong số dư CK`, action: "Mua CK", badge: "BTC", page: "investment", tab: "stock", investmentAction: "stock-purchase" });
   }
 
   const pendingAllocationStockCash = Math.max(stockStats.cash - pendingSolStockCash - pendingBtcStockCash, 0);
-  if (pendingAllocationStockCash > 0) {
-    tasks.push({ id: "stock-cash", title: "CK đã chia quỹ chưa mua cổ phiếu", detail: `Còn ${formatVnd(pendingAllocationStockCash)} trong số dư CK`, action: "Mua CK", page: "investment", tab: "stock" });
+  if (pendingAllocationStockCash >= 100_000) {
+    tasks.push({ id: "stock-cash", title: "Tiền chia quỹ chưa mua cổ", detail: `Còn ${formatVnd(pendingAllocationStockCash)} trong số dư CK`, action: "Mua CK", badge: "CK", page: "investment", tab: "stock", investmentAction: "stock-purchase" });
   }
 
   const activePlans = state.btcDcaPlans.filter((plan) => plan.isActive);
   const dailyNeed = activePlans.reduce((sum, plan) => sum + (plan.frequency === "daily" ? plan.amountUsdt : 0), 0);
   if (dailyNeed > 0) {
     const daysLeft = Math.floor(btcStats.usdtBalance / dailyNeed);
-    if (daysLeft < 5) tasks.push({ id: "usdt-days", title: "USDT cho DCA sắp hết", detail: `Còn đủ khoảng ${daysLeft} ngày với lịch hiện tại`, action: "Mua USDT", tone: daysLeft <= 2 ? "danger" : "warning", page: "investment", tab: "btc" });
+    if (daysLeft < 5) tasks.push({ id: "usdt-days", title: "USDT chỉ còn đủ DCA dưới 5 ngày", detail: `Còn đủ khoảng ${daysLeft} ngày với lịch hiện tại`, action: "Mua USDT", badge: "BTC", tone: daysLeft <= 2 ? "danger" : "warning", page: "investment", tab: "btc", investmentAction: "btc-topup" });
   }
-
-  const marketAgeMs = state.market.updatedAt ? Date.now() - new Date(state.market.updatedAt).getTime() : Infinity;
-  if (marketAgeMs > 5 * MARKET_PRICE_REFRESH_MS || state.market.isFallback) tasks.push({ id: "market-stale", title: "Giá thị trường cần kiểm tra", detail: state.market.isFallback ? "Đang dùng một phần giá fallback" : "Giá đã quá 5 phút", action: "Cập nhật giá", tone: "warning" });
 
   return tasks.slice(0, 12);
 }
@@ -1837,18 +1851,22 @@ type NewExpenseKind = Exclude<ExpenseCategory["kind"], "envelope">;
 function UnifiedDashboardPage({
   state,
   setState,
+  commitWithUndo,
   month,
   setMonth,
   setPage,
   setAssetTab,
+  setInvestmentAction,
   onRefreshMarket,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
   month: string;
   setMonth: (month: string) => void;
   setPage: (page: Page) => void;
   setAssetTab: (tab: InvestmentTab) => void;
+  setInvestmentAction: (action: InvestmentActionIntent | null) => void;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
 }) {
   const summary = monthlySummary(state, month);
@@ -1930,6 +1948,7 @@ function UnifiedDashboardPage({
       return;
     }
     if (task.tab) setAssetTab(task.tab);
+    if (task.tab && task.investmentAction) setInvestmentAction({ id: uid(), tab: task.tab, action: task.investmentAction });
     if (task.page) setPage(task.page);
   };
 
@@ -1996,7 +2015,7 @@ function UnifiedDashboardPage({
   const addIncome = () => {
     const amount = parseMoney(incomeForm.amount);
     if (!amount || !incomeForm.categoryId || !incomeForm.date) return;
-    setState((prev) => ({
+    commitWithUndo("Đã thêm thu nhập.", (prev) => ({
       ...prev,
       incomeTransactions: [...prev.incomeTransactions, { id: uid(), categoryId: incomeForm.categoryId, amount, date: incomeForm.date, month: monthFromDate(incomeForm.date), note: incomeForm.note }],
     }));
@@ -2008,7 +2027,7 @@ function UnifiedDashboardPage({
   const addExpenseEntry = () => {
     const amount = parseMoney(expenseEntry.amount);
     if (!amount || !expenseEntry.categoryId || !expenseEntry.date) return;
-    setState((prev) => ({
+    commitWithUndo("Đã thêm khoản chi.", (prev) => ({
       ...prev,
       expenseEntries: [...prev.expenseEntries, { id: uid(), categoryId: expenseEntry.categoryId, amount, date: expenseEntry.date, month: monthFromDate(expenseEntry.date), note: expenseEntry.note }],
     }));
@@ -2048,7 +2067,7 @@ function UnifiedDashboardPage({
     if (!editingTransaction) return;
     const amount = parseMoney(editingTransaction.amount);
     if (!amount || !editingTransaction.date) return;
-    setState((prev) => {
+    commitWithUndo("Đã lưu điều chỉnh giao dịch.", (prev) => {
       if (editingTransaction.kind === "income") {
         return {
           ...prev,
@@ -2065,17 +2084,17 @@ function UnifiedDashboardPage({
 
   const deleteIncomeTransaction = (transaction: { id: string }) => {
     if (!window.confirm("Xóa khoản thu này?")) return;
-    setState((prev) => ({ ...prev, incomeTransactions: prev.incomeTransactions.filter((item) => item.id !== transaction.id) }));
+    commitWithUndo("Đã xóa khoản thu.", (prev) => ({ ...prev, incomeTransactions: prev.incomeTransactions.filter((item) => item.id !== transaction.id) }));
   };
 
   const deleteExpenseTransaction = (transaction: { id: string }) => {
     if (!window.confirm("Xóa khoản chi này?")) return;
-    setState((prev) => ({ ...prev, expenseEntries: prev.expenseEntries.filter((item) => item.id !== transaction.id) }));
+    commitWithUndo("Đã xóa khoản chi.", (prev) => ({ ...prev, expenseEntries: prev.expenseEntries.filter((item) => item.id !== transaction.id) }));
   };
 
   const deleteExpenseCategory = (category: ExpenseCategory) => {
     if (!window.confirm(`Xóa mục ${category.name}?`)) return;
-    setState((prev) => ({
+    commitWithUndo("Đã xóa mục chi.", (prev) => ({
       ...prev,
       expenseCategories: prev.expenseCategories.filter((item) => item.id !== category.id),
       monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== category.id),
@@ -2143,7 +2162,7 @@ function UnifiedDashboardPage({
     };
     if ((confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
     if ((confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
-    setState((prev) => ({
+    commitWithUndo("Đã chia quỹ.", (prev) => ({
       ...prev,
       allocations: prev.allocations.some((item) => item.month === month) ? prev.allocations.map((item) => (item.month === month ? confirmedAllocation : item)) : [...prev.allocations, confirmedAllocation],
       fundTransactions: [
@@ -2284,7 +2303,7 @@ function UnifiedDashboardPage({
               {tasks.map((task) => (
                 <button className={task.tone ?? ""} key={task.id} onClick={() => openTask(task)} type="button">
                   <div>
-                    <strong>{task.title}</strong>
+                    <strong><span className={`status-badge task-badge ${task.tone ?? "neutral"}`}>{task.badge}</span>{task.title}</strong>
                     <small>{task.detail}</small>
                   </div>
                   <span>{task.action}</span>
@@ -3612,16 +3631,22 @@ const btcTransferDestinationLabel = (destination: BtcTransferTarget) => {
 function BtcPage({
   state,
   setState,
+  commitWithUndo,
   onRefreshMarket,
   marketStatus,
   btcCloudAccountId,
+  actionIntent,
+  onActionHandled,
   embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
   marketStatus: string;
   btcCloudAccountId: string;
+  actionIntent?: InvestmentActionIntent | null;
+  onActionHandled?: () => void;
   embedded?: boolean;
 }) {
   const stats = btcPortfolioStats(state);
@@ -3671,11 +3696,34 @@ function BtcPage({
     return state.market.btcUsdt;
   }
 
+  const estimateUsdtFromVnd = (vndInput: string) => {
+    const vndAmount = parseMoney(vndInput);
+    const rate = state.market.usdtVnd || state.market.usdVnd;
+    return vndAmount && rate ? formatDecimalInput((vndAmount / rate).toFixed(3)) : "";
+  };
+
+  const updateTopupVnd = (value: string) => {
+    const vnd = formatMoneyInput(value);
+    setTopupForm((prev) => ({ ...prev, vnd, usdt: vnd ? estimateUsdtFromVnd(vnd) || prev.usdt : "" }));
+  };
+
   useEffect(() => {
     const price = transferPriceFor(transferForm.asset, transferForm.destination);
     if (!price) return;
     setTransferForm((prev) => ({ ...prev, price: formatDecimalInput(String(price)) }));
   }, [state.market.btcUsdt, state.market.usdtVnd, state.market.usdVnd, transferForm.asset, transferForm.destination]);
+
+  useEffect(() => {
+    if (actionIntent?.tab !== "btc" || actionIntent.action !== "btc-topup") return;
+    setTopupFormOpen(true);
+    onActionHandled?.();
+  }, [actionIntent?.id]);
+
+  useEffect(() => {
+    if (!topupFormOpen || !topupForm.vnd || topupForm.usdt) return;
+    const estimatedUsdt = estimateUsdtFromVnd(topupForm.vnd);
+    if (estimatedUsdt) setTopupForm((prev) => ({ ...prev, usdt: estimatedUsdt }));
+  }, [state.market.usdtVnd, state.market.usdVnd, topupFormOpen]);
 
   const syncBtcRow = (table: string, id: string, payload: unknown, columns: Record<string, unknown> = {}) => {
     if (!btcCloudAccountId) return;
@@ -3696,7 +3744,7 @@ function BtcPage({
       return;
     }
     const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: topupForm.date, note: topupForm.note.trim() };
-    setState((prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
+    commitWithUndo("Đã thêm mua USDT.", (prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
     syncBtcRow("btc_usdt_topups", topup.id, topup);
     setTopupForm({ vnd: "", usdt: "", date: today(), note: "" });
     setTopupFormOpen(false);
@@ -3723,7 +3771,7 @@ function BtcPage({
       averagePriceUsdtOverride: existingPlan?.averagePriceUsdtOverride,
       note: planForm.note.trim(),
     });
-    setState((prev) => ({
+    commitWithUndo(editingPlanId ? "Đã sửa kế hoạch DCA." : "Đã tạo kế hoạch DCA.", (prev) => ({
       ...prev,
       btcDcaPlans: editingPlanId ? prev.btcDcaPlans.map((item) => (item.id === editingPlanId ? plan : item)) : [...prev.btcDcaPlans, plan],
     }));
@@ -3805,7 +3853,7 @@ function BtcPage({
       });
     }
 
-    setState((prev) => ({
+    commitWithUndo("Đã import DCA cũ.", (prev) => ({
       ...prev,
       btcDcaPlans: [...prev.btcDcaPlans, plan],
       btcTrades: [...prev.btcTrades, ...trades],
@@ -3831,7 +3879,7 @@ function BtcPage({
       statusNote: !plan.isActive ? "" : "Đã tạm dừng",
       nextRunAt: !plan.isActive ? nextDcaRunAt(plan) : plan.nextRunAt,
     };
-    setState((prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
+    commitWithUndo(next.isActive ? "Đã bật lại DCA." : "Đã tạm dừng DCA.", (prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
     syncBtcRow("btc_dca_plans", next.id, next, { is_active: next.isActive, next_run_at: next.nextRunAt, status: next.status });
   };
 
@@ -3865,7 +3913,7 @@ function BtcPage({
       btcAmountOverride,
       averagePriceUsdtOverride,
     };
-    setState((prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
+    commitWithUndo("Đã chỉnh số BTC DCA.", (prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
     syncBtcRow("btc_dca_plans", next.id, next, { is_active: next.isActive, next_run_at: next.nextRunAt, status: next.status });
     setEditingDcaAssetPlanId(null);
     setDcaAssetForm({ btcAmount: "", averagePriceUsdt: "" });
@@ -3873,7 +3921,7 @@ function BtcPage({
   };
 
   const deletePlan = (plan: BtcDcaPlan) => {
-    setState((prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id) }));
+    commitWithUndo("Đã xóa lệnh DCA.", (prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id) }));
     setExpandedDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
     setHistoryDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
     if (editingPlanId === plan.id) {
@@ -3966,7 +4014,7 @@ function BtcPage({
         executedAt: new Date(`${transferForm.date}T00:00:00`).toISOString(),
         note: transferForm.note.trim() || "Chuyển USDT sang BTC",
       };
-      setState((prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
+      commitWithUndo("Đã chuyển USDT sang BTC.", (prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
       syncBtcRow("btc_trades", trade.id, trade, { executed_at: trade.executedAt, plan_id: null });
       resetTransferForm();
       setTransferFormOpen(false);
@@ -4001,7 +4049,7 @@ function BtcPage({
         : transfer.note
           ? `Rút từ BTC · ${transfer.note} [btc-transfer:${transfer.id}]`
           : `Rút từ BTC [btc-transfer:${transfer.id}]`;
-    setState((prev) => ({
+    commitWithUndo("Đã lưu rút/chuyển BTC.", (prev) => ({
       ...prev,
       btcTransfers: [...prev.btcTransfers, transfer],
       fundTransactions:
@@ -4062,6 +4110,29 @@ function BtcPage({
     ...state.btcTrades.filter((item) => item.type !== "dca").map((item) => ({ kind: "trade" as const, date: item.executedAt.slice(0, 10), item })),
     ...state.btcTransfers.map((item) => ({ kind: "transfer" as const, date: item.date, item })),
   ].sort((a, b) => b.date.localeCompare(a.date));
+  const deleteBtcHistoryRow = (row: (typeof rows)[number]) => {
+    const label = row.kind === "topup" ? "lệnh mua USDT" : row.kind === "trade" ? "lệnh mua BTC" : "lệnh rút/chuyển BTC";
+    if (!window.confirm(`Xóa ${label} này? Số dư và lịch sử BTC sẽ được cập nhật lại.`)) return;
+    commitWithUndo(`Đã xóa ${label}.`, (prev) => ({
+      ...prev,
+      btcUsdtTopups: row.kind === "topup" ? prev.btcUsdtTopups.filter((item) => item.id !== row.item.id) : prev.btcUsdtTopups,
+      btcTrades: row.kind === "trade" ? prev.btcTrades.filter((item) => item.id !== row.item.id) : prev.btcTrades,
+      btcTransfers: row.kind === "transfer" ? prev.btcTransfers.filter((item) => item.id !== row.item.id) : prev.btcTransfers,
+      fundTransactions:
+        row.kind === "transfer"
+          ? prev.fundTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`))
+          : prev.fundTransactions,
+      incomeTransactions:
+        row.kind === "transfer"
+          ? prev.incomeTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`))
+          : prev.incomeTransactions,
+    }));
+    if (!btcCloudAccountId) return;
+    const table = row.kind === "topup" ? "btc_usdt_topups" : row.kind === "trade" ? "btc_trades" : "btc_transfers";
+    void deleteCloudPayloadRow(table, btcCloudAccountId, row.item.id).catch(() => {
+      setBtcError("Đã xóa local, nhưng chưa xóa được dòng BTC cloud.");
+    });
+  };
 
   const content = (
     <>
@@ -4097,10 +4168,10 @@ function BtcPage({
             {topupFormOpen && <button className="ghost" onClick={() => setTopupFormOpen(false)} type="button">Hủy</button>}
           </div>
           {!topupFormOpen ? (
-            <button className="primary asset-open-button" onClick={() => setTopupFormOpen(true)} type="button"><Plus size={16} /> Mua USDT</button>
+            <button className="primary asset-open-button action-button-sm" onClick={() => setTopupFormOpen(true)} type="button"><Plus size={16} /> Mua USDT</button>
           ) : (
             <div className="form-grid btc-form-grid">
-              <label>VND dùng mua<input value={topupForm.vnd} onChange={(event) => setTopupForm({ ...topupForm, vnd: formatMoneyInput(event.target.value) })} placeholder="1.000.000" /></label>
+              <label>VND dùng mua<input value={topupForm.vnd} onChange={(event) => updateTopupVnd(event.target.value)} placeholder="1.000.000" /></label>
               <label>USDT thực nhận<input value={topupForm.usdt} onChange={(event) => setTopupForm({ ...topupForm, usdt: formatDecimalInput(event.target.value) })} placeholder="39,250" /></label>
               <label>Ngày<input type="date" value={topupForm.date} onChange={(event) => setTopupForm({ ...topupForm, date: event.target.value })} /></label>
               <label>Giá USDT (VND)<input value={topupUsdtRate() ? formatVnd(topupUsdtRate()) : ""} readOnly placeholder="Tự tính" /></label>
@@ -4120,8 +4191,8 @@ function BtcPage({
           </div>
           {!planFormOpen && !legacyDcaFormOpen && (
             <div className="btc-form-open-actions">
-              <button className="primary asset-open-button" onClick={() => setPlanFormOpen(true)} type="button"><CalendarClock size={16} /> Mở form DCA</button>
-              <button className="ghost asset-open-button" onClick={() => setLegacyDcaFormOpen(true)} type="button"><Upload size={16} /> Nhập DCA cũ</button>
+              <button className="primary asset-open-button action-button-sm" onClick={() => setPlanFormOpen(true)} type="button"><CalendarClock size={16} /> Mở form DCA</button>
+              <button className="ghost asset-open-button action-button-sm" onClick={() => setLegacyDcaFormOpen(true)} type="button"><Upload size={16} /> Nhập DCA cũ</button>
             </div>
           )}
           {planFormOpen && (
@@ -4166,7 +4237,7 @@ function BtcPage({
                 <div className="btc-plan-header">
                   <div>
                     <div className="btc-plan-top-row">
-                      <span className={`btc-plan-status ${plan.isActive ? "active" : "paused"}`}>{plan.isActive ? "Đang tiến hành" : "Đã tạm dừng"}</span>
+                      <span className={`status-badge btc-plan-status ${plan.isActive ? "success" : "warning"}`}>{plan.isActive ? "Đang chạy" : "Tạm dừng"}</span>
                       <div className="btc-plan-top-actions">
                         <button className={`btc-plan-icon-button ${isHistoryOpen ? "active" : ""}`} onClick={() => toggleDcaPlanHistory(plan.id)} title="Lịch sử DCA" type="button"><History size={15} /></button>
                         <button className="btc-plan-delete-button danger-text" onClick={() => deletePlan(plan)} title="Xóa lệnh DCA" type="button"><X size={16} /></button>
@@ -4260,7 +4331,7 @@ function BtcPage({
             {transferFormOpen && <button className="ghost" onClick={() => setTransferFormOpen(false)} type="button">Hủy</button>}
           </div>
           {!transferFormOpen ? (
-            <button className="primary asset-open-button" onClick={() => setTransferFormOpen(true)} type="button"><ArrowDownCircle size={16} /> Rút / chuyển</button>
+            <button className="primary asset-open-button action-button-sm" onClick={() => setTransferFormOpen(true)} type="button"><ArrowDownCircle size={16} /> Rút / chuyển</button>
           ) : (
             <div className="form-grid btc-form-grid">
               <label>Tài sản nguồn<select value={transferForm.asset} onChange={(event) => {
@@ -4297,10 +4368,15 @@ function BtcPage({
           {rows.map((row) => (
             <div key={`${row.kind}-${row.item.id}`}>
               <span className={row.kind === "transfer" ? "withdraw" : "deposit"}>{row.kind === "transfer" ? "-" : "+"}</span>
-              <div>
-                {row.kind === "topup" && <><strong>{formatUsdt(row.item.usdtAmount)} · {formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · Giá USDT {row.item.usdtAmount ? formatVnd(row.item.vndAmount / row.item.usdtAmount) : "0đ"} · Mua USDT · {row.item.note || "Không ghi chú"}</small></>}
-                {row.kind === "trade" && <><strong>{formatBtc(row.item.btcAmount)} · {formatUsdt(row.item.usdtAmount)}</strong><small>{formatDate(row.item.executedAt.slice(0, 10))} · {row.item.type === "dca" ? "DCA" : "Mua thêm"} @ {formatUsdt(row.item.btcPriceUsdt)} · {row.item.note || "Không ghi chú"}</small></>}
-                {row.kind === "transfer" && <><strong>{row.item.destination === "usdt" ? formatUsdt(row.item.usdtAmount) : formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · {row.item.destination === "usdt" ? "Chuyển" : "Rút"} {row.item.asset.toUpperCase()} về {btcTransferDestinationLabel(row.item.destination)} · {row.item.note || "Không ghi chú"}</small></>}
+              <div className="timeline-row-content">
+                <div>
+                  {row.kind === "topup" && <><strong>{formatUsdt(row.item.usdtAmount)} · {formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · Giá USDT {row.item.usdtAmount ? formatVnd(row.item.vndAmount / row.item.usdtAmount) : "0đ"} · Mua USDT · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "trade" && <><strong>{formatBtc(row.item.btcAmount)} · {formatUsdt(row.item.usdtAmount)}</strong><small>{formatDate(row.item.executedAt.slice(0, 10))} · {row.item.type === "dca" ? "DCA" : "Mua thêm"} @ {formatUsdt(row.item.btcPriceUsdt)} · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "transfer" && <><strong>{row.item.destination === "usdt" ? formatUsdt(row.item.usdtAmount) : formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · {row.item.destination === "usdt" ? "Chuyển" : "Rút"} {row.item.asset.toUpperCase()} về {btcTransferDestinationLabel(row.item.destination)} · {row.item.note || "Không ghi chú"}</small></>}
+                </div>
+                <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteBtcHistoryRow(row)} title="Xóa lịch sử" type="button">
+                  <X size={15} />
+                </button>
               </div>
             </div>
           ))}
@@ -4386,10 +4462,16 @@ function FundPage({
 function StockPage({
   state,
   setState,
+  commitWithUndo,
+  actionIntent,
+  onActionHandled,
   embedded = false,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
+  actionIntent?: InvestmentActionIntent | null;
+  onActionHandled?: () => void;
   embedded?: boolean;
 }) {
   const stats = stockPortfolioStats(state);
@@ -4426,6 +4508,12 @@ function StockPage({
         transaction.note === "Chia quỹ cuối tháng" &&
         !state.settings.dismissedStockAllocationIds.includes(transaction.id)
     );
+
+  useEffect(() => {
+    if (actionIntent?.tab !== "stock" || actionIntent.action !== "stock-purchase") return;
+    setPurchaseFormOpen(true);
+    onActionHandled?.();
+  }, [actionIntent?.id]);
 
   const dismissStockAllocationNotice = () => {
     if (!latestStockAllocationNotice) return;
@@ -4633,7 +4721,7 @@ function StockPage({
       setStockError("Tổng giá trị mua đang vượt quá tiền dư CK.");
       return;
     }
-    setState((prev) => ({
+    commitWithUndo("Đã mua cổ phiếu.", (prev) => ({
       ...prev,
       stockPurchases: [
         ...prev.stockPurchases,
@@ -4682,7 +4770,7 @@ function StockPage({
       date: saleForm.date,
       note,
     };
-    setState((prev) => ({
+    commitWithUndo("Đã rút/chuyển CK.", (prev) => ({
       ...prev,
       stockSales: [...prev.stockSales, sale],
       fundTransactions:
@@ -4729,6 +4817,14 @@ function StockPage({
         ...prev.stockMarketPrices.filter((item) => item.symbol !== symbol),
         { symbol, price, updatedAt: new Date().toISOString(), source: "manual" },
       ],
+    }));
+  };
+
+  const deleteStockPurchase = (purchase: StockPurchase) => {
+    if (!window.confirm("Xóa lệnh mua cổ phiếu này? Danh mục CK sẽ được tính lại.")) return;
+    commitWithUndo("Đã xóa lệnh mua CK.", (prev) => ({
+      ...prev,
+      stockPurchases: prev.stockPurchases.filter((item) => item.id !== purchase.id),
     }));
   };
 
@@ -4787,7 +4883,7 @@ function StockPage({
             }} type="button">Hủy</button>}
           </div>
           {!purchaseFormOpen ? (
-            <button className="primary asset-open-button" onClick={() => setPurchaseFormOpen(true)} type="button">
+            <button className="primary asset-open-button action-button-sm" onClick={() => setPurchaseFormOpen(true)} type="button">
               <Plus size={16} /> Mua cổ phiếu
             </button>
           ) : (
@@ -4969,11 +5065,16 @@ function StockPage({
           {[...state.stockPurchases].reverse().map((purchase) => (
             <div key={purchase.id}>
               <span className="deposit">+</span>
-              <div>
-                <strong>{formatVnd(purchase.lines.reduce((sum, line) => sum + stockLineValue(line), 0))}</strong>
-                <small>
-                  {formatDate(purchase.date)} · {purchase.lines.map((line) => `${line.symbol} ${line.shares.toLocaleString("vi-VN")}cp @ ${formatStockPrice(line.buyPrice)}`).join(" · ")} · {purchase.note || "Không ghi chú"}
-                </small>
+              <div className="timeline-row-content">
+                <div>
+                  <strong>{formatVnd(purchase.lines.reduce((sum, line) => sum + stockLineValue(line), 0))}</strong>
+                  <small>
+                    {formatDate(purchase.date)} · {purchase.lines.map((line) => `${line.symbol} ${line.shares.toLocaleString("vi-VN")}cp @ ${formatStockPrice(line.buyPrice)}`).join(" · ")} · {purchase.note || "Không ghi chú"}
+                  </small>
+                </div>
+                <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteStockPurchase(purchase)} title="Xóa lịch sử" type="button">
+                  <X size={15} />
+                </button>
               </div>
             </div>
           ))}
@@ -4989,16 +5090,22 @@ function StockPage({
 function InvestmentPage({
   state,
   setState,
+  commitWithUndo,
   activeTab,
   setActiveTab,
+  investmentAction,
+  onInvestmentActionHandled,
   onRefreshMarket,
   marketStatus,
   btcCloudAccountId,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
   activeTab: InvestmentTab;
   setActiveTab: (tab: InvestmentTab) => void;
+  investmentAction: InvestmentActionIntent | null;
+  onInvestmentActionHandled: () => void;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
   marketStatus: string;
   btcCloudAccountId: string;
@@ -5030,10 +5137,10 @@ function InvestmentPage({
           </button>
         ))}
       </div>
-      {activeTab === "btc" && <BtcPage state={state} setState={setState} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
-      {activeTab === "stock" && <StockPage state={state} setState={setState} embedded />}
-      {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} embedded fixedFilter="all" />}
-      {activeTab === "sol" && <SolPage state={state} setState={setState} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
+      {activeTab === "btc" && <BtcPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
+      {activeTab === "stock" && <StockPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} embedded />}
+      {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} embedded fixedFilter="all" />}
+      {activeTab === "sol" && <SolPage state={state} setState={setState} commitWithUndo={commitWithUndo} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
     </div>
   );
 }
@@ -5063,11 +5170,17 @@ function HistoryPanel({ rows }: { rows: FundTransaction[] }) {
 function BankDepositPage({
   state,
   setState,
+  commitWithUndo,
+  actionIntent,
+  onActionHandled,
   embedded = false,
   fixedFilter,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
+  actionIntent?: InvestmentActionIntent | null;
+  onActionHandled?: () => void;
   embedded?: boolean;
   fixedFilter?: DepositFilter;
 }) {
@@ -5214,6 +5327,12 @@ function BankDepositPage({
     openDepositForm({ fund: effectiveFilter === "all" ? form.fund : effectiveFilter, allocationSource: false, sourceMonth: "", sourceSolWithdrawalId: "" });
   };
 
+  useEffect(() => {
+    if (actionIntent?.tab !== "mbb" || actionIntent.action !== "mbb-deposit") return;
+    openManualDepositForm();
+    onActionHandled?.();
+  }, [actionIntent?.id]);
+
   const prefillPendingDeposit = (allocation: PendingDepositRequest) => {
     setPendingSource(null);
     openDepositForm({
@@ -5279,7 +5398,7 @@ function BankDepositPage({
   };
 
   const settleEarly = (id: string, settlementDate: string) => {
-    setState((prev) => ({
+    commitWithUndo("Đã tất toán trước hạn.", (prev) => ({
       ...prev,
       bankDeposits: prev.bankDeposits.map((item) =>
         item.id === id
@@ -5317,7 +5436,7 @@ function BankDepositPage({
   };
 
   const settleMatured = (id: string) => {
-    setState((prev) => ({
+    commitWithUndo("Đã rút toàn bộ sổ.", (prev) => ({
       ...prev,
       bankDeposits: prev.bankDeposits.map((item) =>
         item.id === id
@@ -5335,7 +5454,7 @@ function BankDepositPage({
   const deleteDeposit = (item: BankDeposit) => {
     if (!window.confirm(`Xóa sổ ${item.code}? Thao tác này sẽ xóa sổ khỏi lịch sử và bảng tăng trưởng tài sản.`)) return;
 
-    setState((prev) => ({
+    commitWithUndo("Đã xóa sổ MBB.", (prev) => ({
       ...prev,
       bankDeposits: prev.bankDeposits
         .filter((deposit) => deposit.id !== item.id)
@@ -5440,7 +5559,7 @@ function BankDepositPage({
         <div className="panel-title">
           <h2>Thêm sổ MBB</h2>
           {!formOpen ? (
-            <button className="ghost asset-open-button" onClick={openManualDepositForm}>
+            <button className="ghost asset-open-button action-button-sm" onClick={openManualDepositForm}>
               Mở form
             </button>
           ) : (
@@ -5612,6 +5731,7 @@ function statusLabel(status: DepositStatus) {
 function SolPage({
   state,
   setState,
+  commitWithUndo,
   onRefreshMarket,
   marketStatus,
   btcCloudAccountId,
@@ -5619,6 +5739,7 @@ function SolPage({
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
   marketStatus: string;
   btcCloudAccountId: string;
@@ -5690,7 +5811,7 @@ function SolPage({
     const sol = parseDecimal(form.sol);
     const price = parseDecimal(form.price);
     if (!sol || !price) return;
-    setState((prev) => ({
+    commitWithUndo("Đã thêm SOL.", (prev) => ({
       ...prev,
       solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount: sol, buyPrice: price, date: form.date, note: form.note }],
     }));
@@ -5731,7 +5852,7 @@ function SolPage({
           }
         : null;
 
-    setState((prev) => ({
+    commitWithUndo("Đã rút/chuyển SOL.", (prev) => ({
       ...prev,
       solTransactions: [...prev.solTransactions, withdrawal],
       btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
@@ -5780,6 +5901,73 @@ function SolPage({
       note: "",
     });
     setWithdrawError("");
+  };
+
+  const solTransferNoteForHistory = (item: SolWithdrawTransaction) =>
+    item.note && item.note !== "Rút từ SOL" ? `Rút từ SOL · ${item.note}` : "Rút từ SOL";
+
+  const deleteSolHistoryItem = (item: SolTransaction) => {
+    if (!window.confirm(`Xóa ${isSolWithdrawal(item) ? "lệnh rút/chuyển SOL" : "lệnh thêm SOL"} này? Số dư SOL và các quỹ liên quan sẽ được tính lại.`)) return;
+    const relatedBtcTopups =
+      isSolWithdrawal(item) && item.destination === "btc"
+        ? state.btcUsdtTopups.filter((topup) => {
+            const transferNote = solTransferNoteForHistory(item);
+            return (
+              topup.date === item.date &&
+              topup.note === `${transferNote} · USDT từ SOL` &&
+              Math.abs(topup.vndAmount - item.vndAmount) <= 1 &&
+              Math.abs(topup.usdtAmount - item.solAmount * item.sellPrice) <= 0.000001
+            );
+          })
+        : [];
+
+    commitWithUndo(isSolWithdrawal(item) ? "Đã xóa lệnh rút/chuyển SOL." : "Đã xóa lệnh thêm SOL.", (prev) => {
+      if (!isSolWithdrawal(item)) {
+        return {
+          ...prev,
+          solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
+        };
+      }
+      const transferNote = solTransferNoteForHistory(item);
+      const relatedBtcTopupIds = new Set(relatedBtcTopups.map((topup) => topup.id));
+      return {
+        ...prev,
+        solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
+        btcUsdtTopups: relatedBtcTopupIds.size ? prev.btcUsdtTopups.filter((topup) => !relatedBtcTopupIds.has(topup.id)) : prev.btcUsdtTopups,
+        fundTransactions:
+          item.destination === "btc" || item.destination === "stock"
+            ? prev.fundTransactions.filter(
+                (transaction) =>
+                  !(
+                    transaction.fund === item.destination &&
+                    transaction.type === "deposit" &&
+                    transaction.amount === item.vndAmount &&
+                    transaction.date === item.date &&
+                    transaction.note === transferNote
+                  )
+              )
+            : prev.fundTransactions,
+        incomeTransactions:
+          item.destination === "cash"
+            ? prev.incomeTransactions.filter(
+                (transaction) =>
+                  !(
+                    transaction.categoryId === "other-income" &&
+                    transaction.amount === item.vndAmount &&
+                    transaction.date === item.date &&
+                    transaction.note === transferNote
+                  )
+              )
+            : prev.incomeTransactions,
+      };
+    });
+    if (btcCloudAccountId) {
+      relatedBtcTopups.forEach((topup) => {
+        void deleteCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, topup.id).catch(() => {
+          setWithdrawError("Đã xóa local, nhưng chưa xóa được USDT từ SOL trên BTC cloud.");
+        });
+      });
+    }
   };
 
   const content = (
@@ -5914,18 +6102,23 @@ function SolPage({
           {[...state.solTransactions].reverse().map((item) => (
             <div key={item.id}>
               <span className={isSolWithdrawal(item) ? "withdraw" : "deposit"}>{isSolWithdrawal(item) ? "-" : "+"}</span>
-              <div>
-                {isSolWithdrawal(item) ? (
-                  <>
-                    <strong>-{item.solAmount} SOL · {formatVnd(item.vndAmount)}</strong>
-                    <small>{formatDate(item.date)} · Rút về {solDestinationLabel(item.destination)} · Giá rút {formatUsd(item.sellPrice)} · {item.note || "Không ghi chú"}</small>
-                  </>
-                ) : (
-                  <>
-                    <strong>{item.solAmount} SOL · {formatUsd(item.solAmount * item.buyPrice)}</strong>
-                    <small>{formatDate(item.date)} · Giá mua {formatUsd(item.buyPrice)} · {item.note || "Không ghi chú"}</small>
-                  </>
-                )}
+              <div className="timeline-row-content">
+                <div>
+                  {isSolWithdrawal(item) ? (
+                    <>
+                      <strong>-{item.solAmount} SOL · {formatVnd(item.vndAmount)}</strong>
+                      <small>{formatDate(item.date)} · Rút về {solDestinationLabel(item.destination)} · Giá rút {formatUsd(item.sellPrice)} · {item.note || "Không ghi chú"}</small>
+                    </>
+                  ) : (
+                    <>
+                      <strong>{item.solAmount} SOL · {formatUsd(item.solAmount * item.buyPrice)}</strong>
+                      <small>{formatDate(item.date)} · Giá mua {formatUsd(item.buyPrice)} · {item.note || "Không ghi chú"}</small>
+                    </>
+                  )}
+                </div>
+                <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteSolHistoryItem(item)} title="Xóa lịch sử" type="button">
+                  <X size={15} />
+                </button>
               </div>
             </div>
           ))}
@@ -5949,6 +6142,7 @@ function ReportsPage({
 }) {
   const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
   const [reportRefreshSuccess, setReportRefreshSuccess] = useState(false);
+  const [expandedPnlRowId, setExpandedPnlRowId] = useState<string | null>(null);
   const reportRefreshTimer = useRef<number | null>(null);
   const months = useMemo(() => {
     const allMonths = new Set<string>();
@@ -5979,8 +6173,10 @@ function ReportsPage({
     return series;
   }, [state]);
 
-  const btc = btcPortfolioStats(state).reportValueVnd;
-  const stock = stockPortfolioStats(state).totalValue;
+  const btcStats = btcPortfolioStats(state);
+  const stockStats = stockPortfolioStats(state);
+  const btc = btcStats.reportValueVnd;
+  const stock = stockStats.totalValue;
   const savingActive = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
   const emergencyActive = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
   const saving = savingActive + pendingSolDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "saving") + pendingBtcTransferDepositTotal(state, "saving");
@@ -6004,6 +6200,56 @@ function ReportsPage({
   ];
   const pnlRows = assetPnlRows(state);
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
+  const pnlRowDetails = (row: AssetPnlRow) => {
+    const detail = (label: string, value: string) => ({ label, value });
+    if (row.id === "total") {
+      return pnlRows
+        .filter((item) => item.id !== "total")
+        .map((item) => detail(item.label, `${formatVnd(item.current)} · gốc ${formatVnd(item.principal)}`));
+    }
+    if (row.id === "btc") {
+      return [
+        detail("Vốn BTC", formatVnd(btcStats.capitalVnd)),
+        detail("VND chờ mua USDT", formatVnd(btcStats.pendingVnd)),
+        detail("USDT còn", formatUsdt(btcStats.usdtBalance)),
+        detail("BTC giữ quy VND", formatVnd(btcStats.btcValueUsdt * (state.market.usdtVnd || state.market.usdVnd))),
+        detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
+      ];
+    }
+    if (row.id === "stock") {
+      return [
+        detail("Vốn CK", formatVnd(stockStats.fundCash)),
+        detail("Tiền mặt CK", formatVnd(stockStats.cash)),
+        detail("Giá trị cổ phiếu", formatVnd(stockStats.stockValue)),
+        detail("Giá vốn cổ phiếu", formatVnd(stockStats.totalCost)),
+        detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
+      ];
+    }
+    if (row.id === "sol") {
+      const sol = solPosition(state.solTransactions);
+      const solCurrentUsd = sol.balance * state.market.solUsd;
+      return [
+        detail("SOL đang giữ", `${sol.balance.toLocaleString("vi-VN", { maximumFractionDigits: 4 })} SOL`),
+        detail("Giá thị trường", formatUsd(state.market.solUsd)),
+        detail("Giá trị hiện tại", `${formatUsd(solCurrentUsd)} · ${formatVnd(solCurrentUsd * state.market.usdVnd)}`),
+        detail("Gốc SOL", `${formatUsd(sol.cost)} · ${formatVnd(sol.cost * state.market.usdVnd)}`),
+        detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
+      ];
+    }
+    if (row.id === "saving" || row.id === "emergency") {
+      const fund = row.id as DepositFund;
+      const active = state.bankDeposits.filter((item) => item.fund === fund && item.status === "active");
+      const pending = pendingSolDepositTotal(state, fund) + pendingStockSaleDepositTotal(state, fund) + pendingBtcTransferDepositTotal(state, fund);
+      return [
+        detail("Sổ đang chạy", `${active.length.toLocaleString("vi-VN")} sổ`),
+        detail("Gốc sổ đang chạy", formatVnd(active.reduce((sum, item) => sum + originalDepositPrincipal(item, state.bankDeposits), 0))),
+        detail("Giá trị hiện tại", formatVnd(active.reduce((sum, item) => sum + item.principal, 0))),
+        detail("Tiền chờ tạo sổ", formatVnd(pending)),
+        detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
+      ];
+    }
+    return [];
+  };
 
   useEffect(() => () => {
     if (reportRefreshTimer.current) window.clearTimeout(reportRefreshTimer.current);
@@ -6200,22 +6446,38 @@ function ReportsPage({
           <h2>Lãi/lỗ theo gốc</h2>
         </div>
         <div className="asset-pnl-table">
-          <div>
+          <div className="asset-pnl-header">
             <strong>Tên quỹ</strong>
             <strong>Gốc đầu tư</strong>
             <strong>Giá trị hiện tại</strong>
             <strong>Lãi/lỗ</strong>
             <strong>%</strong>
           </div>
-          {pnlRows.map((row) => (
-            <div className={row.id === "total" ? "total" : ""} key={row.id}>
-              <span>{row.label}</span>
-              <span>{formatVnd(row.principal)}</span>
-              <span>{formatVnd(row.current)}</span>
-              <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(row.pnl)}</span>
-              <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{row.principal ? `${row.pnlPercent.toFixed(1)}%` : "0.0%"}</span>
-            </div>
-          ))}
+          {pnlRows.map((row) => {
+            const isExpanded = expandedPnlRowId === row.id;
+            const details = pnlRowDetails(row);
+            return (
+              <div className="asset-pnl-row-group" key={row.id}>
+                <button className={`asset-pnl-row ${row.id === "total" ? "total" : ""} ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedPnlRowId(isExpanded ? null : row.id)} type="button">
+                  <span>{row.label}</span>
+                  <span>{formatVnd(row.principal)}</span>
+                  <span>{formatVnd(row.current)}</span>
+                  <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(row.pnl)}</span>
+                  <span className={row.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{row.principal ? `${row.pnlPercent.toFixed(1)}%` : "0.0%"}</span>
+                </button>
+                {isExpanded && (
+                  <div className="asset-pnl-drilldown">
+                    {details.map((item) => (
+                      <div key={item.label}>
+                        <span>{item.label}</span>
+                        <strong>{item.value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
       <section className="panel">
@@ -6609,7 +6871,7 @@ function SettingsPage({
   );
 }
 
-type QuickActionGroup = "income" | "expense" | "btc" | "stock" | "mbb" | "sol";
+type QuickActionGroup = "income" | "expense" | "btc" | "stock" | "mbb" | "sol" | "undo";
 type QuickActionKind =
   | "income"
   | "expense"
@@ -6620,15 +6882,22 @@ type QuickActionKind =
   | "stock-transfer"
   | "deposit"
   | "sol-buy"
-  | "sol-transfer";
+  | "sol-transfer"
+  | "undo";
 
 function QuickActionButton({
   state,
   setState,
+  commitWithUndo,
+  undoStack,
+  onUndoToEntry,
   btcCloudAccountId,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
+  undoStack: UndoEntry[];
+  onUndoToEntry: (entryId: string) => void;
   btcCloudAccountId: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -6662,6 +6931,7 @@ function QuickActionButton({
     { id: "stock", label: "CK", defaultKind: "stock-buy" },
     { id: "mbb", label: "Sổ MBB", defaultKind: "deposit" },
     { id: "sol", label: "SOL", defaultKind: "sol-buy" },
+    { id: "undo", label: "Undo", defaultKind: "undo" },
   ];
   const subActions: Record<QuickActionGroup, Array<{ id: QuickActionKind; label: string }>> = {
     income: [{ id: "income", label: "Thêm thu nhập" }],
@@ -6680,6 +6950,7 @@ function QuickActionButton({
       { id: "sol-buy", label: "Mua SOL" },
       { id: "sol-transfer", label: "Rút / chuyển" },
     ],
+    undo: [{ id: "undo", label: "Hoàn tác" }],
   };
   const btcStats = btcPortfolioStats(state);
   const stockStats = stockPortfolioStats(state);
@@ -6711,6 +6982,17 @@ function QuickActionButton({
     setKind(next.defaultKind);
     setError("");
   };
+
+  const undoFromQuickAction = (entry: UndoEntry, displayIndex: number) => {
+    const newerCount = displayIndex;
+    const message = newerCount > 0
+      ? `Hoàn tác "${entry.label}"? ${newerCount} thao tác thực hiện sau đó cũng sẽ bị hoàn lại.`
+      : `Hoàn tác "${entry.label}"?`;
+    if (!window.confirm(message)) return;
+    onUndoToEntry(entry.id);
+    close();
+  };
+  const recentUndoEntries = [...undoStack].reverse();
 
   const btcTransferPriceFor = (asset: "btc" | "usdt", destination: BtcTransferTarget) => {
     if (asset === "btc" || destination === "btc") return state.market.btcUsdt;
@@ -6751,6 +7033,23 @@ function QuickActionButton({
     if (unit === "USDT") return formatUsdt(value);
     return formatVnd(value);
   };
+
+  const estimateQuickUsdtFromVnd = (vndInput: string) => {
+    const vndAmount = parseMoney(vndInput);
+    const rate = state.market.usdtVnd || state.market.usdVnd;
+    return vndAmount && rate ? formatDecimalInput((vndAmount / rate).toFixed(3)) : "";
+  };
+
+  const updateQuickUsdtVnd = (value: string) => {
+    const vnd = formatMoneyInput(value);
+    setUsdt((prev) => ({ ...prev, vnd, amount: vnd ? estimateQuickUsdtFromVnd(vnd) || prev.amount : "" }));
+  };
+
+  useEffect(() => {
+    if (!open || kind !== "btc-usdt" || !usdt.vnd || usdt.amount) return;
+    const estimatedUsdt = estimateQuickUsdtFromVnd(usdt.vnd);
+    if (estimatedUsdt) setUsdt((prev) => ({ ...prev, amount: estimatedUsdt }));
+  }, [state.market.usdtVnd, state.market.usdVnd, open, kind]);
 
   const resetBtcTransfer = () => {
     setBtcTransfer({
@@ -6847,11 +7146,12 @@ function QuickActionButton({
   };
 
   const save = () => {
+    if (kind === "undo") return;
     setError("");
     if (kind === "income") {
       const amount = parseMoney(income.amount);
       if (!amount || !income.categoryId) return setError("Nhập thu nhập hợp lệ.");
-      setState((prev) => ({ ...prev, incomeTransactions: [...prev.incomeTransactions, { id: uid(), categoryId: income.categoryId, amount, date: income.date, month: monthFromDate(income.date), note: income.note.trim() }] }));
+      commitWithUndo("Đã thêm thu nhập.", (prev) => ({ ...prev, incomeTransactions: [...prev.incomeTransactions, { id: uid(), categoryId: income.categoryId, amount, date: income.date, month: monthFromDate(income.date), note: income.note.trim() }] }));
       setIncome((prev) => ({ ...prev, amount: "", note: "" }));
       close();
       return;
@@ -6859,7 +7159,7 @@ function QuickActionButton({
     if (kind === "expense") {
       const amount = parseMoney(expense.amount);
       if (!amount || !expense.categoryId) return setError("Nhập khoản chi hợp lệ.");
-      setState((prev) => ({ ...prev, expenseEntries: [...prev.expenseEntries, { id: uid(), categoryId: expense.categoryId, amount, date: expense.date, month: monthFromDate(expense.date), note: expense.note.trim() }] }));
+      commitWithUndo("Đã thêm khoản chi.", (prev) => ({ ...prev, expenseEntries: [...prev.expenseEntries, { id: uid(), categoryId: expense.categoryId, amount, date: expense.date, month: monthFromDate(expense.date), note: expense.note.trim() }] }));
       setExpense((prev) => ({ ...prev, amount: "", note: "" }));
       close();
       return;
@@ -6869,7 +7169,7 @@ function QuickActionButton({
       const usdtAmount = parseDecimal(usdt.amount);
       if (!vndAmount || !usdtAmount) return setError("Nhập VND và USDT hợp lệ.");
       const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: usdt.date, note: usdt.note.trim() };
-      setState((prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
+      commitWithUndo("Đã thêm mua USDT.", (prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
       if (btcCloudAccountId) void upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, topup.id, topup);
       setUsdt((prev) => ({ ...prev, vnd: "", amount: "" }));
       close();
@@ -6879,7 +7179,7 @@ function QuickActionButton({
       const amountUsdt = parseDecimal(dca.amount);
       if (!amountUsdt) return setError("Nhập số USDT mỗi kỳ hợp lệ.");
       const plan = normalizeDcaPlan({ id: uid(), amountUsdt, frequency: dca.frequency, time: dca.time, startDate: dca.startDate, nextRunAt: nextDcaRunAt(dca), isActive: true, status: "active", note: dca.note.trim() });
-      setState((prev) => ({ ...prev, btcDcaPlans: [...prev.btcDcaPlans, plan] }));
+      commitWithUndo("Đã tạo kế hoạch DCA.", (prev) => ({ ...prev, btcDcaPlans: [...prev.btcDcaPlans, plan] }));
       if (btcCloudAccountId) void upsertCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id, plan, { is_active: plan.isActive, next_run_at: plan.nextRunAt, status: plan.status });
       close();
       return;
@@ -6905,7 +7205,7 @@ function QuickActionButton({
           executedAt: new Date(`${btcTransfer.date}T00:00:00`).toISOString(),
           note: btcTransfer.note.trim() || "Chuyển USDT sang BTC",
         };
-        setState((prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
+        commitWithUndo("Đã chuyển USDT sang BTC.", (prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
         if (btcCloudAccountId) void upsertCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id, trade, { executed_at: trade.executedAt, plan_id: null });
         resetBtcTransfer();
         close();
@@ -6934,7 +7234,7 @@ function QuickActionButton({
           : transfer.note
             ? `Rút từ BTC · ${transfer.note} [btc-transfer:${transfer.id}]`
             : `Rút từ BTC [btc-transfer:${transfer.id}]`;
-      setState((prev) => ({
+      commitWithUndo("Đã lưu rút/chuyển BTC.", (prev) => ({
         ...prev,
         btcTransfers: [...prev.btcTransfers, transfer],
         fundTransactions:
@@ -6969,7 +7269,7 @@ function QuickActionButton({
       if (!lines.length) return setError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
       if (total > stockStats.cash) return setError("Tổng giá trị mua đang vượt quá tiền dư CK.");
       const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: quickStockMeta.note.trim(), lines };
-      setState((prev) => ({ ...prev, stockPurchases: [...prev.stockPurchases, purchase] }));
+      commitWithUndo("Đã mua cổ phiếu.", (prev) => ({ ...prev, stockPurchases: [...prev.stockPurchases, purchase] }));
       resetQuickStockForm();
       close();
       return;
@@ -6994,7 +7294,7 @@ function QuickActionButton({
         date: stockTransfer.date,
         note,
       };
-      setState((prev) => ({
+      commitWithUndo("Đã rút/chuyển CK.", (prev) => ({
         ...prev,
         stockSales: [...prev.stockSales, sale],
         fundTransactions:
@@ -7014,7 +7314,7 @@ function QuickActionButton({
       const solAmount = parseDecimal(sol.amount);
       const buyPrice = parseDecimal(sol.price);
       if (!solAmount || !buyPrice) return setError("Nhập số SOL và giá mua hợp lệ.");
-      setState((prev) => ({ ...prev, solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount, buyPrice, date: sol.date, note: sol.note.trim() }] }));
+      commitWithUndo("Đã thêm SOL.", (prev) => ({ ...prev, solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount, buyPrice, date: sol.date, note: sol.note.trim() }] }));
       setSol((prev) => ({ ...prev, amount: "", note: "" }));
       close();
       return;
@@ -7042,7 +7342,7 @@ function QuickActionButton({
         withdrawal.destination === "btc"
           ? { id: uid(), vndAmount, usdtAmount: solAmount * sellPrice, date: withdrawal.date, note: `${transferNote} · USDT từ SOL` }
           : null;
-      setState((prev) => ({
+      commitWithUndo("Đã rút/chuyển SOL.", (prev) => ({
         ...prev,
         solTransactions: [...prev.solTransactions, withdrawal],
         btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
@@ -7067,7 +7367,7 @@ function QuickActionButton({
       ...makeDeposit(state.bankDeposits, deposit.fund, amount, Number(deposit.rate) || 0, term, deposit.date, addMonths(deposit.date, term), monthFromDate(deposit.date), deposit.note.trim()),
       mbLast4: deposit.mbLast4.replace(/\D/g, "").slice(0, 4),
     };
-    setState((prev) => ({ ...prev, bankDeposits: [...prev.bankDeposits, next] }));
+    commitWithUndo("Đã tạo sổ MBB.", (prev) => ({ ...prev, bankDeposits: [...prev.bankDeposits, next] }));
     setDeposit((prev) => ({ ...prev, amount: "", note: "" }));
     close();
   };
@@ -7091,6 +7391,23 @@ function QuickActionButton({
               </div>
             )}
             <div className="form-grid">
+              {kind === "undo" && (
+                <div className="quick-undo-list">
+                  {recentUndoEntries.length === 0 ? (
+                    <p className="muted">Chưa có thao tác nào có thể hoàn tác trong phiên này.</p>
+                  ) : (
+                    recentUndoEntries.map((entry, index) => (
+                      <button className="quick-undo-item" key={entry.id} onClick={() => undoFromQuickAction(entry, index)} type="button">
+                        <div>
+                          <strong>{entry.label}</strong>
+                          <small>{new Date(entry.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}{index > 0 ? ` · hoàn lại cả ${index} thao tác sau đó` : ""}</small>
+                        </div>
+                        <span>Hoàn tác</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
               {kind === "income" && <>
                 <label>Mục thu<select value={income.categoryId} onChange={(event) => setIncome({ ...income, categoryId: event.target.value })}>{state.incomeCategories.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
                 <label>Số tiền<input value={income.amount} onChange={(event) => setIncome({ ...income, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" /></label>
@@ -7104,7 +7421,7 @@ function QuickActionButton({
                 <label>Note<input value={expense.note} onChange={(event) => setExpense({ ...expense, note: event.target.value })} /></label>
               </>}
               {kind === "btc-usdt" && <>
-                <label>VND dùng mua<input value={usdt.vnd} onChange={(event) => setUsdt({ ...usdt, vnd: formatMoneyInput(event.target.value) })} placeholder="1.000.000" /></label>
+                <label>VND dùng mua<input value={usdt.vnd} onChange={(event) => updateQuickUsdtVnd(event.target.value)} placeholder="1.000.000" /></label>
                 <label>USDT nhận<input value={usdt.amount} onChange={(event) => setUsdt({ ...usdt, amount: formatDecimalInput(event.target.value) })} placeholder="39,25" /></label>
                 <label>Ngày<input type="date" value={usdt.date} onChange={(event) => setUsdt({ ...usdt, date: event.target.value })} /></label>
                 <label>Note<input value={usdt.note} onChange={(event) => setUsdt({ ...usdt, note: event.target.value })} /></label>
@@ -7223,7 +7540,7 @@ function QuickActionButton({
               </>}
             </div>
             {error && <span className="form-error">{error}</span>}
-            <button className="primary full" onClick={save} type="button"><Save size={17} /> Lưu nhanh</button>
+            {kind !== "undo" && <button className="primary full" onClick={save} type="button"><Save size={17} /> Lưu nhanh</button>}
           </section>
         </div>
       )}
@@ -7243,9 +7560,15 @@ export function App() {
   const [btcCloudAccountId, setBtcCloudAccountId] = useState("");
   const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
   const [lastCloudSyncAt, setLastCloudSyncAt] = useState("");
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  const [visibleUndoId, setVisibleUndoId] = useState<string | null>(null);
+  const [investmentAction, setInvestmentAction] = useState<InvestmentActionIntent | null>(null);
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
+  const stateRef = useRef(state);
   const marketRef = useRef(state.market);
+  const btcCloudMergePausedUntil = useRef(0);
+  const undoToastTimer = useRef<number | null>(null);
   const cloudConfigured = isCloudSyncConfigured();
   const cloudAccountKey = activePin ? cloudAccountKeyForPin(activePin) : "";
   const stateForCloud = (): AppState => (activePin ? stateForAccountPin(state, activePin) : state);
@@ -7260,11 +7583,56 @@ export function App() {
   };
 
   useEffect(() => {
+    stateRef.current = state;
     marketRef.current = state.market;
-  }, [state.market]);
+  }, [state]);
+
+  useEffect(() => () => {
+    if (undoToastTimer.current) window.clearTimeout(undoToastTimer.current);
+  }, []);
+
+  const commitWithUndo: CommitWithUndo = (label, updater) => {
+    const previous = stateRef.current;
+    const next = typeof updater === "function" ? (updater as (prev: AppState) => AppState)(previous) : updater;
+    if (next === previous) return;
+    const entry: UndoEntry = { id: uid(), label, state: previous, createdAt: new Date().toISOString() };
+    setUndoStack((prev) => [...prev, entry].slice(-5));
+    setVisibleUndoId(entry.id);
+    if (undoToastTimer.current) window.clearTimeout(undoToastTimer.current);
+    undoToastTimer.current = window.setTimeout(() => setVisibleUndoId((current) => (current === entry.id ? null : current)), 5000);
+    stateRef.current = next;
+    setState(next);
+  };
+
+  const syncBtcLedgerToCloudState = async (target: AppState, current: AppState) => {
+    if (!btcCloudAccountId) return;
+    const syncRows = <T extends { id: string }>(
+      table: string,
+      targetRows: T[],
+      currentRows: T[],
+      columns: (row: T) => Record<string, unknown> = () => ({})
+    ) => {
+      const targetIds = new Set(targetRows.map((item) => item.id));
+      const deletes = currentRows
+        .filter((item) => !targetIds.has(item.id))
+        .map((item) => deleteCloudPayloadRow(table, btcCloudAccountId, item.id));
+      const upserts = targetRows.map((item) => upsertCloudPayloadRow(table, btcCloudAccountId, item.id, item, columns(item)));
+      return [...deletes, ...upserts];
+    };
+
+    const results = await Promise.allSettled([
+      ...syncRows("btc_usdt_topups", target.btcUsdtTopups, current.btcUsdtTopups),
+      ...syncRows("btc_dca_plans", target.btcDcaPlans, current.btcDcaPlans, (item) => ({ is_active: item.isActive, next_run_at: item.nextRunAt, status: item.status })),
+      ...syncRows("btc_trades", target.btcTrades, current.btcTrades, (item) => ({ executed_at: item.executedAt, plan_id: item.planId ?? null })),
+      ...syncRows("btc_transfers", target.btcTransfers, current.btcTransfers, (item) => ({ transfer_at: `${item.date}T00:00:00` })),
+    ]);
+    if (results.some((result) => result.status === "rejected")) throw new Error("Khong dong bo duoc BTC ledger sau undo.");
+  };
 
   const mergeBtcCloudLedger = async (accountId: string) => {
+    if (Date.now() < btcCloudMergePausedUntil.current) return;
     const ledger = await loadBtcCloudLedger(accountId);
+    if (Date.now() < btcCloudMergePausedUntil.current) return;
     setState((prev) => {
       const next = {
         ...prev,
@@ -7275,6 +7643,28 @@ export function App() {
       };
       return JSON.stringify(btcCloudLedgerFromState(next)) === JSON.stringify(btcCloudLedgerFromState(prev)) ? prev : next;
     });
+  };
+
+  const undoToEntry = (entryId: string) => {
+    const entryIndex = undoStack.findIndex((entry) => entry.id === entryId);
+    if (entryIndex < 0) return;
+    const entry = undoStack[entryIndex];
+    const targetState = entry.state;
+    const currentState = stateRef.current;
+    btcCloudMergePausedUntil.current = Date.now() + 15_000;
+    setState(targetState);
+    stateRef.current = targetState;
+    setUndoStack((prev) => prev.slice(0, entryIndex));
+    setVisibleUndoId(null);
+    if (undoToastTimer.current) {
+      window.clearTimeout(undoToastTimer.current);
+      undoToastTimer.current = null;
+    }
+    void syncBtcLedgerToCloudState(targetState, currentState)
+      .then(async () => {
+        if (btcCloudAccountId) setDataStatus(await loadDataStatus(btcCloudAccountId));
+      })
+      .catch(() => setCloudStatus("Đã hoàn tác local, nhưng chưa đồng bộ được BTC cloud."));
   };
 
   const syncBtcLedgerNow = async () => {
@@ -7508,12 +7898,18 @@ export function App() {
     <div className="app-shell">
       <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
-        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} onRefreshMarket={refreshMarket} />}
+        {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} commitWithUndo={commitWithUndo} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} setInvestmentAction={setInvestmentAction} onRefreshMarket={refreshMarket} />}
         {page === "accumulation" && <AccumulationPage state={state} setState={setState} />}
-        {page === "investment" && <InvestmentPage state={state} setState={setState} activeTab={assetTab} setActiveTab={setAssetTab} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
+        {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
         {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} />}
       </main>
-      <QuickActionButton state={state} setState={setState} btcCloudAccountId={btcCloudAccountId} />
+      <QuickActionButton state={state} setState={setState} commitWithUndo={commitWithUndo} undoStack={undoStack} onUndoToEntry={undoToEntry} btcCloudAccountId={btcCloudAccountId} />
+      {visibleUndoId && undoStack.some((entry) => entry.id === visibleUndoId) && (
+        <div className="undo-toast" role="status">
+          <span>{undoStack.find((entry) => entry.id === visibleUndoId)?.label}</span>
+          <button type="button" onClick={() => undoToEntry(visibleUndoId)}>Hoàn tác</button>
+        </div>
+      )}
     </div>
   );
 }
