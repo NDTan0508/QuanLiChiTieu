@@ -22,6 +22,8 @@ import {
   ChevronRight,
   CircleDollarSign,
   Coins,
+  Download,
+  FileText,
   History,
   Pencil,
   Landmark,
@@ -31,8 +33,10 @@ import {
   PiggyBank,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Settings,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -54,7 +58,8 @@ type Page =
   | "dashboard"
   | "accumulation"
   | "investment"
-  | "reports";
+  | "reports"
+  | "settings";
 
 type IncomeCategory = {
   id: string;
@@ -151,6 +156,7 @@ type StockPurchase = {
   month: string;
   note: string;
   lines: StockPurchaseLine[];
+  createdAt?: string;
 };
 
 type StockSale = {
@@ -162,6 +168,7 @@ type StockSale = {
   destination: SolDestination;
   date: string;
   note: string;
+  createdAt?: string;
 };
 
 type StockMarketPrice = {
@@ -357,6 +364,54 @@ type SettingsState = {
   dismissedStockAllocationIds: string[];
 };
 
+type AuditEntityType =
+  | "income"
+  | "expense"
+  | "expense-category"
+  | "allocation"
+  | "accumulation"
+  | "btc-topup"
+  | "btc-dca"
+  | "btc-trade"
+  | "btc-transfer"
+  | "stock-purchase"
+  | "stock-sale"
+  | "sol"
+  | "deposit"
+  | "backup"
+  | "restore"
+  | "trash"
+  | "general";
+
+type AuditAction = "create" | "update" | "delete" | "restore" | "backup" | "undo" | "sync";
+
+type AuditLog = {
+  id: string;
+  label: string;
+  action: AuditAction;
+  entityType: AuditEntityType;
+  entityId?: string;
+  createdAt: string;
+  beforeSummary?: string;
+  afterSummary?: string;
+};
+
+type TrashItem = {
+  id: string;
+  entityType: AuditEntityType;
+  entityId: string;
+  label: string;
+  deletedAt: string;
+  expiresAt: string;
+  payload: unknown;
+  relatedPayloads?: Record<string, unknown>;
+};
+
+type BackupMeta = {
+  lastExportAt?: string;
+  lastRestoreAt?: string;
+};
+
 type AppState = {
   incomeCategories: IncomeCategory[];
   incomeTransactions: IncomeTransaction[];
@@ -377,6 +432,9 @@ type AppState = {
   solTransactions: SolTransaction[];
   market: Market;
   settings: SettingsState;
+  auditLogs: AuditLog[];
+  trashItems: TrashItem[];
+  backupMeta?: BackupMeta;
 };
 
 type UndoEntry = {
@@ -385,7 +443,14 @@ type UndoEntry = {
   state: AppState;
   createdAt: string;
 };
-type CommitWithUndo = (label: string, updater: React.SetStateAction<AppState>) => void;
+type CommitMeta = {
+  action?: AuditAction;
+  entityType?: AuditEntityType;
+  entityId?: string;
+  beforeSummary?: string;
+  afterSummary?: string;
+};
+type CommitWithUndo = (label: string, updater: React.SetStateAction<AppState>, meta?: CommitMeta) => void;
 type InvestmentActionKind = "btc-topup" | "stock-purchase" | "mbb-deposit";
 type InvestmentActionIntent = {
   id: string;
@@ -395,6 +460,8 @@ type InvestmentActionIntent = {
 
 const STORAGE_KEY = "quan-li-chi-tieu-state-v3-account-pin-reset";
 const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
+const BACKUP_VERSION = 1;
+const AUTO_RESTORE_BACKUP_KEY = `${STORAGE_KEY}-pre-restore-backup`;
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
 const DEFAULT_START_MONTH = "2026-06";
 const CERTIFICATE_LOT = 100_000;
@@ -405,6 +472,12 @@ const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"
 
 const today = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+const addDaysIso = (iso: string, days: number) => {
+  const date = new Date(iso);
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+};
 
 const currentMonth = () => {
   const date = new Date();
@@ -889,33 +962,59 @@ async function fetchMarket(fallback: Market) {
 
 function stockPortfolioStats(state: AppState, upToMonth?: string) {
   const fundCash = state.fundTransactions
-    .filter((item) => item.fund === "stock" && (!upToMonth || item.month <= upToMonth))
+    .filter((item) => item.fund === "stock" && (!upToMonth || item.month <= upToMonth) && !item.note.startsWith("Rút từ CK"))
     .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
   const purchases = state.stockPurchases.filter((purchase) => !upToMonth || purchase.month <= upToMonth);
   const sales = state.stockSales.filter((sale) => !upToMonth || monthFromDate(sale.date) <= upToMonth);
   const invested = purchases.reduce((sum, purchase) => sum + purchase.lines.reduce((lineSum, line) => lineSum + stockLineValue(line), 0), 0);
-  const soldToCashBalance = sales
-    .filter((sale) => sale.destination === "stock")
-    .reduce((sum, sale) => sum + sale.vndAmount, 0);
   const holdings = new Map<string, { symbol: string; shares: number; cost: number; lastBuyPrice: number }>();
-
-  purchases.forEach((purchase) => {
-    purchase.lines.forEach((line) => {
-      const symbol = line.symbol.toUpperCase();
-      const existing = holdings.get(symbol) ?? { symbol, shares: 0, cost: 0, lastBuyPrice: line.buyPrice };
-      existing.shares += line.shares;
-      existing.cost += stockLineValue(line);
-      existing.lastBuyPrice = line.buyPrice;
-      holdings.set(symbol, existing);
-    });
+  let soldToCashBalance = 0;
+  const events = [
+    ...purchases.flatMap((purchase, purchaseIndex) =>
+      purchase.lines.map((line, lineIndex) => ({
+        kind: "buy" as const,
+        date: purchase.date,
+        createdAt: purchase.createdAt,
+        order: purchaseIndex * 100 + lineIndex,
+        line,
+      }))
+    ),
+    ...sales.map((sale, index) => ({
+      kind: "sale" as const,
+      date: sale.date,
+      createdAt: sale.createdAt,
+      order: index,
+      sale,
+    })),
+  ].sort((left, right) => {
+    const dateOrder = left.date.localeCompare(right.date);
+    if (dateOrder) return dateOrder;
+    const leftTime = new Date(left.createdAt ?? `${left.date}T00:00:00`).getTime();
+    const rightTime = new Date(right.createdAt ?? `${right.date}T00:00:00`).getTime();
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    if (!left.createdAt && !right.createdAt && left.kind !== right.kind) return left.kind === "sale" ? -1 : 1;
+    return left.kind === right.kind ? left.order - right.order : left.kind === "buy" ? -1 : 1;
   });
 
-  sales.forEach((sale) => {
-    const symbol = sale.symbol.toUpperCase();
+  events.forEach((event) => {
+    if (event.kind === "buy") {
+      const symbol = event.line.symbol.toUpperCase();
+      const existing = holdings.get(symbol) ?? { symbol, shares: 0, cost: 0, lastBuyPrice: event.line.buyPrice };
+      existing.shares += event.line.shares;
+      existing.cost += stockLineValue(event.line);
+      existing.lastBuyPrice = event.line.buyPrice;
+      holdings.set(symbol, existing);
+      return;
+    }
+
+    const symbol = event.sale.symbol.toUpperCase();
     const existing = holdings.get(symbol);
     if (!existing) return;
-    const soldShares = Math.min(sale.shares, existing.shares);
+    const soldShares = Math.min(event.sale.shares, existing.shares);
     const averageCost = existing.shares ? existing.cost / existing.shares : 0;
+    if (event.sale.destination === "stock" && soldShares > 0) {
+      soldToCashBalance += Math.round(event.sale.vndAmount * (soldShares / event.sale.shares));
+    }
     existing.shares = Math.max(existing.shares - soldShares, 0);
     existing.cost = Math.max(existing.cost - soldShares * averageCost, 0);
     holdings.set(symbol, existing);
@@ -1109,6 +1208,523 @@ function isFixedCategoryVisibleInMonth(state: AppState, category: ExpenseCategor
   return accumulationProgress(state, goal) < goal.targetAmount;
 }
 
+function stateCountSummary(state: AppState) {
+  return [
+    `${state.incomeTransactions.length} thu`,
+    `${state.expenseEntries.length} chi`,
+    `${state.btcUsdtTopups.length + state.btcTrades.length + state.btcTransfers.length} BTC`,
+    `${state.stockPurchases.length + state.stockSales.length} CK`,
+    `${state.solTransactions.length} SOL`,
+    `${state.bankDeposits.length} sổ`,
+  ].join(" · ");
+}
+
+function inferAuditAction(label: string): AuditAction {
+  const lower = label.toLowerCase();
+  if (lower.includes("xóa")) return "delete";
+  if (lower.includes("khôi phục")) return "restore";
+  if (lower.includes("backup") || lower.includes("export")) return "backup";
+  if (lower.includes("sửa") || lower.includes("đổi") || lower.includes("lưu điều chỉnh") || lower.includes("tạm dừng") || lower.includes("bật lại")) return "update";
+  return "create";
+}
+
+function makeAuditLog(label: string, before: AppState, after: AppState, meta: CommitMeta = {}): AuditLog {
+  return {
+    id: uid(),
+    label,
+    action: meta.action ?? inferAuditAction(label),
+    entityType: meta.entityType ?? "general",
+    entityId: meta.entityId,
+    createdAt: new Date().toISOString(),
+    beforeSummary: meta.beforeSummary ?? stateCountSummary(before),
+    afterSummary: meta.afterSummary ?? stateCountSummary(after),
+  };
+}
+
+function withAuditLog(state: AppState, log: AuditLog) {
+  return {
+    ...state,
+    auditLogs: [log, ...(state.auditLogs ?? [])].slice(0, 500),
+  };
+}
+
+function makeTrashItem(entityType: AuditEntityType, entityId: string, label: string, payload: unknown, relatedPayloads?: Record<string, unknown>): TrashItem {
+  const deletedAt = new Date().toISOString();
+  return {
+    id: uid(),
+    entityType,
+    entityId,
+    label,
+    deletedAt,
+    expiresAt: addDaysIso(deletedAt, 30),
+    payload,
+    relatedPayloads,
+  };
+}
+
+function withTrashItem(state: AppState, trashItem: TrashItem) {
+  return {
+    ...state,
+    trashItems: [trashItem, ...(state.trashItems ?? [])].slice(0, 300),
+  };
+}
+
+function restoreTrashPayload(state: AppState, trashItem: TrashItem): AppState {
+  const addUnique = <T extends { id: string }>(rows: T[], item: T) =>
+    rows.some((row) => row.id === item.id) ? rows.map((row) => (row.id === item.id ? item : row)) : [item, ...rows];
+  const related = trashItem.relatedPayloads ?? {};
+  const relatedList = <T,>(key: string) => (Array.isArray(related[key]) ? (related[key] as T[]) : []);
+  let next = { ...state, trashItems: state.trashItems.filter((item) => item.id !== trashItem.id) };
+
+  if (trashItem.entityType === "income") next = { ...next, incomeTransactions: addUnique(next.incomeTransactions, trashItem.payload as IncomeTransaction) };
+  else if (trashItem.entityType === "expense") next = { ...next, expenseEntries: addUnique(next.expenseEntries, trashItem.payload as ExpenseEntry) };
+  else if (trashItem.entityType === "expense-category") {
+    next = {
+      ...next,
+      expenseCategories: addUnique(next.expenseCategories, trashItem.payload as ExpenseCategory),
+      monthlyExpenses: [...relatedList<MonthlyExpense>("monthlyExpenses"), ...next.monthlyExpenses.filter((item) => !relatedList<MonthlyExpense>("monthlyExpenses").some((row) => row.id === item.id))],
+      expenseEntries: [...relatedList<ExpenseEntry>("expenseEntries"), ...next.expenseEntries.filter((item) => !relatedList<ExpenseEntry>("expenseEntries").some((row) => row.id === item.id))],
+    };
+  } else if (trashItem.entityType === "accumulation") {
+    next = {
+      ...next,
+      accumulationGoals: addUnique(next.accumulationGoals, trashItem.payload as AccumulationGoal),
+      expenseCategories: [...relatedList<ExpenseCategory>("expenseCategories"), ...next.expenseCategories.filter((item) => !relatedList<ExpenseCategory>("expenseCategories").some((row) => row.id === item.id))],
+      monthlyExpenses: [...relatedList<MonthlyExpense>("monthlyExpenses"), ...next.monthlyExpenses.filter((item) => !relatedList<MonthlyExpense>("monthlyExpenses").some((row) => row.id === item.id))],
+    };
+  } else if (trashItem.entityType === "btc-topup") next = { ...next, btcUsdtTopups: addUnique(next.btcUsdtTopups, trashItem.payload as BtcUsdtTopup) };
+  else if (trashItem.entityType === "btc-dca") next = { ...next, btcDcaPlans: addUnique(next.btcDcaPlans, normalizeDcaPlan(trashItem.payload as BtcDcaPlan)) };
+  else if (trashItem.entityType === "btc-trade") next = { ...next, btcTrades: addUnique(next.btcTrades, trashItem.payload as BtcTrade) };
+  else if (trashItem.entityType === "btc-transfer") {
+    next = {
+      ...next,
+      btcTransfers: addUnique(next.btcTransfers, trashItem.payload as BtcTransfer),
+      fundTransactions: [...relatedList<FundTransaction>("fundTransactions"), ...next.fundTransactions.filter((item) => !relatedList<FundTransaction>("fundTransactions").some((row) => row.id === item.id))],
+      incomeTransactions: [...relatedList<IncomeTransaction>("incomeTransactions"), ...next.incomeTransactions.filter((item) => !relatedList<IncomeTransaction>("incomeTransactions").some((row) => row.id === item.id))],
+    };
+  } else if (trashItem.entityType === "stock-purchase") next = { ...next, stockPurchases: addUnique(next.stockPurchases, trashItem.payload as StockPurchase) };
+  else if (trashItem.entityType === "stock-sale") {
+    next = {
+      ...next,
+      stockSales: addUnique(next.stockSales, trashItem.payload as StockSale),
+      fundTransactions: [...relatedList<FundTransaction>("fundTransactions"), ...next.fundTransactions.filter((item) => !relatedList<FundTransaction>("fundTransactions").some((row) => row.id === item.id))],
+      incomeTransactions: [...relatedList<IncomeTransaction>("incomeTransactions"), ...next.incomeTransactions.filter((item) => !relatedList<IncomeTransaction>("incomeTransactions").some((row) => row.id === item.id))],
+    };
+  } else if (trashItem.entityType === "sol") {
+    next = {
+      ...next,
+      solTransactions: addUnique(next.solTransactions, trashItem.payload as SolTransaction),
+      btcUsdtTopups: [...relatedList<BtcUsdtTopup>("btcUsdtTopups"), ...next.btcUsdtTopups.filter((item) => !relatedList<BtcUsdtTopup>("btcUsdtTopups").some((row) => row.id === item.id))],
+      btcTrades: [...relatedList<BtcTrade>("btcTrades"), ...next.btcTrades.filter((item) => !relatedList<BtcTrade>("btcTrades").some((row) => row.id === item.id))],
+      fundTransactions: [...relatedList<FundTransaction>("fundTransactions"), ...next.fundTransactions.filter((item) => !relatedList<FundTransaction>("fundTransactions").some((row) => row.id === item.id))],
+      incomeTransactions: [...relatedList<IncomeTransaction>("incomeTransactions"), ...next.incomeTransactions.filter((item) => !relatedList<IncomeTransaction>("incomeTransactions").some((row) => row.id === item.id))],
+    };
+  } else if (trashItem.entityType === "deposit") {
+    next = {
+      ...next,
+      bankDeposits: addUnique(next.bankDeposits, trashItem.payload as BankDeposit),
+      allocations: [...relatedList<Allocation>("allocations"), ...next.allocations.filter((item) => !relatedList<Allocation>("allocations").some((row) => row.month === item.month))],
+    };
+  }
+
+  const log = makeAuditLog(`Đã khôi phục ${trashItem.label}.`, state, next, {
+    action: "restore",
+    entityType: trashItem.entityType,
+    entityId: trashItem.entityId,
+  });
+  return withAuditLog(next, log);
+}
+
+function backupPayload(state: AppState) {
+  return {
+    version: BACKUP_VERSION,
+    createdAt: new Date().toISOString(),
+    app: "quan-li-chi-tieu",
+    summary: stateCountSummary(state),
+    state,
+  };
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(value: unknown) {
+  const text = value === undefined || value === null ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function exportCsvBundle(state: AppState) {
+  type CsvRow = Array<unknown>;
+  const rows: CsvRow[] = [];
+  const incomeCategoryById = new Map(state.incomeCategories.map((item) => [item.id, item]));
+  const expenseCategoryById = new Map(state.expenseCategories.map((item) => [item.id, item]));
+  const btcStats = btcPortfolioStats(state);
+  const stockStats = stockPortfolioStats(state);
+  const sol = solPosition(state.solTransactions);
+  const now = new Date().toISOString();
+  const current = currentMonth();
+  const summary = monthlySummary(state, current);
+  const percentText = (value: number) => `${value.toLocaleString("vi-VN", { maximumFractionDigits: 2 })}%`;
+  const safeDate = (value?: string) => (value ? formatDate(value.slice(0, 10)) : "");
+  const safeDateTime = (value?: string) => (value ? formatDateTime(value) : "");
+  const moneyPair = (value: number) => [Math.round(value), formatVnd(value)];
+  const usdtPair = (value: number) => [Number(value.toFixed(6)), formatUsdt(value)];
+  const btcPair = (value: number) => [Number(value.toFixed(10)), formatBtc(value)];
+  const solPair = (value: number) => [Number(value.toFixed(8)), formatSolAmount(value)];
+  const depositFundLabel = (fund: DepositFund) => (fund === "saving" ? "Tiết kiệm" : "Dự phòng");
+  const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
+  const dcaStatusLabel: Record<BtcDcaStatus, string> = {
+    active: "Đang chạy",
+    paused: "Tạm dừng",
+    "insufficient-usdt": "Thiếu USDT",
+  };
+  const btcTargetLabel = (target: BtcTransferTarget) => {
+    const labels: Record<BtcTransferTarget, string> = {
+      btc: "BTC",
+      usdt: "USDT",
+      stock: "CK",
+      saving: "Tiết kiệm",
+      emergency: "Dự phòng",
+      cash: "Tiền mặt",
+    };
+    return labels[target];
+  };
+  const section = (title: string, headers: string[], body: CsvRow[]) => {
+    rows.push([], [title], headers, ...body);
+  };
+  const sortedByDate = <T extends { date: string }>(items: T[]) => [...items].sort((a, b) => a.date.localeCompare(b.date));
+  const dcaPlanStatsForExport = (plan: BtcDcaPlan) => {
+    const trades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
+    const investedUsdt = trades.reduce((sum, trade) => sum + trade.usdtAmount, 0);
+    const tradeBtcAmount = trades.reduce((sum, trade) => sum + trade.btcAmount, 0);
+    const tradeAveragePriceUsdt = tradeBtcAmount ? investedUsdt / tradeBtcAmount : 0;
+    const btcAmount = plan.btcAmountOverride && plan.btcAmountOverride > 0 ? plan.btcAmountOverride : tradeBtcAmount;
+    const averagePriceUsdt =
+      plan.averagePriceUsdtOverride && plan.averagePriceUsdtOverride > 0 ? plan.averagePriceUsdtOverride : tradeAveragePriceUsdt;
+    const currentValueUsdt = btcAmount * state.market.btcUsdt;
+    const pnlUsdt = currentValueUsdt - investedUsdt;
+    const latestTrade = [...trades].sort((a, b) => b.executedAt.localeCompare(a.executedAt))[0];
+    return {
+      investedUsdt,
+      btcAmount,
+      averagePriceUsdt,
+      currentValueUsdt,
+      pnlUsdt,
+      pnlPercent: investedUsdt ? (pnlUsdt / investedUsdt) * 100 : 0,
+      latestPriceUsdt: latestTrade?.btcPriceUsdt ?? 0,
+      latestTradeAt: latestTrade?.executedAt ?? "",
+      tradeCount: trades.length,
+    };
+  };
+
+  rows.push(
+    ["Báo cáo dữ liệu Quản lý chi tiêu"],
+    ["Tạo lúc", safeDateTime(now)],
+    ["Tóm tắt", stateCountSummary(state)],
+    ["Tháng hiện tại", formatMonth(current)],
+    ["Giá BTC/USDT", formatUsdt(state.market.btcUsdt), "Giá SOL/USD", formatUsd(state.market.solUsd), "USDT/VND", formatVnd(state.market.usdtVnd)],
+    ["Giá cập nhật lúc", safeDateTime(state.market.updatedAt), "Nguồn BTC", state.market.btcSource ?? "", "Nguồn SOL", state.market.solSource ?? "", "Nguồn USDT", state.market.usdtSource ?? ""]
+  );
+
+  section("Tổng quan tháng hiện tại", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
+    ["Tổng thu", ...moneyPair(summary.income)],
+    ["Tổng chi", ...moneyPair(summary.expense)],
+    ["Tiết kiệm trong tháng", ...moneyPair(summary.saving)],
+    ["Đã chia quỹ", summary.allocation.confirmedAt ? "Có" : "Chưa"],
+    ["Tài sản BTC", ...moneyPair(btcStats.reportValueVnd)],
+    ["Tài sản CK", ...moneyPair(stockStats.totalValue)],
+    ["Tài sản SOL", ...moneyPair(sol.balance * state.market.solUsd * state.market.usdVnd)],
+  ]);
+
+  section("Lãi/lỗ theo gốc", ["Quỹ", "Gốc đầu tư", "Gốc hiển thị", "Giá trị hiện tại", "Giá trị hiển thị", "Lãi/lỗ", "Lãi/lỗ hiển thị", "%"], assetPnlRows(state).map((item) => [
+    item.label,
+    ...moneyPair(item.principal),
+    ...moneyPair(item.current),
+    ...moneyPair(item.pnl),
+    percentText(item.pnlPercent),
+  ]));
+
+  section("Danh mục thu nhập", ["ID", "Tên danh mục", "Loại"], state.incomeCategories.map((item) => [item.id, item.name, item.kind === "fixed" ? "Cố định" : "Phát sinh"]));
+
+  section("Thu nhập", ["ID", "Ngày", "Tháng", "Danh mục", "Loại", "Số tiền", "Hiển thị", "Ghi chú"], sortedByDate(state.incomeTransactions).map((item) => {
+    const category = incomeCategoryById.get(item.categoryId);
+    return [item.id, safeDate(item.date), formatMonth(item.month), category?.name ?? item.categoryId, category?.kind === "fixed" ? "Cố định" : "Phát sinh", ...moneyPair(item.amount), item.note];
+  }));
+
+  section("Danh mục chi tiêu", ["ID", "Tên danh mục", "Loại", "Mặc định", "Mặc định hiển thị", "Tích lũy liên kết"], state.expenseCategories.map((item) => {
+    const goal = item.accumulationGoalId ? state.accumulationGoals.find((goalItem) => goalItem.id === item.accumulationGoalId) : undefined;
+    return [item.id, item.name, item.kind === "fixed" ? "Cố định" : "Phát sinh", ...moneyPair(item.defaultAmount), goal?.name ?? ""];
+  }));
+
+  section("Chi tiêu phát sinh", ["ID", "Ngày", "Tháng", "Danh mục", "Loại", "Số tiền", "Hiển thị", "Ghi chú"], sortedByDate(state.expenseEntries).map((item) => {
+    const category = expenseCategoryById.get(item.categoryId);
+    return [item.id, safeDate(item.date), formatMonth(item.month), category?.name ?? item.categoryId, category?.kind === "fixed" ? "Cố định" : "Phát sinh", ...moneyPair(item.amount), item.note];
+  }));
+
+  section("Checklist khoản cố định", ["ID", "Tháng", "Danh mục", "Loại", "Đầu kỳ", "Đầu kỳ hiển thị", "Số tiền tick", "Số tiền hiển thị", "Cuối kỳ", "Cuối kỳ hiển thị", "Trạng thái", "Tích lũy liên kết"], state.monthlyExpenses.map((item) => {
+    const category = expenseCategoryById.get(item.categoryId);
+    const goal = category?.accumulationGoalId ? state.accumulationGoals.find((goalItem) => goalItem.id === category.accumulationGoalId) : undefined;
+    return [
+      item.id,
+      formatMonth(item.month),
+      category?.name ?? item.categoryId,
+      category?.kind === "fixed" ? "Cố định" : "Phát sinh",
+      ...moneyPair(item.startAmount),
+      ...moneyPair(item.amount),
+      ...moneyPair(item.endAmount),
+      item.checked ? "Đã tick" : "Chưa tick",
+      goal?.name ?? "",
+    ];
+  }));
+
+  section("Chia quỹ", ["Tháng", "Xác nhận lúc", "Tiết kiệm tại thời điểm chia", "Tiết kiệm hiển thị", "% BTC", "BTC", "BTC hiển thị", "% CK", "CK", "CK hiển thị", "% Tiết kiệm", "Tiết kiệm", "Tiết kiệm hiển thị", "% Dự phòng", "Dự phòng", "Dự phòng hiển thị", "Yêu cầu tạo sổ tiết kiệm", "Đã tạo sổ tiết kiệm", "Yêu cầu tạo sổ dự phòng", "Đã tạo sổ dự phòng"], state.allocations.map((item) => [
+    formatMonth(item.month),
+    safeDateTime(item.confirmedAt),
+    ...moneyPair(item.totalSavingAtConfirm ?? 0),
+    percentText(item.btcPercent),
+    ...moneyPair(item.btcAmount ?? 0),
+    percentText(item.stockPercent),
+    ...moneyPair(item.stockAmount ?? 0),
+    percentText(item.savingPercent),
+    ...moneyPair(item.savingAmount ?? 0),
+    percentText(item.emergencyPercent),
+    ...moneyPair(item.emergencyAmount ?? 0),
+    safeDateTime(item.savingDepositRequestedAt),
+    safeDateTime(item.savingDepositCreatedAt),
+    safeDateTime(item.emergencyDepositRequestedAt),
+    safeDateTime(item.emergencyDepositCreatedAt),
+  ]));
+
+  section("Giao dịch quỹ", ["ID", "Ngày", "Tháng", "Quỹ", "Loại", "Số tiền", "Hiển thị", "Ghi chú"], sortedByDate(state.fundTransactions).map((item) => [
+    item.id,
+    safeDate(item.date),
+    formatMonth(item.month),
+    item.fund === "btc" ? "BTC" : "CK",
+    item.type === "deposit" ? "Nạp vốn" : "Rút vốn",
+    ...moneyPair(item.amount),
+    item.note,
+  ]));
+
+  section("BTC - Tổng quan", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
+    ["Tổng vốn BTC", ...moneyPair(btcStats.capitalVnd)],
+    ["VND chờ đổi USDT", ...moneyPair(btcStats.pendingVnd)],
+    ["VND đã mua USDT/mua BTC", ...moneyPair(btcStats.investedValueVnd)],
+    ["Số dư USDT", ...usdtPair(btcStats.usdtBalance)],
+    ["BTC đang giữ", ...btcPair(btcStats.btcBalance)],
+    ["Giá trị BTC theo USDT", ...usdtPair(btcStats.btcValueUsdt)],
+    ["Tổng tài sản BTC", ...moneyPair(btcStats.reportValueVnd)],
+    ["Giá vốn TB BTC", ...usdtPair(btcStats.averageCostUsdt)],
+    ["Lãi/lỗ BTC", ...moneyPair(btcStats.pnlVnd)],
+    ["Lãi/lỗ BTC USDT", ...usdtPair(btcStats.pnlUsdt)],
+  ]);
+
+  section("BTC - Mua USDT", ["ID", "Ngày", "VND dùng mua", "VND hiển thị", "USDT thực nhận", "USDT hiển thị", "Giá USDT/VND lúc mua", "Ghi chú"], sortedByDate(state.btcUsdtTopups).map((item) => [
+    item.id,
+    safeDate(item.date),
+    ...moneyPair(item.vndAmount),
+    ...usdtPair(item.usdtAmount),
+    item.usdtAmount ? Math.round(item.vndAmount / item.usdtAmount) : 0,
+    item.note,
+  ]));
+
+  section("BTC - Kế hoạch DCA", ["ID", "Trạng thái", "Tần suất", "Giờ chạy", "Ngày bắt đầu", "Giao dịch tiếp theo", "Lần chạy cuối", "USDT mỗi kỳ", "USDT mỗi kỳ hiển thị", "Đã đầu tư USDT", "Đã đầu tư hiển thị", "Giá trị hiện tại USDT", "Giá trị hiện tại hiển thị", "Lãi/lỗ USDT", "Lãi/lỗ hiển thị", "%", "BTC tích lũy", "BTC hiển thị", "Giá gần nhất", "Giá gần nhất hiển thị", "Giá trung bình", "Giá trung bình hiển thị", "Số lệnh", "Ghi chú trạng thái", "Ghi chú"], state.btcDcaPlans.map((plan) => {
+    const planStats = dcaPlanStatsForExport(plan);
+    return [
+      plan.id,
+      dcaStatusLabel[plan.status],
+      dcaFrequencyLabel[plan.frequency],
+      plan.time,
+      safeDate(plan.startDate),
+      safeDateTime(plan.nextRunAt),
+      safeDateTime(plan.lastRunAt),
+      ...usdtPair(plan.amountUsdt),
+      ...usdtPair(planStats.investedUsdt),
+      ...usdtPair(planStats.currentValueUsdt),
+      ...usdtPair(planStats.pnlUsdt),
+      percentText(planStats.pnlPercent),
+      ...btcPair(planStats.btcAmount),
+      ...usdtPair(planStats.latestPriceUsdt),
+      ...usdtPair(planStats.averagePriceUsdt),
+      planStats.tradeCount,
+      plan.statusNote ?? "",
+      plan.note,
+    ];
+  }));
+
+  section("BTC - Lệnh mua BTC", ["ID", "Loại", "Kế hoạch DCA", "Thời điểm", "USDT dùng mua", "USDT hiển thị", "BTC nhận", "BTC hiển thị", "Giá BTC/USDT", "Giá hiển thị", "Chi phí VND nếu mua trực tiếp", "Chi phí hiển thị", "Ghi chú"], state.btcTrades.map((item) => [
+    item.id,
+    item.type === "dca" ? "DCA" : "Mua thêm",
+    item.planId ?? "",
+    safeDateTime(item.executedAt),
+    ...usdtPair(item.usdtAmount),
+    ...btcPair(item.btcAmount),
+    ...usdtPair(item.btcPriceUsdt),
+    ...moneyPair(item.costVnd ?? 0),
+    item.note,
+  ]));
+
+  section("BTC - Rút / chuyển / đổi", ["ID", "Ngày", "Tài sản nguồn", "Nơi nhận", "BTC", "BTC hiển thị", "USDT", "USDT hiển thị", "Giá BTC/USDT", "Giá hiển thị", "Giá trị VND", "VND hiển thị", "Ghi chú"], sortedByDate(state.btcTransfers).map((item) => [
+    item.id,
+    safeDate(item.date),
+    item.asset.toUpperCase(),
+    btcTargetLabel(item.destination),
+    ...btcPair(item.btcAmount),
+    ...usdtPair(item.usdtAmount),
+    ...usdtPair(item.btcPriceUsdt),
+    ...moneyPair(item.vndAmount),
+    item.note,
+  ]));
+
+  section("CK - Tổng quan", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
+    ["Tổng vốn CK", ...moneyPair(stockStats.fundCash)],
+    ["Tiền dư CK", ...moneyPair(stockStats.cash)],
+    ["Giá trị cổ phiếu", ...moneyPair(stockStats.stockValue)],
+    ["Tổng tài sản CK", ...moneyPair(stockStats.totalValue)],
+    ["Giá vốn cổ phiếu", ...moneyPair(stockStats.totalCost)],
+    ["Lãi/lỗ cổ phiếu", ...moneyPair(stockStats.pnl)],
+    ["Lãi/lỗ %", percentText(stockStats.pnlPercent)],
+  ]);
+
+  section("CK - Danh mục hiện tại", ["Mã", "Số cổ", "Giá vốn TB", "Giá thị trường", "Vốn", "Vốn hiển thị", "Giá trị thị trường", "Giá trị hiển thị", "Lãi/lỗ", "Lãi/lỗ hiển thị", "%", "Nguồn giá", "Cập nhật lúc"], stockStats.holdings.map((item) => [
+    item.symbol,
+    item.shares,
+    item.averageCost,
+    item.marketPrice,
+    ...moneyPair(item.cost),
+    ...moneyPair(item.marketValue),
+    ...moneyPair(item.pnl),
+    percentText(item.pnlPercent),
+    item.source,
+    safeDateTime(item.updatedAt),
+  ]));
+
+  section("CK - Lịch sử mua", ["ID", "Ngày", "Tháng", "Mã", "Số cổ", "Giá mua", "Giá trị", "Giá trị hiển thị", "Ghi chú", "Tạo lúc"], state.stockPurchases.flatMap((purchase) => purchase.lines.map((line) => [
+    purchase.id,
+    safeDate(purchase.date),
+    formatMonth(purchase.month),
+    line.symbol,
+    line.shares,
+    line.buyPrice,
+    ...moneyPair(stockLineValue(line)),
+    purchase.note,
+    safeDateTime(purchase.createdAt),
+  ])));
+
+  section("CK - Lịch sử rút / bán", ["ID", "Ngày", "Mã", "Số cổ", "Giá bán", "Giá trị nhận", "Giá trị hiển thị", "Nơi nhận", "Ghi chú", "Tạo lúc"], sortedByDate(state.stockSales).map((item) => [
+    item.id,
+    safeDate(item.date),
+    item.symbol,
+    item.shares,
+    item.sellPrice,
+    ...moneyPair(item.vndAmount),
+    solDestinationLabel(item.destination),
+    item.note,
+    safeDateTime(item.createdAt),
+  ]));
+
+  section("CK - Giá thị trường", ["Mã", "Giá", "Nguồn", "Cập nhật lúc"], state.stockMarketPrices.map((item) => [
+    item.symbol,
+    item.price,
+    item.source,
+    safeDateTime(item.updatedAt),
+  ]));
+
+  section("SOL - Tổng quan", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
+    ["SOL đang giữ", ...solPair(sol.balance)],
+    ["Giá vốn SOL", ...usdtPair(sol.cost)],
+    ["SOL sở hữu theo thị trường", ...usdtPair(sol.balance * state.market.solUsd)],
+    ["Giá trị VND", ...moneyPair(sol.balance * state.market.solUsd * state.market.usdVnd)],
+    ["Giá SOL/USD", ...usdtPair(state.market.solUsd)],
+  ]);
+
+  section("SOL - Giao dịch", ["ID", "Loại", "Ngày", "SOL", "SOL hiển thị", "Giá SOL", "Giá hiển thị", "Giá trị USDT", "USDT hiển thị", "Giá trị VND", "VND hiển thị", "Nơi nhận", "Ghi chú"], sortedByDate(state.solTransactions).map((item) => {
+    const price = isSolWithdrawal(item) ? item.sellPrice : item.buyPrice;
+    const vndAmount = isSolWithdrawal(item) ? item.vndAmount : item.solAmount * price * state.market.usdVnd;
+    return [
+      item.id,
+      isSolWithdrawal(item) ? "Rút/chuyển" : "Mua",
+      safeDate(item.date),
+      ...solPair(item.solAmount),
+      ...usdtPair(price),
+      ...usdtPair(item.solAmount * price),
+      ...moneyPair(vndAmount),
+      isSolWithdrawal(item) ? solDestinationLabel(item.destination) : "",
+      item.note,
+    ];
+  }));
+
+  section("Sổ MBB", ["ID", "Mã sổ", "Quỹ", "4 số MB", "Gốc", "Gốc hiển thị", "Lãi suất %/năm", "Kỳ hạn tháng", "Ngày gửi", "Ngày đáo hạn", "Trạng thái", "Lãi dự kiến", "Lãi dự kiến hiển thị", "Ngày tất toán", "Số tiền tất toán", "Tất toán hiển thị", "Sổ cha", "Sổ con", "Từ tháng chia quỹ", "Từ lệnh SOL", "Ghi chú"], state.bankDeposits.map((item) => [
+    item.id,
+    item.code,
+    depositFundLabel(item.fund),
+    item.mbLast4,
+    ...moneyPair(item.principal),
+    item.rate,
+    item.termMonths,
+    safeDate(item.startDate),
+    safeDate(item.maturityDate),
+    item.status,
+    ...moneyPair(interestFor(item)),
+    safeDate(item.settledAt),
+    ...moneyPair(item.settledAmount ?? 0),
+    item.parentId ?? "",
+    item.childId ?? "",
+    item.createdFromMonth ? formatMonth(item.createdFromMonth) : "",
+    item.createdFromSolWithdrawalId ?? "",
+    item.note,
+  ]));
+
+  section("Tích lũy", ["ID", "Tên", "Mục tiêu", "Mục tiêu hiển thị", "Đã dồn", "Đã dồn hiển thị", "Còn lại", "Còn lại hiển thị", "Tháng bắt đầu", "Ngày cần dùng", "Số tháng", "Số tiền/tháng", "Số tiền/tháng hiển thị", "Số tháng đã dồn", "Trạng thái", "Ngày kết thúc", "Ngày tạo", "Cập nhật lúc"], state.accumulationGoals.map((item) => {
+    const progress = accumulationProgress(state, item);
+    return [
+      item.id,
+      item.name,
+      ...moneyPair(item.targetAmount),
+      ...moneyPair(progress),
+      ...moneyPair(Math.max(item.targetAmount - progress, 0)),
+      formatMonth(item.startMonth),
+      safeDate(item.dueDate),
+      item.months,
+      ...moneyPair(item.monthlyAmount),
+      accumulationPaidMonths(state, item),
+      item.status,
+      safeDate(item.endedAt),
+      safeDateTime(item.createdAt),
+      safeDateTime(item.updatedAt),
+    ];
+  }));
+
+  section("Thùng rác 30 ngày", ["ID", "Loại dữ liệu", "ID gốc", "Nhãn", "Xóa lúc", "Hết hạn lúc", "Dữ liệu liên quan"], state.trashItems.map((item) => [
+    item.id,
+    item.entityType,
+    item.entityId,
+    item.label,
+    safeDateTime(item.deletedAt),
+    safeDateTime(item.expiresAt),
+    item.relatedPayloads ? Object.keys(item.relatedPayloads).join(", ") : "",
+  ]));
+
+  section("Lịch sử thao tác", ["ID", "Thời điểm", "Hành động", "Loại dữ liệu", "ID dữ liệu", "Nội dung", "Trước", "Sau"], state.auditLogs.map((item) => [
+    item.id,
+    safeDateTime(item.createdAt),
+    item.action,
+    item.entityType,
+    item.entityId ?? "",
+    item.label,
+    item.beforeSummary ?? "",
+    item.afterSummary ?? "",
+  ]));
+
+  return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\n")}`;
+}
+
 function normalizeState(state: AppState): AppState {
   const expenseCategories = state.expenseCategories.map((category: ExpenseCategory & { kind?: string }) => {
     const migratedKind: ExpenseCategory["kind"] = category.kind === "variable" ? "variable" : "fixed";
@@ -1157,6 +1773,9 @@ function normalizeState(state: AppState): AppState {
     btcDcaPlans: (state.btcDcaPlans ?? []).map(normalizeDcaPlan),
     btcTrades: state.btcTrades ?? [],
     btcTransfers: state.btcTransfers ?? [],
+    auditLogs: state.auditLogs ?? [],
+    trashItems: (state.trashItems ?? []).filter((item) => new Date(item.expiresAt).getTime() > Date.now()),
+    backupMeta: state.backupMeta ?? {},
     market: {
       ...state.market,
       btcUsdt: state.market?.btcUsdt ?? 0,
@@ -1235,6 +1854,9 @@ const initialState: AppState = {
     hasPin: false,
     dismissedStockAllocationIds: [],
   },
+  auditLogs: [],
+  trashItems: [],
+  backupMeta: {},
 };
 
 function useStoredState() {
@@ -1508,6 +2130,7 @@ function AppNav({
     { id: "reports", label: "Báo cáo", icon: <BarChart3 size={18} /> },
     { id: "investment", label: "Tài sản", icon: <LineChart size={18} /> },
     { id: "accumulation", label: "Tích lũy", icon: <PiggyBank size={18} /> },
+    { id: "settings", label: "Cài đặt", icon: <Settings size={18} /> },
   ];
 
   return (
@@ -1731,8 +2354,10 @@ function DashboardPage({
   setAssetTab: (tab: InvestmentTab) => void;
 }) {
   const summary = monthlySummary(state, month);
-  const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
-  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+  const preferredMoneyRowId = (rows: Array<{ id: string; value: number }>) =>
+    [...rows].filter((row) => row.value > 0).sort((a, b) => b.value - a.value)[0]?.id ?? rows[0]?.id ?? null;
+  const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(() => preferredMoneyRowId(summary.incomeRows));
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(() => preferredMoneyRowId(summary.expenseRows));
   const dueSoon = state.bankDeposits
     .filter((item) => item.status === "active")
     .map((item) => ({ ...item, dueDays: daysUntil(item.maturityDate) }))
@@ -1743,11 +2368,11 @@ function DashboardPage({
   useEffect(() => {
     setSelectedIncomeId((current) => {
       if (current && summary.incomeRows.some((row) => row.id === current)) return current;
-      return summary.incomeRows.find((row) => row.value > 0)?.id ?? summary.incomeRows[0]?.id ?? null;
+      return preferredMoneyRowId(summary.incomeRows);
     });
     setSelectedExpenseId((current) => {
       if (current && summary.expenseRows.some((row) => row.id === current)) return current;
-      return summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
+      return preferredMoneyRowId(summary.expenseRows);
     });
   }, [month, summary.expenseRows, summary.incomeRows]);
 
@@ -1891,8 +2516,10 @@ function UnifiedDashboardPage({
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
 }) {
   const summary = monthlySummary(state, month);
-  const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
-  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+  const preferredMoneyRowId = (rows: Array<{ id: string; value: number }>) =>
+    [...rows].filter((row) => row.value > 0).sort((a, b) => b.value - a.value)[0]?.id ?? rows[0]?.id ?? null;
+  const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(() => preferredMoneyRowId(summary.incomeRows));
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(() => preferredMoneyRowId(summary.expenseRows));
   const [entryModal, setEntryModal] = useState<"income" | "expense" | null>(null);
   const [showNewIncomeCategory, setShowNewIncomeCategory] = useState(false);
   const [showNewExpenseCategory, setShowNewExpenseCategory] = useState(false);
@@ -1930,11 +2557,11 @@ function UnifiedDashboardPage({
   useEffect(() => {
     setSelectedIncomeId((current) => {
       if (current && summary.incomeRows.some((row) => row.id === current)) return current;
-      return summary.incomeRows.find((row) => row.value > 0)?.id ?? summary.incomeRows[0]?.id ?? null;
+      return preferredMoneyRowId(summary.incomeRows);
     });
     setSelectedExpenseId((current) => {
       if (current && summary.expenseRows.some((row) => row.id === current)) return current;
-      return summary.expenseRows.find((row) => row.value > 0)?.id ?? summary.expenseRows[0]?.id ?? null;
+      return preferredMoneyRowId(summary.expenseRows);
     });
   }, [month, summary.expenseRows, summary.incomeRows]);
 
@@ -1961,6 +2588,11 @@ function UnifiedDashboardPage({
   const hasCustomAllocationAmounts = allocationAmountRows.some((item) => typeof summary.allocation[item.amountKey] === "number");
   const monthAlreadyConfirmed = Boolean(summary.allocation.confirmedAt);
   const tasks = dashboardTasks(state, month);
+
+  useEffect(() => {
+    setSelectedIncomeId(preferredMoneyRowId(summary.incomeRows));
+    setSelectedExpenseId(preferredMoneyRowId(summary.expenseRows));
+  }, []);
 
   const openTask = (task: DashboardTask) => {
     if (task.id === "market-stale") {
@@ -2008,14 +2640,14 @@ function UnifiedDashboardPage({
   };
 
   const updateMonthlyExpense = (category: ExpenseCategory, patch: Partial<MonthlyExpense>) => {
-    setState((prev) => {
+    commitWithUndo("Đã cập nhật chi cố định.", (prev) => {
       const existing = prev.monthlyExpenses.find((item) => item.categoryId === category.id && item.month === month);
       const next = existing ? { ...existing, ...patch } : { ...getMonthlyExpense(prev, category, month), ...patch };
       return {
         ...prev,
         monthlyExpenses: existing ? prev.monthlyExpenses.map((item) => (item.id === existing.id ? next : item)) : [...prev.monthlyExpenses, next],
       };
-    });
+    }, { action: "update", entityType: "expense", entityId: category.id });
   };
 
   const updateAllocation = (patch: Partial<Allocation>) => {
@@ -2139,22 +2771,45 @@ function UnifiedDashboardPage({
 
   const deleteIncomeTransaction = (transaction: { id: string }) => {
     if (!window.confirm("Xóa khoản thu này?")) return;
-    commitWithUndo("Đã xóa khoản thu.", (prev) => ({ ...prev, incomeTransactions: prev.incomeTransactions.filter((item) => item.id !== transaction.id) }));
+    commitWithUndo("Đã xóa khoản thu.", (prev) => {
+      const item = prev.incomeTransactions.find((row) => row.id === transaction.id);
+      if (!item) return prev;
+      return withTrashItem(
+        { ...prev, incomeTransactions: prev.incomeTransactions.filter((row) => row.id !== transaction.id) },
+        makeTrashItem("income", item.id, `khoản thu ${formatVnd(item.amount)}`, item)
+      );
+    }, { action: "delete", entityType: "income", entityId: transaction.id });
   };
 
   const deleteExpenseTransaction = (transaction: { id: string }) => {
     if (!window.confirm("Xóa khoản chi này?")) return;
-    commitWithUndo("Đã xóa khoản chi.", (prev) => ({ ...prev, expenseEntries: prev.expenseEntries.filter((item) => item.id !== transaction.id) }));
+    commitWithUndo("Đã xóa khoản chi.", (prev) => {
+      const item = prev.expenseEntries.find((row) => row.id === transaction.id);
+      if (!item) return prev;
+      return withTrashItem(
+        { ...prev, expenseEntries: prev.expenseEntries.filter((row) => row.id !== transaction.id) },
+        makeTrashItem("expense", item.id, `khoản chi ${formatVnd(item.amount)}`, item)
+      );
+    }, { action: "delete", entityType: "expense", entityId: transaction.id });
   };
 
   const deleteExpenseCategory = (category: ExpenseCategory) => {
     if (!window.confirm(`Xóa mục ${category.name}?`)) return;
-    commitWithUndo("Đã xóa mục chi.", (prev) => ({
-      ...prev,
-      expenseCategories: prev.expenseCategories.filter((item) => item.id !== category.id),
-      monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== category.id),
-      expenseEntries: prev.expenseEntries.filter((item) => item.categoryId !== category.id),
-    }));
+    commitWithUndo("Đã xóa mục chi.", (prev) => {
+      const relatedPayloads = {
+        monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId === category.id),
+        expenseEntries: prev.expenseEntries.filter((item) => item.categoryId === category.id),
+      };
+      return withTrashItem(
+        {
+          ...prev,
+          expenseCategories: prev.expenseCategories.filter((item) => item.id !== category.id),
+          monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== category.id),
+          expenseEntries: prev.expenseEntries.filter((item) => item.categoryId !== category.id),
+        },
+        makeTrashItem("expense-category", category.id, `mục chi ${category.name}`, category, relatedPayloads)
+      );
+    }, { action: "delete", entityType: "expense-category", entityId: category.id });
     if (selectedExpenseId === category.id) setSelectedExpenseId(null);
   };
 
@@ -2714,9 +3369,11 @@ function FundChip({
 function AccumulationPage({
   state,
   setState,
+  commitWithUndo,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
 }) {
   const emptyForm = () => ({
     name: "",
@@ -2831,7 +3488,7 @@ function AccumulationPage({
       return;
     }
 
-    setState((prev) => {
+    commitWithUndo(editingId ? "Đã sửa mục tích lũy." : "Đã tạo mục tích lũy.", (prev) => {
       const now = new Date().toISOString();
       const existing = editingId ? prev.accumulationGoals.find((goal) => goal.id === editingId) : null;
       const goalId = existing?.id ?? uid();
@@ -2870,31 +3527,39 @@ function AccumulationPage({
         ...withGoal,
         monthlyExpenses: rescheduleAccumulationGoal(withGoal, nextGoal),
       };
-    });
+    }, { action: editingId ? "update" : "create", entityType: "accumulation", entityId: editingId ?? undefined });
     resetForm();
   };
 
   const endGoal = (goal: AccumulationGoal) => {
     if (!window.confirm(`Kết thúc mục ${goal.name}? Checklist từ tháng sau sẽ không còn hiển thị mục này.`)) return;
-    setState((prev) => ({
+    commitWithUndo("Đã kết thúc mục tích lũy.", (prev) => ({
       ...prev,
       accumulationGoals: prev.accumulationGoals.map((item) =>
         item.id === goal.id ? { ...item, status: "ended", endedAt: today(), updatedAt: new Date().toISOString() } : item
       ),
       monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== goal.categoryId || item.checked || item.month <= currentMonth()),
-    }));
+    }), { action: "update", entityType: "accumulation", entityId: goal.id });
     if (editingId === goal.id) resetForm();
   };
 
   const deleteGoal = (goal: AccumulationGoal) => {
     if (!window.confirm(`Xóa mục ${goal.name}? Các tháng đã tick vẫn được giữ trong báo cáo cũ.`)) return;
-    setState((prev) => ({
-      ...prev,
-      accumulationGoals: prev.accumulationGoals.map((item) =>
-        item.id === goal.id ? { ...item, status: "deleted", deletedAt: today(), updatedAt: new Date().toISOString() } : item
-      ),
-      monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== goal.categoryId || item.checked),
-    }));
+    commitWithUndo("Đã xóa mục tích lũy.", (prev) => {
+      const relatedPayloads = {
+        expenseCategories: prev.expenseCategories.filter((item) => item.id === goal.categoryId),
+        monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId === goal.categoryId && !item.checked),
+      };
+      return withTrashItem(
+        {
+          ...prev,
+          accumulationGoals: prev.accumulationGoals.filter((item) => item.id !== goal.id),
+          expenseCategories: prev.expenseCategories.filter((item) => item.id !== goal.categoryId),
+          monthlyExpenses: prev.monthlyExpenses.filter((item) => item.categoryId !== goal.categoryId || item.checked),
+        },
+        makeTrashItem("accumulation", goal.id, `mục tích lũy ${goal.name}`, goal, relatedPayloads)
+      );
+    }, { action: "delete", entityType: "accumulation", entityId: goal.id });
     if (editingId === goal.id) resetForm();
   };
 
@@ -4082,7 +4747,16 @@ function BtcPage({
   };
 
   const deletePlan = (plan: BtcDcaPlan) => {
-    commitWithUndo("Đã xóa lệnh DCA.", (prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id) }));
+    if (!window.confirm("Xóa lệnh DCA này? Lịch sử giao dịch DCA đã tạo vẫn được giữ.")) return;
+    commitWithUndo(
+      "Đã xóa lệnh DCA.",
+      (prev) =>
+        withTrashItem(
+          { ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id) },
+          makeTrashItem("btc-dca", plan.id, `lệnh DCA ${formatUsdt(plan.amountUsdt)}`, plan)
+        ),
+      { action: "delete", entityType: "btc-dca", entityId: plan.id }
+    );
     setExpandedDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
     setHistoryDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
     if (editingPlanId === plan.id) {
@@ -4274,20 +4948,33 @@ function BtcPage({
   const deleteBtcHistoryRow = (row: (typeof rows)[number]) => {
     const label = row.kind === "topup" ? "lệnh mua USDT" : row.kind === "trade" ? "lệnh mua BTC" : "lệnh rút/chuyển BTC";
     if (!window.confirm(`Xóa ${label} này? Số dư và lịch sử BTC sẽ được cập nhật lại.`)) return;
-    commitWithUndo(`Đã xóa ${label}.`, (prev) => ({
-      ...prev,
-      btcUsdtTopups: row.kind === "topup" ? prev.btcUsdtTopups.filter((item) => item.id !== row.item.id) : prev.btcUsdtTopups,
-      btcTrades: row.kind === "trade" ? prev.btcTrades.filter((item) => item.id !== row.item.id) : prev.btcTrades,
-      btcTransfers: row.kind === "transfer" ? prev.btcTransfers.filter((item) => item.id !== row.item.id) : prev.btcTransfers,
-      fundTransactions:
+    const entityType: AuditEntityType = row.kind === "topup" ? "btc-topup" : row.kind === "trade" ? "btc-trade" : "btc-transfer";
+    commitWithUndo(`Đã xóa ${label}.`, (prev) => {
+      const relatedPayloads =
         row.kind === "transfer"
-          ? prev.fundTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`))
-          : prev.fundTransactions,
-      incomeTransactions:
-        row.kind === "transfer"
-          ? prev.incomeTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`))
-          : prev.incomeTransactions,
-    }));
+          ? {
+              fundTransactions: prev.fundTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`)),
+              incomeTransactions: prev.incomeTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`)),
+            }
+          : undefined;
+      return withTrashItem(
+        {
+          ...prev,
+          btcUsdtTopups: row.kind === "topup" ? prev.btcUsdtTopups.filter((item) => item.id !== row.item.id) : prev.btcUsdtTopups,
+          btcTrades: row.kind === "trade" ? prev.btcTrades.filter((item) => item.id !== row.item.id) : prev.btcTrades,
+          btcTransfers: row.kind === "transfer" ? prev.btcTransfers.filter((item) => item.id !== row.item.id) : prev.btcTransfers,
+          fundTransactions:
+            row.kind === "transfer"
+              ? prev.fundTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`))
+              : prev.fundTransactions,
+          incomeTransactions:
+            row.kind === "transfer"
+              ? prev.incomeTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`))
+              : prev.incomeTransactions,
+        },
+        makeTrashItem(entityType, row.item.id, label, row.item, relatedPayloads)
+      );
+    }, { action: "delete", entityType, entityId: row.item.id });
     if (!btcCloudAccountId) return;
     const table = row.kind === "topup" ? "btc_usdt_topups" : row.kind === "trade" ? "btc_trades" : "btc_transfers";
     void deleteCloudPayloadRow(table, btcCloudAccountId, row.item.id).catch(() => {
@@ -4886,7 +5573,7 @@ function StockPage({
       ...prev,
       stockPurchases: [
         ...prev.stockPurchases,
-        { id: uid(), date: purchaseDate, month: monthFromDate(purchaseDate), note: purchaseNote, lines },
+        { id: uid(), date: purchaseDate, month: monthFromDate(purchaseDate), note: purchaseNote, lines, createdAt: new Date().toISOString() },
       ],
     }));
     resetPurchaseForm();
@@ -4930,17 +5617,18 @@ function StockPage({
       destination: saleForm.destination,
       date: saleForm.date,
       note,
+      createdAt: new Date().toISOString(),
     };
     commitWithUndo("Đã rút/chuyển CK.", (prev) => ({
       ...prev,
       stockSales: [...prev.stockSales, sale],
       fundTransactions:
-        sale.destination === "stock" || sale.destination === "btc"
+        sale.destination === "btc"
           ? [
               ...prev.fundTransactions,
               {
                 id: uid(),
-                fund: sale.destination,
+                fund: "btc",
                 type: "deposit",
                 amount: vndAmount,
                 date: sale.date,
@@ -4983,10 +5671,15 @@ function StockPage({
 
   const deleteStockPurchase = (purchase: StockPurchase) => {
     if (!window.confirm("Xóa lệnh mua cổ phiếu này? Danh mục CK sẽ được tính lại.")) return;
-    commitWithUndo("Đã xóa lệnh mua CK.", (prev) => ({
-      ...prev,
-      stockPurchases: prev.stockPurchases.filter((item) => item.id !== purchase.id),
-    }));
+    commitWithUndo(
+      "Đã xóa lệnh mua CK.",
+      (prev) =>
+        withTrashItem(
+          { ...prev, stockPurchases: prev.stockPurchases.filter((item) => item.id !== purchase.id) },
+          makeTrashItem("stock-purchase", purchase.id, `lệnh mua CK ${purchase.lines.map((line) => line.symbol).join(", ")}`, purchase)
+        ),
+      { action: "delete", entityType: "stock-purchase", entityId: purchase.id }
+    );
   };
 
   const refreshPrices = async (silent = false) => {
@@ -5651,33 +6344,43 @@ function BankDepositPage({
   const deleteDeposit = (item: BankDeposit) => {
     if (!window.confirm(`Xóa sổ ${item.code}? Thao tác này sẽ xóa sổ khỏi lịch sử và bảng tăng trưởng tài sản.`)) return;
 
-    commitWithUndo("Đã xóa sổ MBB.", (prev) => ({
-      ...prev,
-      bankDeposits: prev.bankDeposits
-        .filter((deposit) => deposit.id !== item.id)
-        .map((deposit) => {
-          if (deposit.childId === item.id) {
-            return {
-              ...deposit,
-              status: "active" as DepositStatus,
-              childId: undefined,
-              settledAt: undefined,
-              settledAmount: undefined,
-            };
-          }
-          if (deposit.parentId === item.id) {
-            return { ...deposit, parentId: undefined };
-          }
-          return deposit;
-        }),
-      allocations: item.createdFromMonth && !item.createdFromSolWithdrawalId
-        ? prev.allocations.map((allocation) =>
-            allocation.month === item.createdFromMonth
-              ? { ...allocation, [depositCreatedField(item.fund)]: allocation[depositCreatedField(item.fund)] ?? new Date().toISOString() }
-              : allocation
-          )
-        : prev.allocations,
-    }));
+    commitWithUndo("Đã xóa sổ MBB.", (prev) => {
+      const relatedPayloads = {
+        allocations: item.createdFromMonth && !item.createdFromSolWithdrawalId
+          ? prev.allocations.filter((allocation) => allocation.month === item.createdFromMonth)
+          : [],
+      };
+      return withTrashItem(
+        {
+          ...prev,
+          bankDeposits: prev.bankDeposits
+            .filter((deposit) => deposit.id !== item.id)
+            .map((deposit) => {
+              if (deposit.childId === item.id) {
+                return {
+                  ...deposit,
+                  status: "active" as DepositStatus,
+                  childId: undefined,
+                  settledAt: undefined,
+                  settledAmount: undefined,
+                };
+              }
+              if (deposit.parentId === item.id) {
+                return { ...deposit, parentId: undefined };
+              }
+              return deposit;
+            }),
+          allocations: item.createdFromMonth && !item.createdFromSolWithdrawalId
+            ? prev.allocations.map((allocation) =>
+                allocation.month === item.createdFromMonth
+                  ? { ...allocation, [depositCreatedField(item.fund)]: allocation[depositCreatedField(item.fund)] ?? new Date().toISOString() }
+                  : allocation
+              )
+            : prev.allocations,
+        },
+        makeTrashItem("deposit", item.id, `sổ MBB ${item.code}`, item, relatedPayloads)
+      );
+    }, { action: "delete", entityType: "deposit", entityId: item.id });
     setEarlySettlementDates((prev) => {
       const next = { ...prev };
       delete next[item.id];
@@ -6190,46 +6893,55 @@ function SolPage({
 
     commitWithUndo(isSolWithdrawal(item) ? "Đã xóa lệnh rút/chuyển SOL." : "Đã xóa lệnh thêm SOL.", (prev) => {
       if (!isSolWithdrawal(item)) {
-        return {
-          ...prev,
-          solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
-        };
+        return withTrashItem(
+          {
+            ...prev,
+            solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
+          },
+          makeTrashItem("sol", item.id, `lệnh thêm SOL ${formatSolAmount(item.solAmount)}`, item)
+        );
       }
       const transferNote = solTransferNoteForHistory(item);
       const relatedBtcTopupIds = new Set(relatedBtcTopups.map((topup) => topup.id));
       const relatedBtcTradeIds = new Set(relatedBtcTrades.map((trade) => trade.id));
-      return {
-        ...prev,
-        solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
-        btcUsdtTopups: relatedBtcTopupIds.size ? prev.btcUsdtTopups.filter((topup) => !relatedBtcTopupIds.has(topup.id)) : prev.btcUsdtTopups,
-        btcTrades: relatedBtcTradeIds.size ? prev.btcTrades.filter((trade) => !relatedBtcTradeIds.has(trade.id)) : prev.btcTrades,
-        fundTransactions:
-          item.destination === "btc" || item.destination === "btc-direct" || item.destination === "stock"
-            ? prev.fundTransactions.filter(
-                (transaction) =>
-                  !(
-                    transaction.fund === (item.destination === "btc-direct" ? "btc" : item.destination) &&
-                    transaction.type === "deposit" &&
-                    transaction.amount === item.vndAmount &&
-                    transaction.date === item.date &&
-                    transaction.note === transferNote
-                  )
-              )
-            : prev.fundTransactions,
-        incomeTransactions:
-          item.destination === "cash"
-            ? prev.incomeTransactions.filter(
-                (transaction) =>
-                  !(
-                    transaction.categoryId === "other-income" &&
-                    transaction.amount === item.vndAmount &&
-                    transaction.date === item.date &&
-                    transaction.note === transferNote
-                  )
-              )
-            : prev.incomeTransactions,
-      };
-    });
+      const relatedFundTransactions =
+        item.destination === "btc" || item.destination === "btc-direct" || item.destination === "stock"
+          ? prev.fundTransactions.filter(
+              (transaction) =>
+                transaction.fund === (item.destination === "btc-direct" ? "btc" : item.destination) &&
+                transaction.type === "deposit" &&
+                transaction.amount === item.vndAmount &&
+                transaction.date === item.date &&
+                transaction.note === transferNote
+            )
+          : [];
+      const relatedIncomeTransactions =
+        item.destination === "cash"
+          ? prev.incomeTransactions.filter(
+              (transaction) =>
+                transaction.categoryId === "other-income" &&
+                transaction.amount === item.vndAmount &&
+                transaction.date === item.date &&
+                transaction.note === transferNote
+            )
+          : [];
+      return withTrashItem(
+        {
+          ...prev,
+          solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
+          btcUsdtTopups: relatedBtcTopupIds.size ? prev.btcUsdtTopups.filter((topup) => !relatedBtcTopupIds.has(topup.id)) : prev.btcUsdtTopups,
+          btcTrades: relatedBtcTradeIds.size ? prev.btcTrades.filter((trade) => !relatedBtcTradeIds.has(trade.id)) : prev.btcTrades,
+          fundTransactions: relatedFundTransactions.length ? prev.fundTransactions.filter((transaction) => !relatedFundTransactions.some((row) => row.id === transaction.id)) : prev.fundTransactions,
+          incomeTransactions: relatedIncomeTransactions.length ? prev.incomeTransactions.filter((transaction) => !relatedIncomeTransactions.some((row) => row.id === transaction.id)) : prev.incomeTransactions,
+        },
+        makeTrashItem("sol", item.id, `lệnh rút/chuyển SOL ${formatSolAmount(item.solAmount)}`, item, {
+          btcUsdtTopups: relatedBtcTopups,
+          btcTrades: relatedBtcTrades,
+          fundTransactions: relatedFundTransactions,
+          incomeTransactions: relatedIncomeTransactions,
+        })
+      );
+    }, { action: "delete", entityType: "sol", entityId: item.id });
     if (btcCloudAccountId) {
       relatedBtcTopups.forEach((topup) => {
         void deleteCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, topup.id).catch(() => {
@@ -7090,6 +7802,7 @@ function SettingsPage({
   state,
   setState,
   cloudSync,
+  dataTools,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
@@ -7099,8 +7812,34 @@ function SettingsPage({
     onSyncNow: () => void;
     onChangePin: (pin: string) => void;
   };
+  dataTools: {
+    onExportBackup: () => void;
+    onExportCsv: () => void;
+    onRestoreBackup: (file: File) => Promise<void>;
+    onRestoreTrash: (trashItemId: string) => void;
+    onPermanentDeleteTrash: (trashItemId: string) => void;
+  };
 }) {
-  const [pin, setPin] = useState("");
+  const [restoreStatus, setRestoreStatus] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const recentAuditLogs = state.auditLogs.slice(0, 50);
+  const trashItems = [...state.trashItems].sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+
+  const restoreFromFile = async (file?: File) => {
+    if (!file) return;
+    if (!window.confirm("Restore backup sẽ thay toàn bộ dữ liệu hiện tại. App sẽ tự lưu một bản backup trước khi restore. Tiếp tục?")) return;
+    try {
+      setRestoreStatus("Đang restore backup...");
+      await dataTools.onRestoreBackup(file);
+      setRestoreStatus("Đã restore backup thành công.");
+    } catch (error) {
+      setRestoreStatus(error instanceof Error ? error.message : "Không restore được backup.");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const daysLeft = (iso: string) => Math.max(Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000), 0);
 
   return (
     <div className="page">
@@ -7110,45 +7849,93 @@ function SettingsPage({
           <h1>Bảo mật và dữ liệu</h1>
         </div>
       </header>
-      <section className="two-column compact">
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Mã PIN</h2>
-            <small>{state.settings.hasPin ? "Đang bật" : "Chưa bật"}</small>
-          </div>
-          <div className="form-grid">
-            <label>
-              PIN mới
-              <input className="pin-input" type="tel" inputMode="numeric" pattern="[0-9]*" autoComplete="one-time-code" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))} />
-            </label>
-          </div>
-          <button
-            className="primary"
-            onClick={() => {
-              if (pin.length < 4) return;
-              cloudSync.onChangePin(pin);
-              setPin("");
-            }}
-          >
-            <Save size={17} /> Lưu PIN
+
+      <section className="panel data-panel">
+        <div className="panel-title">
+          <h2>Dữ liệu</h2>
+          <small>
+            {state.backupMeta?.lastExportAt ? `Backup ${formatDateTime(state.backupMeta.lastExportAt)}` : "Chưa backup"}
+          </small>
+        </div>
+        <div className="data-actions">
+          <button className="primary action-button-sm" onClick={dataTools.onExportBackup} type="button">
+            <Download size={16} /> Tạo backup JSON
           </button>
-        </article>
+          <button className="ghost action-button-sm" onClick={dataTools.onExportCsv} type="button">
+            <FileText size={16} /> Export CSV
+          </button>
+          <button className="ghost action-button-sm" onClick={() => fileInputRef.current?.click()} type="button">
+            <Upload size={16} /> Restore JSON
+          </button>
+          <input
+            ref={fileInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => void restoreFromFile(event.target.files?.[0])}
+          />
+        </div>
+        <small className={restoreStatus.includes("thành công") ? "ok" : restoreStatus ? "form-error" : "muted"}>
+        </small>
+      </section>
+
+      <section className="two-column compact settings-data-grid">
         <article className="panel">
           <div className="panel-title">
-            <h2>Dữ liệu</h2>
-            <small>{cloudSync.configured ? "Supabase" : "Chưa cấu hình"}</small>
+            <h2>Thùng rác 30 ngày</h2>
+            <small>{trashItems.length} mục</small>
           </div>
-          <div className="cloud-sync-box">
-            <p className="muted">
-              Đồng bộ laptop và iPhone bằng Supabase. Mã PIN chính là khóa mở dữ liệu tài khoản trên mọi thiết bị.
-            </p>
-            <small className={cloudSync.configured ? "ok" : "muted"}>{cloudSync.status}</small>
-            <div className="card-actions">
-              <button className="primary" disabled={!cloudSync.configured} onClick={cloudSync.onSyncNow}>
-                Đồng bộ ngay
-              </button>
+          {trashItems.length === 0 ? (
+            <p className="muted">Chưa có dữ liệu nào trong thùng rác.</p>
+          ) : (
+            <div className="settings-list">
+              {trashItems.map((item) => (
+                <div className="settings-list-row" key={item.id}>
+                  <div>
+                    <strong>{item.label}</strong>
+                    <small>{formatDateTime(item.deletedAt)} · còn {daysLeft(item.expiresAt)} ngày</small>
+                  </div>
+                  <div className="settings-list-actions">
+                    <button className="ghost icon-only" onClick={() => dataTools.onRestoreTrash(item.id)} title="Khôi phục" type="button">
+                      <RotateCcw size={16} />
+                    </button>
+                    <button
+                      className="ghost icon-only danger-text"
+                      onClick={() => {
+                        if (window.confirm(`Xóa vĩnh viễn ${item.label}? Không thể khôi phục sau thao tác này.`)) dataTools.onPermanentDeleteTrash(item.id);
+                      }}
+                      title="Xóa vĩnh viễn"
+                      type="button"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-title">
+            <h2>Lịch sử thao tác</h2>
+            <small>{state.auditLogs.length} log</small>
           </div>
+          {recentAuditLogs.length === 0 ? (
+            <p className="muted">Chưa có log thao tác.</p>
+          ) : (
+            <div className="settings-list audit-list">
+              {recentAuditLogs.map((log) => (
+                <div className="settings-list-row audit-row" key={log.id}>
+                  <div>
+                    <strong>{log.label}</strong>
+                    <small>{formatDateTime(log.createdAt)} · {log.entityType}</small>
+                  </div>
+                  <span className={`status-badge neutral audit-action-${log.action}`}>{log.action}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </article>
       </section>
     </div>
@@ -7269,6 +8056,7 @@ function QuickActionButton({
     setError("");
   };
 
+  const recentUndoEntries = [...undoStack].reverse().slice(0, 10);
   const undoFromQuickAction = (entry: UndoEntry, displayIndex: number) => {
     const newerCount = displayIndex;
     const message = newerCount > 0
@@ -7278,7 +8066,6 @@ function QuickActionButton({
     onUndoToEntry(entry.id);
     close();
   };
-  const recentUndoEntries = [...undoStack].reverse();
 
   const btcTransferPriceFor = (asset: "btc" | "usdt", destination: BtcTransferTarget) => {
     if (asset === "btc" || destination === "btc") return state.market.btcUsdt;
@@ -7482,7 +8269,6 @@ function QuickActionButton({
   };
 
   const save = () => {
-    if (kind === "undo") return;
     setError("");
     if (kind === "income") {
       const amount = parseMoney(income.amount);
@@ -7604,7 +8390,7 @@ function QuickActionButton({
       const total = lines.reduce((sum, line) => sum + stockLineValue(line), 0);
       if (!lines.length) return setError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
       if (total > stockStats.cash) return setError("Tổng giá trị mua đang vượt quá tiền dư CK.");
-      const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: quickStockMeta.note.trim(), lines };
+      const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: quickStockMeta.note.trim(), lines, createdAt: new Date().toISOString() };
       commitWithUndo("Đã mua cổ phiếu.", (prev) => ({ ...prev, stockPurchases: [...prev.stockPurchases, purchase] }));
       resetQuickStockForm();
       close();
@@ -7629,13 +8415,14 @@ function QuickActionButton({
         destination: stockTransfer.destination,
         date: stockTransfer.date,
         note,
+        createdAt: new Date().toISOString(),
       };
       commitWithUndo("Đã rút/chuyển CK.", (prev) => ({
         ...prev,
         stockSales: [...prev.stockSales, sale],
         fundTransactions:
-          sale.destination === "stock" || sale.destination === "btc"
-            ? [...prev.fundTransactions, { id: uid(), fund: sale.destination, type: "deposit", amount: vndAmount, date: sale.date, month: monthFromDate(sale.date), note: transferNote }]
+          sale.destination === "btc"
+            ? [...prev.fundTransactions, { id: uid(), fund: "btc", type: "deposit", amount: vndAmount, date: sale.date, month: monthFromDate(sale.date), note: transferNote }]
             : prev.fundTransactions,
         incomeTransactions:
           sale.destination === "cash"
@@ -7754,7 +8541,10 @@ function QuickActionButton({
                       <button className="quick-undo-item" key={entry.id} onClick={() => undoFromQuickAction(entry, index)} type="button">
                         <div>
                           <strong>{entry.label}</strong>
-                          <small>{new Date(entry.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}{index > 0 ? ` · hoàn lại cả ${index} thao tác sau đó` : ""}</small>
+                          <small>
+                            {new Date(entry.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                            {index > 0 ? ` · hoàn lại cả ${index} thao tác sau đó` : ""}
+                          </small>
                         </div>
                         <span>Hoàn tác</span>
                       </button>
@@ -7938,12 +8728,14 @@ export function App() {
     if (undoToastTimer.current) window.clearTimeout(undoToastTimer.current);
   }, []);
 
-  const commitWithUndo: CommitWithUndo = (label, updater) => {
+  const commitWithUndo: CommitWithUndo = (label, updater, meta) => {
     const previous = stateRef.current;
-    const next = typeof updater === "function" ? (updater as (prev: AppState) => AppState)(previous) : updater;
-    if (next === previous) return;
+    const rawNext = typeof updater === "function" ? (updater as (prev: AppState) => AppState)(previous) : updater;
+    if (rawNext === previous) return;
+    const log = makeAuditLog(label, previous, rawNext, meta);
+    const next = withAuditLog(rawNext, log);
     const entry: UndoEntry = { id: uid(), label, state: previous, createdAt: new Date().toISOString() };
-    setUndoStack((prev) => [...prev, entry].slice(-5));
+    setUndoStack((prev) => [...prev, entry].slice(-10));
     setVisibleUndoId(entry.id);
     if (undoToastTimer.current) window.clearTimeout(undoToastTimer.current);
     undoToastTimer.current = window.setTimeout(() => setVisibleUndoId((current) => (current === entry.id ? null : current)), 5000);
@@ -7996,8 +8788,12 @@ export function App() {
     const entryIndex = undoStack.findIndex((entry) => entry.id === entryId);
     if (entryIndex < 0) return;
     const entry = undoStack[entryIndex];
-    const targetState = entry.state;
     const currentState = stateRef.current;
+    const undoLog = makeAuditLog(`Đã hoàn tác: ${entry.label}`, currentState, entry.state, {
+      action: "undo",
+      entityType: "general",
+    });
+    const targetState = withAuditLog({ ...entry.state, auditLogs: currentState.auditLogs }, undoLog);
     btcCloudMergePausedUntil.current = Date.now() + 15_000;
     setState(targetState);
     stateRef.current = targetState;
@@ -8046,6 +8842,109 @@ export function App() {
       setCloudStatus("Không tải lại được BTC ledger.");
       return false;
     }
+  };
+
+  const exportBackupJson = () => {
+    const exportedAt = new Date().toISOString();
+    const current = stateRef.current;
+    downloadTextFile(`quan-li-chi-tieu-backup-${exportedAt.slice(0, 10)}.json`, JSON.stringify(backupPayload(current), null, 2), "application/json");
+    const next = withAuditLog(
+      {
+        ...current,
+        backupMeta: { ...(current.backupMeta ?? {}), lastExportAt: exportedAt },
+      },
+      makeAuditLog("Đã tạo backup JSON.", current, current, { action: "backup", entityType: "backup" })
+    );
+    stateRef.current = next;
+    setState(next);
+  };
+
+  const exportCsv = () => {
+    const exportedAt = new Date().toISOString();
+    const current = stateRef.current;
+    downloadTextFile(`quan-li-chi-tieu-export-${exportedAt.slice(0, 10)}.csv`, exportCsvBundle(current), "text/csv;charset=utf-8");
+    const next = withAuditLog(
+      {
+        ...current,
+        backupMeta: { ...(current.backupMeta ?? {}), lastExportAt: exportedAt },
+      },
+      makeAuditLog("Đã export CSV.", current, current, { action: "backup", entityType: "backup" })
+    );
+    stateRef.current = next;
+    setState(next);
+  };
+
+  const restoreBackupFile = async (file: File) => {
+    const current = stateRef.current;
+    const text = await file.text();
+    let parsed: { version?: number; state?: AppState };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("File backup không phải JSON hợp lệ.");
+    }
+    if (!parsed || parsed.version !== BACKUP_VERSION || !parsed.state || typeof parsed.state !== "object") {
+      throw new Error("File backup không đúng cấu trúc của app.");
+    }
+
+    localStorage.setItem(AUTO_RESTORE_BACKUP_KEY, JSON.stringify(backupPayload(current)));
+    const restoredAt = new Date().toISOString();
+    const normalized = normalizeState({
+      ...initialState,
+      ...parsed.state,
+      settings: {
+        ...initialState.settings,
+        ...parsed.state.settings,
+        hasPin: current.settings.hasPin || parsed.state.settings?.hasPin || Boolean(activePin),
+        pin: activePin || parsed.state.settings?.pin || current.settings.pin,
+      },
+      backupMeta: {
+        ...(parsed.state.backupMeta ?? {}),
+        lastRestoreAt: restoredAt,
+      },
+    });
+    const next = withAuditLog(
+      normalized,
+      makeAuditLog("Đã restore backup JSON.", current, normalized, { action: "restore", entityType: "restore" })
+    );
+    stateRef.current = next;
+    setState(next);
+    if (cloudAccountKey) {
+      await saveCloudState(cloudAccountKey, stateForAccountPin(next, activePin));
+      lastCloudSnapshot.current = JSON.stringify(next);
+      setLastCloudSyncAt(new Date().toISOString());
+    }
+    if (btcCloudAccountId) {
+      await syncBtcLedgerToCloudState(next, current);
+      setDataStatus(await loadDataStatus(btcCloudAccountId));
+    }
+  };
+
+  const restoreTrashItem = (trashItemId: string) => {
+    const current = stateRef.current;
+    const trashItem = current.trashItems.find((item) => item.id === trashItemId);
+    if (!trashItem) return;
+    const next = restoreTrashPayload(current, trashItem);
+    stateRef.current = next;
+    setState(next);
+    void syncBtcLedgerToCloudState(next, current).catch(() => setCloudStatus("Đã khôi phục local, nhưng chưa đồng bộ được BTC cloud."));
+  };
+
+  const permanentlyDeleteTrashItem = (trashItemId: string) => {
+    const current = stateRef.current;
+    const trashItem = current.trashItems.find((item) => item.id === trashItemId);
+    if (!trashItem) return;
+    const withoutTrash = { ...current, trashItems: current.trashItems.filter((item) => item.id !== trashItemId) };
+    const next = withAuditLog(
+      withoutTrash,
+      makeAuditLog(`Đã xóa vĩnh viễn ${trashItem.label}.`, current, withoutTrash, {
+        action: "delete",
+        entityType: "trash",
+        entityId: trashItem.entityId,
+      })
+    );
+    stateRef.current = next;
+    setState(next);
   };
 
   const unlockWithPin = async (pin: string) => {
@@ -8246,9 +9145,28 @@ export function App() {
       <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
         {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} commitWithUndo={commitWithUndo} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} setInvestmentAction={setInvestmentAction} onRefreshMarket={refreshMarket} />}
-        {page === "accumulation" && <AccumulationPage state={state} setState={setState} />}
+        {page === "accumulation" && <AccumulationPage state={state} setState={setState} commitWithUndo={commitWithUndo} />}
         {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
         {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} />}
+        {page === "settings" && (
+          <SettingsPage
+            state={state}
+            setState={setState}
+            cloudSync={{
+              configured: cloudConfigured,
+              status: cloudStatus || (lastCloudSyncAt ? `Đã sync lúc ${formatDateTime(lastCloudSyncAt)}` : "Chưa đồng bộ."),
+              onSyncNow: () => void syncCloudNow(),
+              onChangePin: (pin) => void changePin(pin),
+            }}
+            dataTools={{
+              onExportBackup: exportBackupJson,
+              onExportCsv: exportCsv,
+              onRestoreBackup: restoreBackupFile,
+              onRestoreTrash: restoreTrashItem,
+              onPermanentDeleteTrash: permanentlyDeleteTrashItem,
+            }}
+          />
+        )}
       </main>
       <QuickActionButton state={state} setState={setState} commitWithUndo={commitWithUndo} undoStack={undoStack} onUndoToEntry={undoToEntry} btcCloudAccountId={btcCloudAccountId} />
       {visibleUndoId && undoStack.some((entry) => entry.id === visibleUndoId) && (

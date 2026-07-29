@@ -764,6 +764,8 @@ label strong {
   display: grid;
   grid-column: 1 / -1;
   gap: 8px;
+  max-height: 420px;
+  overflow: auto;
 }
 
 .quick-undo-item {
@@ -792,6 +794,7 @@ label strong {
 .quick-undo-item small {
   margin-top: 4px;
   color: #a59b91;
+  font-size: 0.78rem;
 }
 
 .quick-undo-item > span {
@@ -2516,6 +2519,89 @@ input.pin-input {
   min-height: 20px;
 }
 
+.data-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.settings-data-grid {
+  align-items: start;
+  margin-top: 18px;
+}
+
+.settings-list {
+  display: grid;
+  gap: 8px;
+  max-height: 460px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.audit-list {
+  max-height: 318px;
+}
+
+.settings-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: rgba(14, 11, 9, 0.72);
+  padding: 10px 12px;
+}
+
+.settings-list-row strong,
+.settings-list-row small {
+  display: block;
+}
+
+.settings-list-row strong {
+  font-size: 0.92rem;
+}
+
+.settings-list-row small {
+  margin-top: 4px;
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+.settings-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.icon-only {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.audit-row {
+  align-items: flex-start;
+}
+
+.audit-row .status-badge {
+  flex-shrink: 0;
+  text-transform: capitalize;
+}
+
 @media (max-width: 980px) {
   .app-shell {
     display: block;
@@ -2559,6 +2645,65 @@ input.pin-input {
 
   .page {
     padding: 18px;
+  }
+
+  .data-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .data-actions .action-button-sm {
+    width: 100%;
+    justify-content: center;
+    min-height: 40px;
+    padding: 0 7px;
+    font-size: 0.72rem;
+    white-space: normal;
+    line-height: 1.15;
+    text-align: center;
+  }
+
+  .data-actions .action-button-sm svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .settings-data-grid {
+    margin-top: 22px;
+  }
+
+  .settings-list {
+    max-height: none;
+  }
+
+  .audit-list {
+    max-height: 290px;
+    overflow: auto;
+  }
+
+  .settings-list-row {
+    align-items: flex-start;
+    padding: 10px;
+  }
+
+  .settings-list-row > div:first-child {
+    min-width: 0;
+  }
+
+  .settings-list-row strong {
+    font-size: 0.88rem;
+    overflow-wrap: anywhere;
+  }
+
+  .settings-list-actions {
+    margin-left: auto;
+  }
+
+  .icon-only {
+    width: 34px;
+    height: 34px;
   }
 
   .panel {
