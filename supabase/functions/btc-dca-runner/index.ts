@@ -11,6 +11,8 @@ type BtcDcaPlan = {
   status: "active" | "paused" | "insufficient-usdt";
   statusNote?: string;
   lastRunAt?: string;
+  btcAmountOverride?: number;
+  averagePriceUsdtOverride?: number;
   note: string;
 };
 
@@ -21,7 +23,13 @@ type BtcUsdtTopup = {
 
 type BtcTrade = {
   id: string;
+  type: "dca";
   usdtAmount: number;
+  btcAmount: number;
+  btcPriceUsdt: number;
+  executedAt: string;
+  planId: string;
+  note: string;
 };
 
 type BtcTransfer = {
@@ -71,7 +79,8 @@ async function rest<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(`${response.status} ${text}`);
   }
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 async function fetchBtcUsdt() {
@@ -127,6 +136,23 @@ function tradeId(planId: string, scheduledAt: string) {
   return `dca_${planId}_${scheduledAt.replace(/[^0-9a-z]/gi, "")}`;
 }
 
+function applyDcaOverride(plan: BtcDcaPlan, createdBtc: number, createdUsdt: number): Pick<BtcDcaPlan, "btcAmountOverride" | "averagePriceUsdtOverride"> {
+  const currentBtc = Number(plan.btcAmountOverride) || 0;
+  const currentAverage = Number(plan.averagePriceUsdtOverride) || 0;
+  if (!currentBtc || !currentAverage || !createdBtc) return {};
+
+  const nextBtc = currentBtc + createdBtc;
+  return {
+    btcAmountOverride: nextBtc,
+    averagePriceUsdtOverride: (currentBtc * currentAverage + createdUsdt) / nextBtc,
+  };
+}
+
+async function tradeExists(id: string) {
+  const rows = await rest<Array<{ id: string }>>(`btc_trades?id=eq.${encodeURIComponent(id)}&select=id&limit=1`);
+  return rows.length > 0;
+}
+
 async function loadAccountLedger(accountId: string) {
   const query = `account_id=eq.${encodeURIComponent(accountId)}&select=payload`;
   const [topups, trades, transfers] = await Promise.all([
@@ -165,7 +191,7 @@ Deno.serve(async () => {
         continue;
       }
 
-      const ledger = await loadAccountLedger(row.account_id);
+      let ledger = await loadAccountLedger(row.account_id);
       if (ledger.usdtBalance + 0.000001 < amountUsdt) {
         const payload: BtcDcaPlan = {
           ...plan,
@@ -180,45 +206,70 @@ Deno.serve(async () => {
         continue;
       }
 
-      const btcPriceUsdt = await fetchBtcUsdt();
-      lastBtcPriceUsdt = btcPriceUsdt;
-      const trade = {
-        id: tradeId(row.id, scheduledAt),
-        type: "dca",
-        usdtAmount: amountUsdt,
-        btcAmount: amountUsdt / btcPriceUsdt,
-        btcPriceUsdt,
-        executedAt: now.toISOString(),
-        planId: row.id,
-        note: `Auto DCA ${amountUsdt} USDT`,
-      };
+      let nextRunAt = scheduledAt;
+      let lastTradeAt = plan.lastRunAt ?? "";
+      let createdBtc = 0;
+      let createdUsdt = 0;
+      let stoppedForFunds = false;
+      for (let runCount = 0; runCount < 60 && new Date(nextRunAt).getTime() <= now.getTime(); runCount += 1) {
+        const id = tradeId(row.id, nextRunAt);
+        if (await tradeExists(id)) {
+          lastTradeAt = nextRunAt;
+          nextRunAt = nextRunAfter({ ...plan, nextRunAt }, new Date(nextRunAt));
+          continue;
+        }
 
-      const insertResponse = await fetch(`${SUPABASE_URL}/rest/v1/btc_trades`, {
-        method: "POST",
-        headers: headers({ "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates" }),
-        body: JSON.stringify({
-          id: trade.id,
-          account_id: row.account_id,
-          payload: trade,
-          plan_id: row.id,
-          executed_at: trade.executedAt,
-          updated_at: now.toISOString(),
-        }),
-      });
-      if (insertResponse.ok || insertResponse.status === 409) {
+        if (ledger.usdtBalance + 0.000001 < amountUsdt) {
+          skipped += 1;
+          stoppedForFunds = true;
+          break;
+        }
+
+        const btcPriceUsdt = await fetchBtcUsdt();
+        lastBtcPriceUsdt = btcPriceUsdt;
+        const trade: BtcTrade = {
+          id,
+          type: "dca",
+          usdtAmount: amountUsdt,
+          btcAmount: amountUsdt / btcPriceUsdt,
+          btcPriceUsdt,
+          executedAt: nextRunAt,
+          planId: row.id,
+          note: `Auto DCA ${amountUsdt} USDT`,
+        };
+
+        const insertResponse = await fetch(`${SUPABASE_URL}/rest/v1/btc_trades`, {
+          method: "POST",
+          headers: headers({ "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates" }),
+          body: JSON.stringify({
+            id: trade.id,
+            account_id: row.account_id,
+            payload: trade,
+            plan_id: row.id,
+            executed_at: trade.executedAt,
+            updated_at: now.toISOString(),
+          }),
+        });
+        if (!insertResponse.ok && insertResponse.status !== 409) {
+          throw new Error(await insertResponse.text());
+        }
+
         if (insertResponse.ok) created += 1;
-      } else {
-        throw new Error(await insertResponse.text());
+        ledger = { usdtBalance: Math.max(ledger.usdtBalance - amountUsdt, 0) };
+        createdBtc += trade.btcAmount;
+        createdUsdt += trade.usdtAmount;
+        lastTradeAt = trade.executedAt;
+        nextRunAt = nextRunAfter({ ...plan, nextRunAt }, new Date(nextRunAt));
       }
 
-      const nextRunAt = nextRunAfter(plan, new Date(scheduledAt));
       const payload: BtcDcaPlan = {
         ...plan,
+        ...applyDcaOverride(plan, createdBtc, createdUsdt),
         nextRunAt,
         isActive: true,
-        status: "active",
-        statusNote: "",
-        lastRunAt: trade.executedAt,
+        status: stoppedForFunds ? "insufficient-usdt" : "active",
+        statusNote: stoppedForFunds ? `Thiếu USDT lúc ${now.toISOString()}` : "",
+        lastRunAt: lastTradeAt,
       };
       await rest(`btc_dca_plans?id=eq.${encodeURIComponent(row.id)}`, {
         method: "PATCH",
@@ -227,7 +278,7 @@ Deno.serve(async () => {
           is_active: true,
           next_run_at: nextRunAt,
           status: payload.status,
-          last_run_at: trade.executedAt,
+          last_run_at: lastTradeAt || null,
           updated_at: now.toISOString(),
         }),
       });

@@ -938,6 +938,17 @@ label strong {
   border-bottom: 1px solid rgba(74, 63, 53, 0.72);
 }
 
+.panel-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-title-actions .icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .panel-title h2 {
   margin: 0;
   position: relative;
@@ -1204,6 +1215,37 @@ label strong {
   margin-bottom: 12px;
 }
 
+.input-with-max {
+  position: relative;
+}
+
+.input-with-max input {
+  width: 100%;
+  padding-right: 58px;
+}
+
+.input-max-button {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  height: 28px;
+  min-height: 0;
+  border: 1px solid rgba(249, 115, 22, 0.42);
+  border-radius: 7px;
+  background: rgba(249, 115, 22, 0.1);
+  color: #ffb86b;
+  padding: 0 9px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.input-max-button:hover {
+  border-color: rgba(249, 115, 22, 0.7);
+  background: rgba(249, 115, 22, 0.18);
+}
+
 .inline-add {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr) auto;
@@ -1461,9 +1503,46 @@ label strong {
 
 .stock-buy-row {
   display: grid;
-  grid-template-columns: 1.15fr 0.55fr 0.8fr 0.9fr 1fr 34px;
+  grid-template-columns: minmax(120px, 1.15fr) 64px minmax(112px, 0.85fr) minmax(130px, 0.95fr) minmax(80px, 0.7fr) 28px;
   gap: 10px;
   align-items: end;
+}
+
+.stock-price-remove-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.stock-remove-mini {
+  display: grid;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  place-items: center;
+  align-self: center;
+  padding: 0;
+  border: 1px solid rgba(249, 115, 22, 0.55);
+  border-radius: 7px;
+  background: #f97316;
+  color: #080706;
+  margin-top: 0;
+}
+
+.stock-remove-mini:hover {
+  border-color: rgba(249, 115, 22, 0.82);
+  background: #fb923c;
+}
+
+.stock-remove-mobile {
+  display: none;
+}
+
+.stock-remove-desktop {
+  align-self: end;
+  margin-bottom: 7px;
 }
 
 .stock-row-value {
@@ -1549,8 +1628,55 @@ label strong {
   margin-top: 12px;
 }
 
+.stock-buy-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.stock-action-date {
+  min-width: 0;
+}
+
+.stock-action-date input {
+  width: 100%;
+  height: 100%;
+  min-height: 42px;
+  min-width: 0;
+}
+
+.stock-buy-actions .ghost,
+.stock-buy-actions .primary {
+  width: 100%;
+  min-height: 42px;
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+
 .stock-confirm-summary {
-  margin: 12px 0;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    align-items:center;
+    text-align:center;
+}
+
+.stock-confirm-summary div {
+  border: 1px solid rgba(249, 115, 22, 0.22);
+  background: linear-gradient(180deg, rgba(249, 115, 22, 0.08), rgba(20, 17, 15, 0.98));
+  padding: 8px 9px;
+  text-align: center;
+}
+
+.stock-confirm-summary span {
+  font-size: 0.76rem;
+}
+
+.stock-confirm-summary strong {
+  margin-top: 4px;
+  color: #fff7ed;
+  font-size: 0.94rem;
+  white-space: nowrap;
 }
 
 .stock-holding-list {
@@ -2486,7 +2612,7 @@ input.pin-input {
 .confirm-summary div {
   border-radius: 8px;
   background: #14110f;
-  padding: 12px;
+  padding: 5px;
 }
 
 .confirm-summary span,
@@ -2496,11 +2622,10 @@ input.pin-input {
 
 .confirm-summary span {
   color: #a59b91;
-  font-size: 0.82rem;
 }
 
 .confirm-summary strong {
-  margin-top: 6px;
+  font-size: 0.86rem;
 }
 
 .modal-actions {
@@ -3171,6 +3296,18 @@ input.pin-input {
     gap: 8px;
   }
 
+  .stock-price-remove-field {
+    grid-template-columns: minmax(0, 1fr) 28px;
+  }
+
+  .stock-remove-mobile {
+    display: grid;
+  }
+
+  .stock-remove-desktop {
+    display: none;
+  }
+
   .stock-buy-row label:nth-child(4),
   .stock-row-value {
     grid-column: span 2;
@@ -3331,7 +3468,8 @@ input.pin-input {
 
   .stock-confirm-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin: 10px 0;
+    margin: 5px 0;
+    justify-content:center;
   }
 
   .stock-form-actions {
@@ -3344,6 +3482,21 @@ input.pin-input {
     width: 100%;
     padding-inline: 8px;
     white-space: nowrap;
+  }
+
+  .stock-buy-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stock-buy-actions .stock-action-date {
+    font-size: 0.72rem;
+  }
+
+  .stock-buy-actions .ghost,
+  .stock-buy-actions .primary {
+    min-height: 42px;
+    font-size: 0.78rem;
   }
 
   .stock-buy-panel {
@@ -3408,6 +3561,15 @@ input.pin-input {
 
   .stock-confirm-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .stock-confirm-summary div {
+    padding: 5px 5px;
+  }
+
+  .stock-confirm-summary strong {
+    font-size: 0.86rem;
   }
 
   .stock-buy-meta-grid label:has(input[placeholder*="Mua"]),

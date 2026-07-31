@@ -192,6 +192,8 @@ type StockBuyRow = {
   percent: string;
   shares: string;
   buyPrice: string;
+  buyPriceTouched?: boolean;
+  sharesTouched?: boolean;
 };
 
 type FundTransaction = {
@@ -470,7 +472,12 @@ const STOCK_LOT = 100;
 const MARKET_PRICE_REFRESH_MS = 60 * 1000;
 const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"];
 
-const today = () => new Date().toISOString().slice(0, 10);
+const dateValueFromDate = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+const dateValueFromDateTime = (value: string) => dateValueFromDate(new Date(value));
+
+const today = () => dateValueFromDate(new Date());
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const addDaysIso = (iso: string, days: number) => {
@@ -509,7 +516,7 @@ const addMonths = (dateValue: string, months: number) => {
   const day = date.getDate();
   date.setMonth(date.getMonth() + months);
   if (date.getDate() !== day) date.setDate(0);
-  return date.toISOString().slice(0, 10);
+  return dateValueFromDate(date);
 };
 
 const daysUntil = (dateValue: string) => {
@@ -526,7 +533,7 @@ const daysBetween = (startDate: string, endDate: string) =>
 const addDays = (dateValue: string, days: number) => {
   const date = new Date(`${dateValue}T00:00:00`);
   date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  return dateValueFromDate(date);
 };
 
 const formatDate = (value: string) => {
@@ -574,7 +581,7 @@ const formatUsdt = (value: number) =>
   `${value.toLocaleString("vi-VN", { maximumFractionDigits: 3 })} USDT`;
 
 const formatBtc = (value: number) =>
-  `${value.toLocaleString("vi-VN", { maximumFractionDigits: 7 })} BTC`;
+  `${value.toLocaleString("vi-VN", { minimumFractionDigits: 8, maximumFractionDigits: 8 })} BTC`;
 
 const formatSolAmount = (value: number) =>
   `${value.toLocaleString("vi-VN", { maximumFractionDigits: 5 })} SOL`;
@@ -607,12 +614,110 @@ const formatDecimalInput = (value: string) => {
   return integerPart;
 };
 
+const decimalSeparatorIndex = (value: string) => {
+  const comma = value.lastIndexOf(",");
+  if (comma >= 0) return comma;
+  const dot = value.lastIndexOf(".");
+  if (dot < 0) return -1;
+  const parts = value.split(".");
+  const looksLikeThousands = parts.length > 1 && parts.slice(1).every((part) => part.length === 3);
+  return looksLikeThousands ? -1 : dot;
+};
+
+const cursorAfterDigits = (value: string, digitCount: number) => {
+  if (digitCount <= 0) return 0;
+  let seen = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (/\d/.test(value[index])) seen += 1;
+    if (seen >= digitCount) return index + 1;
+  }
+  return value.length;
+};
+
+const restoreFormattedInputCursor = (input: HTMLInputElement, nextValue: string, nextCursor: number) => {
+  window.requestAnimationFrame(() => {
+    if (document.activeElement !== input) return;
+    const cursor = Math.min(nextCursor, nextValue.length);
+    input.setSelectionRange(cursor, cursor);
+  });
+};
+
+const formatMoneyChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const input = event.currentTarget;
+  const cursor = input.selectionStart ?? input.value.length;
+  const formatted = formatMoneyInput(input.value);
+  const digitsBeforeCursor = input.value.slice(0, cursor).replace(/\D/g, "").length;
+  restoreFormattedInputCursor(input, formatted, cursorAfterDigits(formatted, digitsBeforeCursor));
+  return formatted;
+};
+
+const formatDecimalChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const input = event.currentTarget;
+  const cursor = input.selectionStart ?? input.value.length;
+  const raw = input.value;
+  const formatted = formatDecimalInput(raw);
+  const separator = decimalSeparatorIndex(raw);
+
+  if (separator >= 0 && cursor > separator) {
+    const decimalDigitsBeforeCursor = raw.slice(separator + 1, cursor).replace(/\D/g, "").length;
+    const formattedSeparator = formatted.indexOf(",");
+    const nextCursor = formattedSeparator >= 0 ? formattedSeparator + 1 + decimalDigitsBeforeCursor : formatted.length;
+    restoreFormattedInputCursor(input, formatted, nextCursor);
+    return formatted;
+  }
+
+  const digitsBeforeCursor = raw.slice(0, cursor).replace(/\D/g, "").length;
+  restoreFormattedInputCursor(input, formatted, cursorAfterDigits(formatted, digitsBeforeCursor));
+  return formatted;
+};
+
 const formatSolInput = (value: string) => {
   const formatted = formatDecimalInput(value);
   if (!formatted.includes(",")) return formatted;
   const [integerPart, decimalPart = ""] = formatted.split(",");
   return `${integerPart},${decimalPart.slice(0, 5)}`;
 };
+
+const formatSolChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const input = event.currentTarget;
+  const cursor = input.selectionStart ?? input.value.length;
+  const raw = input.value;
+  const formatted = formatSolInput(raw);
+  const separator = decimalSeparatorIndex(raw);
+
+  if (separator >= 0 && cursor > separator) {
+    const decimalDigitsBeforeCursor = Math.min(raw.slice(separator + 1, cursor).replace(/\D/g, "").length, 5);
+    const formattedSeparator = formatted.indexOf(",");
+    const nextCursor = formattedSeparator >= 0 ? formattedSeparator + 1 + decimalDigitsBeforeCursor : formatted.length;
+    restoreFormattedInputCursor(input, formatted, nextCursor);
+    return formatted;
+  }
+
+  const digitsBeforeCursor = raw.slice(0, cursor).replace(/\D/g, "").length;
+  restoreFormattedInputCursor(input, formatted, cursorAfterDigits(formatted, digitsBeforeCursor));
+  return formatted;
+};
+
+function InputWithMax({
+  value,
+  onChange,
+  onMax,
+  placeholder,
+  inputMode,
+}: {
+  value: string;
+  onChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onMax: () => void;
+  placeholder?: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+}) {
+  return (
+    <div className="input-with-max">
+      <input value={value} onChange={onChange} placeholder={placeholder} inputMode={inputMode} />
+      <button className="input-max-button" onClick={onMax} type="button">Max</button>
+    </div>
+  );
+}
 
 const parseMoney = (value: string) => Number(value.replace(/[^\d]/g, "")) || 0;
 const parseDecimal = (value: string) => {
@@ -735,6 +840,29 @@ function shiftDcaDate(dateValue: string, frequency: BtcDcaFrequency, periods: nu
   return addMonths(dateValue, periods);
 }
 
+function repairDcaTradeDates(trades: BtcTrade[], plans: BtcDcaPlan[]) {
+  const nextTrades = [...trades];
+  plans.forEach((plan) => {
+    const related = nextTrades
+      .map((trade, index) => ({ trade, index }))
+      .filter(({ trade }) => trade.type === "dca" && trade.planId === plan.id)
+      .sort((left, right) => left.trade.executedAt.localeCompare(right.trade.executedAt));
+    if (!related.length) return;
+
+    const firstTradeDate = dateValueFromDateTime(related[0].trade.executedAt);
+    const onePeriodBeforeStart = shiftDcaDate(plan.startDate, plan.frequency, -1);
+    if (firstTradeDate !== onePeriodBeforeStart) return;
+
+    related.forEach(({ trade, index }, tradeIndex) => {
+      nextTrades[index] = {
+        ...trade,
+        executedAt: localDateTimeIso(shiftDcaDate(plan.startDate, plan.frequency, tradeIndex), plan.time),
+      };
+    });
+  });
+  return nextTrades;
+}
+
 function localDateTimeIso(dateValue: string, time: string) {
   const safeTime = /^\d{2}:\d{2}$/.test(time) ? time : "12:00";
   return new Date(`${dateValue}T${safeTime}:00`).toISOString();
@@ -824,7 +952,7 @@ function btcPortfolioStats(state: AppState, upToMonth?: string) {
     .filter((item) => item.fund === "btc" && (!upToMonth || item.month <= upToMonth))
     .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
   const topups = state.btcUsdtTopups.filter((item) => !upToMonth || monthFromDate(item.date) <= upToMonth);
-  const trades = state.btcTrades.filter((item) => !upToMonth || monthFromDate(item.executedAt.slice(0, 10)) <= upToMonth);
+  const trades = state.btcTrades.filter((item) => !upToMonth || monthFromDate(dateValueFromDateTime(item.executedAt)) <= upToMonth);
   const transfers = state.btcTransfers.filter((item) => !upToMonth || monthFromDate(item.date) <= upToMonth);
   const plans = state.btcDcaPlans.filter((item) => !upToMonth || monthFromDate(item.startDate) <= upToMonth);
   const topupVnd = topups.reduce((sum, item) => sum + item.vndAmount, 0);
@@ -868,6 +996,13 @@ function btcPortfolioStats(state: AppState, upToMonth?: string) {
 
 const stockLineValue = (line: Pick<StockPurchaseLine, "shares" | "buyPrice">) =>
   Math.round(line.shares * line.buyPrice * STOCK_PRICE_UNIT);
+
+const stockSharesForBudget = (budget: number, price: number) => {
+  if (!budget || !price) return "";
+  const rawShares = Math.floor(budget / (price * STOCK_PRICE_UNIT));
+  const shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
+  return shares > 0 ? String(shares) : "";
+};
 
 function normalizeStockPrice(value: number) {
   if (!Number.isFinite(value) || value <= 0) return 0;
@@ -1293,7 +1428,13 @@ function restoreTrashPayload(state: AppState, trashItem: TrashItem): AppState {
       monthlyExpenses: [...relatedList<MonthlyExpense>("monthlyExpenses"), ...next.monthlyExpenses.filter((item) => !relatedList<MonthlyExpense>("monthlyExpenses").some((row) => row.id === item.id))],
     };
   } else if (trashItem.entityType === "btc-topup") next = { ...next, btcUsdtTopups: addUnique(next.btcUsdtTopups, trashItem.payload as BtcUsdtTopup) };
-  else if (trashItem.entityType === "btc-dca") next = { ...next, btcDcaPlans: addUnique(next.btcDcaPlans, normalizeDcaPlan(trashItem.payload as BtcDcaPlan)) };
+  else if (trashItem.entityType === "btc-dca") {
+    next = {
+      ...next,
+      btcDcaPlans: addUnique(next.btcDcaPlans, normalizeDcaPlan(trashItem.payload as BtcDcaPlan)),
+      btcTrades: [...relatedList<BtcTrade>("btcTrades"), ...next.btcTrades.filter((item) => !relatedList<BtcTrade>("btcTrades").some((row) => row.id === item.id))],
+    };
+  }
   else if (trashItem.entityType === "btc-trade") next = { ...next, btcTrades: addUnique(next.btcTrades, trashItem.payload as BtcTrade) };
   else if (trashItem.entityType === "btc-transfer") {
     next = {
@@ -1376,7 +1517,7 @@ function exportCsvBundle(state: AppState) {
   const safeDateTime = (value?: string) => (value ? formatDateTime(value) : "");
   const moneyPair = (value: number) => [Math.round(value), formatVnd(value)];
   const usdtPair = (value: number) => [Number(value.toFixed(6)), formatUsdt(value)];
-  const btcPair = (value: number) => [Number(value.toFixed(10)), formatBtc(value)];
+  const btcPair = (value: number) => [Number(value.toFixed(8)), formatBtc(value)];
   const solPair = (value: number) => [Number(value.toFixed(8)), formatSolAmount(value)];
   const depositFundLabel = (fund: DepositFund) => (fund === "saving" ? "Tiết kiệm" : "Dự phòng");
   const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
@@ -1755,6 +1896,7 @@ function normalizeState(state: AppState): AppState {
           type: "buy" as const,
         }
   );
+  const btcDcaPlans = (state.btcDcaPlans ?? []).map(normalizeDcaPlan);
 
   return {
     ...state,
@@ -1770,8 +1912,8 @@ function normalizeState(state: AppState): AppState {
     stockSales: state.stockSales ?? [],
     stockMarketPrices: state.stockMarketPrices ?? [],
     btcUsdtTopups: state.btcUsdtTopups ?? [],
-    btcDcaPlans: (state.btcDcaPlans ?? []).map(normalizeDcaPlan),
-    btcTrades: state.btcTrades ?? [],
+    btcDcaPlans,
+    btcTrades: repairDcaTradeDates(state.btcTrades ?? [], btcDcaPlans),
     btcTransfers: state.btcTransfers ?? [],
     auditLogs: state.auditLogs ?? [],
     trashItems: (state.trashItems ?? []).filter((item) => new Date(item.expiresAt).getTime() > Date.now()),
@@ -2661,29 +2803,18 @@ function UnifiedDashboardPage({
     });
   };
 
+  const resetAllocationAmounts = () => {
+    setAllocationAmountInputs({});
+    updateAllocation({
+      btcAmount: undefined,
+      stockAmount: undefined,
+      savingAmount: undefined,
+      emergencyAmount: undefined,
+    });
+  };
+
   const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
     const formattedValue = formatMoneyInput(value);
-    if (key === "savingAmount" || key === "emergencyAmount") {
-      const otherKey: AllocationAmountKey = key === "savingAmount" ? "emergencyAmount" : "savingAmount";
-      if (!formattedValue) {
-        setAllocationAmountInputs((prev) => {
-          const next = { ...prev, [key]: "" };
-          delete next[otherKey];
-          return next;
-        });
-        updateAllocation({ [key]: undefined, [otherKey]: undefined } as Partial<Allocation>);
-        return;
-      }
-      const pairBudget = Math.max(
-        availableAllocationAmount - Math.round(summary.allocationAmounts.btc) - Math.round(summary.allocationAmounts.stock),
-        0
-      );
-      const amount = Math.min(Math.max(parseMoney(formattedValue), 0), pairBudget);
-      const otherAmount = Math.max(pairBudget - amount, 0);
-      setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue, [otherKey]: otherAmount.toLocaleString("vi-VN") }));
-      updateAllocation({ [key]: amount, [otherKey]: otherAmount } as Partial<Allocation>);
-      return;
-    }
     setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue }));
     updateAllocation({ [key]: formattedValue ? parseMoney(formattedValue) : undefined } as Partial<Allocation>);
   };
@@ -2927,9 +3058,14 @@ function UnifiedDashboardPage({
       <section className="panel">
         <div className="panel-title">
           <h2>Tiền được chia</h2>
-          <button className="icon-button" title="Chỉnh chia quỹ" onClick={() => setAllocationEditing((current) => !current)}>
-            <Pencil size={17} />
-          </button>
+          <div className="panel-title-actions">
+            <button className="icon-button" title="Chia lại theo tỷ lệ %" onClick={resetAllocationAmounts} disabled={monthAlreadyConfirmed}>
+              <RefreshCw size={17} />
+            </button>
+            <button className="icon-button" title="Chỉnh chia quỹ" onClick={() => setAllocationEditing((current) => !current)}>
+              <Pencil size={17} />
+            </button>
+          </div>
         </div>
         <div className="allocation-grid">
           <FundChip label="BTC" value={summary.allocationAmounts.btc} percent={summary.allocation.btcPercent} />
@@ -2951,7 +3087,7 @@ function UnifiedDashboardPage({
                 <div className="allocation-field" key={item.percentKey}>
                   <span>{item.label}</span>
                   <input type="number" min="0" max="100" value={summary.allocation[item.percentKey]} onChange={(event) => updateAllocation({ [item.percentKey]: Number(event.target.value) } as Partial<Allocation>)} aria-label={`${item.label} tỷ lệ phần trăm`} placeholder="%" />
-                  <input className="amount-input" inputMode="numeric" value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")} onChange={(event) => updateAllocationAmount(item.amountKey, event.target.value)} onBlur={() => commitAllocationAmount(item.amountKey)} aria-label={`${item.label} số tiền`} placeholder="Số tiền" />
+                  <input className="amount-input" inputMode="numeric" value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")} onChange={(event) => updateAllocationAmount(item.amountKey, formatMoneyChange(event))} onBlur={() => commitAllocationAmount(item.amountKey)} aria-label={`${item.label} số tiền`} placeholder="Số tiền" />
                 </div>
               ))}
             </div>
@@ -3049,7 +3185,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="form-grid">
               <label>Mục thu<select value={incomeForm.categoryId} onChange={(event) => setIncomeForm({ ...incomeForm, categoryId: event.target.value })}>{state.incomeCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
-              <label>Số tiền<input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" /></label>
+              <label>Số tiền<input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: formatMoneyChange(event) })} placeholder="9.000.000" /></label>
               <label>Ngày<input type="date" value={incomeForm.date} onChange={(event) => setIncomeForm({ ...incomeForm, date: event.target.value })} /></label>
               <label>Ghi chú<input value={incomeForm.note} onChange={(event) => setIncomeForm({ ...incomeForm, note: event.target.value })} placeholder="Fishing, job..." /></label>
             </div>
@@ -3076,7 +3212,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="form-grid">
               <label>Mục chi<select value={expenseEntry.categoryId} onChange={(event) => setExpenseEntry({ ...expenseEntry, categoryId: event.target.value })}>{state.expenseCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
-              <label>Số tiền<input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyInput(event.target.value) })} placeholder="500.000" /></label>
+              <label>Số tiền<input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyChange(event) })} placeholder="500.000" /></label>
               <label>Ngày<input type="date" value={expenseEntry.date} onChange={(event) => setExpenseEntry({ ...expenseEntry, date: event.target.value })} /></label>
               <label>Ghi chú<input value={expenseEntry.note} onChange={(event) => setExpenseEntry({ ...expenseEntry, note: event.target.value })} placeholder="Sửa xe, mua đồ..." /></label>
             </div>
@@ -3086,7 +3222,7 @@ function UnifiedDashboardPage({
             ) : (
               <div className="inline-add modal-inline-add">
                 <input value={newExpense.name} onChange={(event) => setNewExpense({ ...newExpense, name: event.target.value })} placeholder="Mục chi mới" />
-                {newExpense.kind === "fixed" && <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: formatMoneyInput(event.target.value) })} placeholder="Số tiền mặc định" />}
+                {newExpense.kind === "fixed" && <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: formatMoneyChange(event) })} placeholder="Số tiền mặc định" />}
                 <select value={newExpense.kind} onChange={(event) => setNewExpense({ ...newExpense, kind: event.target.value as NewExpenseKind })}><option value="variable">Phát sinh</option><option value="fixed">Cố định</option></select>
                 <button onClick={addExpenseCategory} title="Thêm mục"><Plus size={17} /></button>
               </div>
@@ -3102,7 +3238,7 @@ function UnifiedDashboardPage({
               <h2 id="fixed-edit-title">Sửa khoản cố định</h2>
               <button className="icon-button" title="Đóng" onClick={() => setEditingFixed(null)}><X size={17} /></button>
             </div>
-            <label>Số tiền tháng này<input value={editingFixed.amount} onChange={(event) => setEditingFixed({ ...editingFixed, amount: formatMoneyInput(event.target.value) })} /></label>
+            <label>Số tiền tháng này<input value={editingFixed.amount} onChange={(event) => setEditingFixed({ ...editingFixed, amount: formatMoneyChange(event) })} /></label>
             <div className="modal-actions fixed-edit-actions">
               <button className="ghost" onClick={() => setEditingFixed(null)}>Hủy</button>
               <button className="primary" onClick={saveFixedAmount}><Save size={17} /> Lưu</button>
@@ -3120,7 +3256,7 @@ function UnifiedDashboardPage({
             </div>
             <div className="form-grid">
               <label>Mục<select value={editingTransaction.categoryId} onChange={(event) => setEditingTransaction({ ...editingTransaction, categoryId: event.target.value })}>{(editingTransaction.kind === "income" ? state.incomeCategories : state.expenseCategories).map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
-              <label>Số tiền<input value={editingTransaction.amount} onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: formatMoneyInput(event.target.value) })} /></label>
+              <label>Số tiền<input value={editingTransaction.amount} onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: formatMoneyChange(event) })} /></label>
               <label>Ngày<input type="date" value={editingTransaction.date} onChange={(event) => setEditingTransaction({ ...editingTransaction, date: event.target.value })} /></label>
               <label>Ghi chú<input value={editingTransaction.note} onChange={(event) => setEditingTransaction({ ...editingTransaction, note: event.target.value })} /></label>
             </div>
@@ -3602,7 +3738,7 @@ function AccumulationPage({
             </label>
             <label>
               Tổng tiền cần dồn
-              <input value={form.target} onChange={(event) => setForm({ ...form, target: formatMoneyInput(event.target.value) })} placeholder="9.000.000" />
+              <input value={form.target} onChange={(event) => setForm({ ...form, target: formatMoneyChange(event) })} placeholder="9.000.000" />
             </label>
             <label>
               Tháng bắt đầu
@@ -3618,7 +3754,7 @@ function AccumulationPage({
             </label>
             <label>
               Tiền mỗi tháng
-              <input value={form.monthlyAmount} onChange={(event) => setForm({ ...form, monthlyAmount: formatMoneyInput(event.target.value), months: form.dueDate ? "" : form.months })} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
+              <input value={form.monthlyAmount} onChange={(event) => setForm({ ...form, monthlyAmount: formatMoneyChange(event), months: form.dueDate ? "" : form.months })} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
             </label>
             <button className="primary" onClick={saveGoal}>
               <Save size={17} /> {editingGoal ? "Lưu thay đổi" : "Tạo quỹ"}
@@ -3888,29 +4024,18 @@ function MoneyPage({
     });
   };
 
+  const resetAllocationAmounts = () => {
+    setAllocationAmountInputs({});
+    updateAllocation({
+      btcAmount: undefined,
+      stockAmount: undefined,
+      savingAmount: undefined,
+      emergencyAmount: undefined,
+    });
+  };
+
   const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
     const formattedValue = formatMoneyInput(value);
-    if (key === "savingAmount" || key === "emergencyAmount") {
-      const otherKey: AllocationAmountKey = key === "savingAmount" ? "emergencyAmount" : "savingAmount";
-      if (!formattedValue) {
-        setAllocationAmountInputs((prev) => {
-          const next = { ...prev, [key]: "" };
-          delete next[otherKey];
-          return next;
-        });
-        updateAllocation({ [key]: undefined, [otherKey]: undefined } as Partial<Allocation>);
-        return;
-      }
-      const pairBudget = Math.max(
-        availableAllocationAmount - Math.round(summary.allocationAmounts.btc) - Math.round(summary.allocationAmounts.stock),
-        0
-      );
-      const amount = Math.min(Math.max(parseMoney(formattedValue), 0), pairBudget);
-      const otherAmount = Math.max(pairBudget - amount, 0);
-      setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue, [otherKey]: otherAmount.toLocaleString("vi-VN") }));
-      updateAllocation({ [key]: amount, [otherKey]: otherAmount } as Partial<Allocation>);
-      return;
-    }
     setAllocationAmountInputs((prev) => ({ ...prev, [key]: formattedValue }));
     updateAllocation({ [key]: formattedValue ? parseMoney(formattedValue) : undefined } as Partial<Allocation>);
   };
@@ -4104,7 +4229,7 @@ function MoneyPage({
             </label>
             <label>
               Số tiền
-              <input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" />
+              <input value={incomeForm.amount} onChange={(event) => setIncomeForm({ ...incomeForm, amount: formatMoneyChange(event) })} placeholder="9.000.000" />
             </label>
             <label>
               Ngày
@@ -4151,7 +4276,7 @@ function MoneyPage({
             </label>
             <label>
               Số tiền
-              <input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyInput(event.target.value) })} placeholder="500.000" />
+              <input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyChange(event) })} placeholder="500.000" />
             </label>
             <label>
               Ngày
@@ -4168,7 +4293,7 @@ function MoneyPage({
 
           <div className="inline-add">
             <input value={newExpense.name} onChange={(event) => setNewExpense({ ...newExpense, name: event.target.value })} placeholder="Mục chi mới" />
-            <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: formatMoneyInput(event.target.value) })} placeholder="Số tiền" />
+            <input value={newExpense.amount} onChange={(event) => setNewExpense({ ...newExpense, amount: formatMoneyChange(event) })} placeholder="Số tiền" />
             <select value={newExpense.kind} onChange={(event) => setNewExpense({ ...newExpense, kind: event.target.value as ExpenseCategory["kind"] })}>
               <option value="fixed">Cố định</option>
               <option value="variable">Một lần</option>
@@ -4199,7 +4324,7 @@ function MoneyPage({
                   <>
                     <label>
                       Số tiền
-                      <input value={record.amount.toLocaleString("vi-VN")} onChange={(event) => updateMonthlyExpense(category, { amount: parseMoney(formatMoneyInput(event.target.value)) })} />
+                      <input value={record.amount.toLocaleString("vi-VN")} onChange={(event) => updateMonthlyExpense(category, { amount: parseMoney(formatMoneyChange(event)) })} />
                     </label>
                     <button className={record.checked ? "toggle checked" : "toggle"} onClick={() => updateMonthlyExpense(category, { checked: !record.checked })}>
                       <CheckCircle2 size={17} />
@@ -4277,7 +4402,7 @@ function MoneyPage({
                 Số tiền
                 <input
                   value={editingTransaction.amount}
-                  onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: formatMoneyInput(event.target.value) })}
+                  onChange={(event) => setEditingTransaction({ ...editingTransaction, amount: formatMoneyChange(event) })}
                   placeholder="9.000.000"
                 />
               </label>
@@ -4305,11 +4430,16 @@ function MoneyPage({
       <section className="panel">
         <div className="panel-title">
           <h2>Chia quỹ cuối tháng</h2>
-          <div className="allocation-title-meta">
-            <small className={percentTotal === 100 ? "ok" : "bad"}>Tổng tỷ lệ {percentTotal}%</small>
-            <small className={amountTotalMatchesSaving ? "ok" : "bad"}>
-              Tổng tiền {formatVnd(allocationAmountTotal)} / {formatVnd(availableAllocationAmount)}
-            </small>
+          <div className="panel-title-actions allocation-panel-actions">
+            <div className="allocation-title-meta">
+              <small className={percentTotal === 100 ? "ok" : "bad"}>Tổng tỷ lệ {percentTotal}%</small>
+              <small className={amountTotalMatchesSaving ? "ok" : "bad"}>
+                Tổng tiền {formatVnd(allocationAmountTotal)} / {formatVnd(availableAllocationAmount)}
+              </small>
+            </div>
+            <button className="icon-button" title="Chia lại theo tỷ lệ %" onClick={resetAllocationAmounts} disabled={monthAlreadyConfirmed}>
+              <RefreshCw size={17} />
+            </button>
           </div>
         </div>
         <div className="allocation-editor">
@@ -4329,7 +4459,7 @@ function MoneyPage({
                 className="amount-input"
                 inputMode="numeric"
                 value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")}
-                onChange={(event) => updateAllocationAmount(item.amountKey, event.target.value)}
+                onChange={(event) => updateAllocationAmount(item.amountKey, formatMoneyChange(event))}
                 onBlur={() => commitAllocationAmount(item.amountKey)}
                 aria-label={`${item.label} số tiền`}
                 placeholder="Số tiền"
@@ -4650,7 +4780,7 @@ function BtcPage({
         usdtAmount: totalInvestedUsdt,
         btcAmount,
         btcPriceUsdt: averagePriceUsdt,
-        executedAt: localDateTimeIso(shiftDcaDate(legacyDcaForm.nextDate, legacyDcaForm.frequency, -1), legacyDcaForm.time),
+        executedAt: localDateTimeIso(legacyDcaForm.startDate, legacyDcaForm.time),
         planId,
         note: totalNote,
       }];
@@ -4672,7 +4802,7 @@ function BtcPage({
           usdtAmount,
           btcAmount: usdtAmount / price,
           btcPriceUsdt: price,
-          executedAt: localDateTimeIso(shiftDcaDate(legacyDcaForm.nextDate, legacyDcaForm.frequency, index - activeRuns), legacyDcaForm.time),
+          executedAt: localDateTimeIso(shiftDcaDate(legacyDcaForm.startDate, legacyDcaForm.frequency, index), legacyDcaForm.time),
           planId,
           note: totalNote,
         };
@@ -4747,13 +4877,18 @@ function BtcPage({
   };
 
   const deletePlan = (plan: BtcDcaPlan) => {
-    if (!window.confirm("Xóa lệnh DCA này? Lịch sử giao dịch DCA đã tạo vẫn được giữ.")) return;
+    const relatedTrades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
+    if (!window.confirm(`Xóa lệnh DCA này? ${relatedTrades.length} giao dịch DCA liên quan sẽ được xóa khỏi BTC và hoàn lại USDT vào số dư.`)) return;
     commitWithUndo(
       "Đã xóa lệnh DCA.",
       (prev) =>
         withTrashItem(
-          { ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id) },
-          makeTrashItem("btc-dca", plan.id, `lệnh DCA ${formatUsdt(plan.amountUsdt)}`, plan)
+          {
+            ...prev,
+            btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id),
+            btcTrades: prev.btcTrades.filter((trade) => !(trade.type === "dca" && trade.planId === plan.id)),
+          },
+          makeTrashItem("btc-dca", plan.id, `lệnh DCA ${formatUsdt(plan.amountUsdt)}`, plan, { btcTrades: relatedTrades })
         ),
       { action: "delete", entityType: "btc-dca", entityId: plan.id }
     );
@@ -4766,6 +4901,11 @@ function BtcPage({
     if (!btcCloudAccountId) return;
     void deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id).catch(() => {
       // Local deletion still applies; cloud can be reconciled manually if offline.
+    });
+    relatedTrades.forEach((trade) => {
+      void deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id).catch(() => {
+        setBtcError("Đã xóa local, nhưng chưa xóa được toàn bộ giao dịch DCA trên cloud.");
+      });
     });
   };
 
@@ -4912,6 +5052,13 @@ function BtcPage({
   };
 
   const estimatedTransferReceive = transferEstimatedReceive();
+  const fillMaxTransferSource = () => {
+    if (transferForm.asset === "btc") {
+      setTransferForm((prev) => ({ ...prev, btc: formatDecimalInput(stats.btcBalance.toFixed(8)), vnd: "" }));
+      return;
+    }
+    setTransferForm((prev) => ({ ...prev, usdt: formatDecimalInput(String(stats.usdtBalance)), vnd: "" }));
+  };
   const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
   const dcaPlanStats = (plan: BtcDcaPlan) => {
     const trades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
@@ -4942,7 +5089,7 @@ function BtcPage({
   };
   const rows = [
     ...state.btcUsdtTopups.map((item) => ({ kind: "topup" as const, date: item.date, item })),
-    ...state.btcTrades.filter((item) => item.type !== "dca").map((item) => ({ kind: "trade" as const, date: item.executedAt.slice(0, 10), item })),
+    ...state.btcTrades.filter((item) => item.type !== "dca").map((item) => ({ kind: "trade" as const, date: dateValueFromDateTime(item.executedAt), item })),
     ...state.btcTransfers.map((item) => ({ kind: "transfer" as const, date: item.date, item })),
   ].sort((a, b) => b.date.localeCompare(a.date));
   const deleteBtcHistoryRow = (row: (typeof rows)[number]) => {
@@ -5019,8 +5166,8 @@ function BtcPage({
             <button className="primary asset-open-button action-button-sm" onClick={() => setTopupFormOpen(true)} type="button"><Plus size={16} /> Mua USDT</button>
           ) : (
             <div className="form-grid btc-form-grid">
-              <label>VND dùng mua<input value={topupForm.vnd} onChange={(event) => updateTopupVnd(event.target.value)} placeholder="1.000.000" /></label>
-              <label>USDT thực nhận<input value={topupForm.usdt} onChange={(event) => setTopupForm({ ...topupForm, usdt: formatDecimalInput(event.target.value) })} placeholder="39,250" /></label>
+              <label>VND dùng mua<input value={topupForm.vnd} onChange={(event) => updateTopupVnd(formatMoneyChange(event))} placeholder="1.000.000" /></label>
+              <label>USDT thực nhận<input value={topupForm.usdt} onChange={(event) => setTopupForm({ ...topupForm, usdt: formatDecimalChange(event) })} placeholder="39,250" /></label>
               <label>Ngày<input type="date" value={topupForm.date} onChange={(event) => setTopupForm({ ...topupForm, date: event.target.value })} /></label>
               <label>Giá USDT (VND)<input value={topupUsdtRate() ? formatVnd(topupUsdtRate()) : ""} readOnly placeholder="Tự tính" /></label>
               <label>Note<input value={topupForm.note} onChange={(event) => setTopupForm({ ...topupForm, note: event.target.value })} placeholder="Binance P2P" /></label>
@@ -5045,7 +5192,7 @@ function BtcPage({
           )}
           {planFormOpen && (
             <div className="form-grid btc-form-grid">
-              <label>USDT mỗi kỳ<input value={planForm.amountUsdt} onChange={(event) => setPlanForm({ ...planForm, amountUsdt: formatDecimalInput(event.target.value) })} placeholder="2" /></label>
+              <label>USDT mỗi kỳ<input value={planForm.amountUsdt} onChange={(event) => setPlanForm({ ...planForm, amountUsdt: formatDecimalChange(event) })} placeholder="2" /></label>
               <label>Tần suất<select value={planForm.frequency} onChange={(event) => setPlanForm({ ...planForm, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
               <label>Giờ chạy<input type="time" value={planForm.time} onChange={(event) => setPlanForm({ ...planForm, time: event.target.value })} /></label>
               <label>Ngày bắt đầu<input type="date" value={planForm.startDate} onChange={(event) => setPlanForm({ ...planForm, startDate: event.target.value })} /></label>
@@ -5055,15 +5202,15 @@ function BtcPage({
           )}
           {legacyDcaFormOpen && (
             <div className="form-grid btc-form-grid">
-              <label>USDT mỗi kỳ<input value={legacyDcaForm.amountUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, amountUsdt: formatDecimalInput(event.target.value) })} placeholder="2" /></label>
+              <label>USDT mỗi kỳ<input value={legacyDcaForm.amountUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, amountUsdt: formatDecimalChange(event) })} placeholder="2" /></label>
               <label>Tần suất<select value={legacyDcaForm.frequency} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
               <label>Giờ chạy<input type="time" value={legacyDcaForm.time} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, time: event.target.value })} /></label>
               <label>Ngày bắt đầu<input type="date" value={legacyDcaForm.startDate} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, startDate: event.target.value })} /></label>
               <label>Ngày giao dịch tiếp theo<input type="date" value={legacyDcaForm.nextDate} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, nextDate: event.target.value })} /></label>
               <label>Số kỳ đã kích hoạt<input value={legacyDcaForm.activeRuns} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, activeRuns: event.target.value })} placeholder="14" /></label>
-              <label>BTC tích lũy<input value={legacyDcaForm.btcAmount} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, btcAmount: formatDecimalInput(event.target.value) })} placeholder="0,00043251" /></label>
-              <label>Giá gần nhất (USDT)<input value={legacyDcaForm.latestPriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, latestPriceUsdt: formatDecimalInput(event.target.value) })} placeholder="64.337,674905" /></label>
-              <label>Giá trung bình (USDT)<input value={legacyDcaForm.averagePriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, averagePriceUsdt: formatDecimalInput(event.target.value) })} placeholder="64.565,25594748" /></label>
+              <label>BTC tích lũy<input value={legacyDcaForm.btcAmount} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, btcAmount: formatDecimalChange(event) })} placeholder="0,00043251" /></label>
+              <label>Giá gần nhất (USDT)<input value={legacyDcaForm.latestPriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, latestPriceUsdt: formatDecimalChange(event) })} placeholder="64.337,674905" /></label>
+              <label>Giá trung bình (USDT)<input value={legacyDcaForm.averagePriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, averagePriceUsdt: formatDecimalChange(event) })} placeholder="64.565,25594748" /></label>
               <label>Note<input value={legacyDcaForm.note} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, note: event.target.value })} placeholder="DCA Binance" /></label>
               <button className="primary btc-form-submit" onClick={saveLegacyDca} type="button"><Upload size={17} /> Import DCA</button>
             </div>
@@ -5124,8 +5271,8 @@ function BtcPage({
                       </div>
                       {editingDcaAssetPlanId === plan.id ? (
                         <div className="form-grid btc-form-grid btc-dca-asset-edit">
-                          <label>Số lượng tích lũy<input value={dcaAssetForm.btcAmount} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, btcAmount: formatDecimalInput(event.target.value) })} placeholder="0,00043251" /></label>
-                          <label>Giá trung bình (USDT)<input value={dcaAssetForm.averagePriceUsdt} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, averagePriceUsdt: formatDecimalInput(event.target.value) })} placeholder="64.565,25594748" /></label>
+                          <label>Số lượng tích lũy<input value={dcaAssetForm.btcAmount} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, btcAmount: formatDecimalChange(event) })} placeholder="0,00043251" /></label>
+                          <label>Giá trung bình (USDT)<input value={dcaAssetForm.averagePriceUsdt} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, averagePriceUsdt: formatDecimalChange(event) })} placeholder="64.565,25594748" /></label>
                           <button className="primary btc-form-submit" onClick={() => saveDcaAsset(plan)} type="button"><Save size={16} /> Lưu BTC</button>
                           <button className="ghost btc-form-submit" onClick={() => {
                             setEditingDcaAssetPlanId(null);
@@ -5187,9 +5334,13 @@ function BtcPage({
                 const destination: BtcTransferTarget = asset === "btc" ? "usdt" : "btc";
                 setTransferForm({ ...transferForm, asset, destination, price: formatDecimalInput(String(transferPriceFor(asset, destination) || "")), vnd: "" });
               }}><option value="btc">BTC</option><option value="usdt">USDT</option></select></label>
-              {transferForm.asset === "btc" ? <label>Số BTC<input value={transferForm.btc} onChange={(event) => setTransferForm({ ...transferForm, btc: formatDecimalInput(event.target.value) })} placeholder="0,0001" /></label> : <label>Số USDT<input value={transferForm.usdt} onChange={(event) => setTransferForm({ ...transferForm, usdt: formatDecimalInput(event.target.value) })} placeholder="10" /></label>}
-              <label>{transferForm.asset === "usdt" && transferForm.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={transferForm.price} onChange={(event) => setTransferForm({ ...transferForm, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(transferPriceFor(transferForm.asset, transferForm.destination) || 0))} /></label>
-              <label>Số tiền nhận<input value={transferForm.vnd} onChange={(event) => setTransferForm({ ...transferForm, vnd: transferReceiveUnit() === "VND" ? formatMoneyInput(event.target.value) : formatDecimalInput(event.target.value) })} placeholder={formatTransferReceive(estimatedTransferReceive)} /></label>
+              {transferForm.asset === "btc" ? (
+                <label>Số BTC<InputWithMax value={transferForm.btc} onChange={(event) => setTransferForm({ ...transferForm, btc: formatDecimalChange(event) })} onMax={fillMaxTransferSource} placeholder="0,0001" /></label>
+              ) : (
+                <label>Số USDT<InputWithMax value={transferForm.usdt} onChange={(event) => setTransferForm({ ...transferForm, usdt: formatDecimalChange(event) })} onMax={fillMaxTransferSource} placeholder="10" /></label>
+              )}
+              <label>{transferForm.asset === "usdt" && transferForm.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={transferForm.price} onChange={(event) => setTransferForm({ ...transferForm, price: formatDecimalChange(event) })} placeholder={formatDecimalInput(String(transferPriceFor(transferForm.asset, transferForm.destination) || 0))} /></label>
+              <label>Số tiền nhận<input value={transferForm.vnd} onChange={(event) => setTransferForm({ ...transferForm, vnd: transferReceiveUnit() === "VND" ? formatMoneyChange(event) : formatDecimalChange(event) })} placeholder={formatTransferReceive(estimatedTransferReceive)} /></label>
               <label>Nơi nhận<select value={transferForm.destination} disabled={transferForm.asset === "btc"} onChange={(event) => {
                 const destination = event.target.value as BtcTransferTarget;
                 setTransferForm({ ...transferForm, destination, price: formatDecimalInput(String(transferPriceFor(transferForm.asset, destination) || "")), vnd: "" });
@@ -5219,7 +5370,7 @@ function BtcPage({
               <div className="timeline-row-content">
                 <div>
                   {row.kind === "topup" && <><strong>{formatUsdt(row.item.usdtAmount)} · {formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · Giá USDT {row.item.usdtAmount ? formatVnd(row.item.vndAmount / row.item.usdtAmount) : "0đ"} · Mua USDT · {row.item.note || "Không ghi chú"}</small></>}
-                  {row.kind === "trade" && <><strong>{formatBtc(row.item.btcAmount)} · {formatUsdt(row.item.usdtAmount)}</strong><small>{formatDate(row.item.executedAt.slice(0, 10))} · {row.item.type === "dca" ? "DCA" : "Mua thêm"} @ {formatUsdt(row.item.btcPriceUsdt)} · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "trade" && <><strong>{formatBtc(row.item.btcAmount)} · {formatUsdt(row.item.usdtAmount)}</strong><small>{formatDate(dateValueFromDateTime(row.item.executedAt))} · {row.item.type === "dca" ? "DCA" : "Mua thêm"} @ {formatUsdt(row.item.btcPriceUsdt)} · {row.item.note || "Không ghi chú"}</small></>}
                   {row.kind === "transfer" && <><strong>{row.item.destination === "usdt" ? formatUsdt(row.item.usdtAmount) : formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · {row.item.destination === "usdt" ? "Chuyển" : "Rút"} {row.item.asset.toUpperCase()} về {btcTransferDestinationLabel(row.item.destination)} · {row.item.note || "Không ghi chú"}</small></>}
                 </div>
                 <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteBtcHistoryRow(row)} title="Xóa lịch sử" type="button">
@@ -5287,7 +5438,7 @@ function FundPage({
           <div className="form-grid">
             <label>
               Số tiền
-              <input value={amount} onChange={(event) => setAmount(formatMoneyInput(event.target.value))} placeholder="5.000.000" />
+              <input value={amount} onChange={(event) => setAmount(formatMoneyChange(event))} placeholder="5.000.000" />
             </label>
             <label>
               Lý do
@@ -5326,7 +5477,6 @@ function StockPage({
   const defaultBuyRows = (): StockBuyRow[] => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }];
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseDate, setPurchaseDate] = useState(today());
-  const [purchaseNote, setPurchaseNote] = useState("");
   const [buyRows, setBuyRows] = useState<StockBuyRow[]>(defaultBuyRows);
   const [sellingSymbol, setSellingSymbol] = useState<string | null>(null);
   const [saleForm, setSaleForm] = useState({
@@ -5374,19 +5524,36 @@ function StockPage({
     }));
   };
 
-  const autoShares = (percentInput: string, priceInput: string) => {
-    const percent = Number(percentInput) || 0;
-    const price = parseDecimal(priceInput);
-    if (!stats.cash || !percent || !price) return "";
-    const rawShares = Math.floor((stats.cash * percent) / 100 / (price * STOCK_PRICE_UNIT));
-    const shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
-    return shares > 0 ? String(shares) : "";
+  const marketPriceForBuyRow = (row: StockBuyRow) => stockMarketPrice(state, row.symbol)?.price ?? 0;
+  const effectiveBuyPrice = (row: StockBuyRow) => parseDecimal(row.buyPrice) || marketPriceForBuyRow(row);
+
+  const withMarketPrice = (row: StockBuyRow) => {
+    if (row.buyPriceTouched || parseDecimal(row.buyPrice)) return row;
+    const marketPrice = marketPriceForBuyRow(row);
+    return marketPrice ? { ...row, buyPrice: formatStockPrice(marketPrice) } : row;
   };
 
-  const recalculateShares = (row: StockBuyRow): StockBuyRow => ({
-    ...row,
-    shares: autoShares(row.percent, row.buyPrice),
-  });
+  const recalculateBuyRows = (rows: StockBuyRow[]) => {
+    const pricedRows = rows.map(withMarketPrice);
+    const fixedValue = pricedRows
+      .filter((row) => row.sharesTouched && Number(row.shares) > 0)
+      .reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) }), 0);
+    const autoRows = pricedRows.filter((row) => !row.sharesTouched);
+    const autoPercentTotal = autoRows.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+    const remainingCash = Math.max(stats.cash - fixedValue, 0);
+
+    return pricedRows.map((row) => {
+      if (row.sharesTouched) return row;
+      const price = effectiveBuyPrice(row);
+      const budget =
+        autoRows.length === 1
+          ? remainingCash
+          : autoPercentTotal
+            ? (remainingCash * (Number(row.percent) || 0)) / autoPercentTotal
+            : 0;
+      return { ...row, shares: stockSharesForBudget(budget, price) };
+    });
+  };
 
   const fetchPrice = fetchStockQuote;
 
@@ -5449,6 +5616,22 @@ function StockPage({
           .then((suggestions) => {
             if (controller.signal.aborted) return;
             setStockSuggestions((prev) => ({ ...prev, [row.id]: suggestions }));
+            const exact = suggestions.find((suggestion) => suggestion.symbol === query.toUpperCase() && suggestion.price);
+            if (!exact?.price) return;
+            setState((prev) => ({
+              ...prev,
+              stockMarketPrices: [
+                ...prev.stockMarketPrices.filter((item) => item.symbol !== exact.symbol),
+                { symbol: exact.symbol, price: exact.price ?? 0, updatedAt: new Date().toISOString(), source: exact.source },
+              ],
+            }));
+            setBuyRows((prev) =>
+              recalculateBuyRows(prev.map((item) =>
+                item.id === row.id && !item.buyPriceTouched
+                  ? { ...item, symbol: exact.symbol, buyPrice: formatStockPrice(exact.price ?? 0) }
+                  : item
+              ))
+            );
           })
           .catch(() => {
             if (controller.signal.aborted) return;
@@ -5465,12 +5648,10 @@ function StockPage({
 
   const updateBuyRow = (id: string, patch: Partial<Omit<StockBuyRow, "id">>) => {
     setBuyRows((prev) =>
-      prev.map((row) => {
+      recalculateBuyRows(prev.map((row) => {
         if (row.id !== id) return row;
-        const next = { ...row, ...patch };
-        if ("percent" in patch || "buyPrice" in patch) return recalculateShares(next);
-        return next;
-      })
+        return { ...row, ...patch };
+      }))
     );
   };
 
@@ -5479,27 +5660,28 @@ function StockPage({
     setBuyRows((prev) => {
       const others = prev.filter((row) => row.id !== id);
       if (others.length === 0) {
-        return prev.map((row) => (row.id === id ? recalculateShares({ ...row, percent: String(nextPercent) }) : row));
+        return recalculateBuyRows(prev.map((row) => (row.id === id ? { ...row, percent: String(nextPercent) } : row)));
       }
       const remaining = Math.max(100 - nextPercent, 0);
       const otherCurrentTotal = others.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
       let assigned = 0;
-      return prev.map((row) => {
-        if (row.id === id) return recalculateShares({ ...row, percent: String(nextPercent) });
+      return recalculateBuyRows(prev.map((row) => {
+        if (row.id === id) return { ...row, percent: String(nextPercent) };
         const isLastOther = others[others.length - 1]?.id === row.id;
         const percent = isLastOther
           ? remaining - assigned
           : Math.round((otherCurrentTotal ? ((Number(row.percent) || 0) / otherCurrentTotal) * remaining : remaining / others.length) * 100) / 100;
         assigned += percent;
-        return recalculateShares({ ...row, percent: String(Math.max(percent, 0)) });
-      });
+        return { ...row, percent: String(Math.max(percent, 0)) };
+      }));
     });
   };
 
   const selectSuggestion = (rowId: string, suggestion: StockLookupSuggestion) => {
     updateBuyRow(rowId, {
       symbol: suggestion.symbol,
-      buyPrice: suggestion.price ? formatStockPrice(suggestion.price) : undefined,
+      buyPrice: suggestion.price ? formatStockPrice(suggestion.price) : "",
+      buyPriceTouched: false,
     });
     if (suggestion.price) {
       setState((prev) => ({
@@ -5518,12 +5700,12 @@ function StockPage({
     setBuyRows((prev) => {
       if (prev.length === 1) {
         const firstPercent = prev[0].percent === "100" ? "50" : prev[0].percent;
-        return [
-          recalculateShares({ ...prev[0], percent: firstPercent }),
+        return recalculateBuyRows([
+          { ...prev[0], percent: firstPercent },
           { id: uid(), symbol: "", percent: String(Math.max(100 - (Number(firstPercent) || 0), 0)), shares: "", buyPrice: "" },
-        ];
+        ]);
       }
-      return [...prev, { id: uid(), symbol: "", percent: "0", shares: "", buyPrice: "" }];
+      return recalculateBuyRows([...prev, { id: uid(), symbol: "", percent: "0", shares: "", buyPrice: "" }]);
     });
   };
 
@@ -5531,22 +5713,60 @@ function StockPage({
     setBuyRows((prev) => {
       if (prev.length === 1) return prev;
       const next = prev.filter((row) => row.id !== id);
-      if (next.length === 1) return [recalculateShares({ ...next[0], percent: "100" })];
+      if (next.length === 1) return recalculateBuyRows([{ ...next[0], percent: "100" }]);
       const total = next.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
       if (!total) return next;
       let assigned = 0;
-      return next.map((row, index) => {
+      return recalculateBuyRows(next.map((row, index) => {
         const percent = index === next.length - 1 ? 100 - assigned : Math.round(((Number(row.percent) || 0) / total) * 10000) / 100;
         assigned += percent;
-        return recalculateShares({ ...row, percent: String(Math.max(percent, 0)) });
-      });
+        return { ...row, percent: String(Math.max(percent, 0)) };
+      }));
     });
+  };
+
+  const fillMaxBuyRow = async (id: string) => {
+    const row = buyRows.find((item) => item.id === id);
+    const symbol = row?.symbol.trim().toUpperCase() ?? "";
+    if (!row || !symbol) {
+      setStockError("Nhập mã cổ phiếu trước khi dùng Max.");
+      return;
+    }
+
+    let price = parseDecimal(row.buyPrice) || marketPriceForBuyRow(row);
+    if (!price) {
+      try {
+        const quote = await fetchPrice(symbol);
+        price = quote.price;
+        setState((prev) => ({
+          ...prev,
+          stockMarketPrices: [
+            ...prev.stockMarketPrices.filter((item) => item.symbol !== symbol),
+            { symbol, price: quote.price, updatedAt: new Date().toISOString(), source: quote.source },
+          ],
+        }));
+      } catch {
+        setStockError("Chưa lấy được giá thị trường cho mã này.");
+        return;
+      }
+    }
+
+    setBuyRows((prev) => {
+      const rowsWithPrice = prev.map((item) =>
+        item.id === id ? { ...item, symbol, buyPrice: item.buyPrice || formatStockPrice(price), buyPriceTouched: item.buyPriceTouched } : item
+      );
+      const otherValue = rowsWithPrice
+        .filter((item) => item.id !== id)
+        .reduce((sum, item) => sum + stockLineValue({ shares: Number(item.shares) || 0, buyPrice: effectiveBuyPrice(item) }), 0);
+      const shares = stockSharesForBudget(Math.max(stats.cash - otherValue, 0), price);
+      return recalculateBuyRows(rowsWithPrice.map((item) => (item.id === id ? { ...item, shares, sharesTouched: Boolean(shares) } : item)));
+    });
+    setStockError("");
   };
 
   const resetPurchaseForm = () => {
     setBuyRows(defaultBuyRows());
     setPurchaseDate(today());
-    setPurchaseNote("");
     setStockSuggestions({});
     setActiveSuggestionRow(null);
     setStockError("");
@@ -5573,7 +5793,7 @@ function StockPage({
       ...prev,
       stockPurchases: [
         ...prev.stockPurchases,
-        { id: uid(), date: purchaseDate, month: monthFromDate(purchaseDate), note: purchaseNote, lines, createdAt: new Date().toISOString() },
+        { id: uid(), date: purchaseDate, month: monthFromDate(purchaseDate), note: "", lines, createdAt: new Date().toISOString() },
       ],
     }));
     resetPurchaseForm();
@@ -5765,7 +5985,11 @@ function StockPage({
                           <input
                             value={row.symbol}
                             onChange={(event) => {
-                              updateBuyRow(row.id, { symbol: event.target.value.toUpperCase() });
+                              updateBuyRow(row.id, {
+                                symbol: event.target.value.toUpperCase(),
+                                buyPrice: row.buyPriceTouched ? row.buyPrice : "",
+                                shares: row.sharesTouched ? row.shares : "",
+                              });
                               setActiveSuggestionRow(row.id);
                             }}
                             onFocus={() => setActiveSuggestionRow(row.id)}
@@ -5793,36 +6017,50 @@ function StockPage({
                       </label>
                       <label>
                         Giá vào
-                        <input value={row.buyPrice} onChange={(event) => updateBuyRow(row.id, { buyPrice: formatDecimalInput(event.target.value) })} placeholder="27,5" />
+                        <div className="stock-price-remove-field">
+                          <input
+                            value={row.buyPrice}
+                            onChange={(event) => {
+                              const buyPrice = formatDecimalChange(event);
+                              updateBuyRow(row.id, { buyPrice, buyPriceTouched: Boolean(buyPrice) });
+                            }}
+                            placeholder={row.symbol ? formatStockPrice(marketPriceForBuyRow(row) || 27.5) : "27,5"}
+                          />
+                          <button className="stock-remove-mini stock-remove-mobile" onClick={() => removeBuyRow(row.id)} title="Xóa dòng" type="button">
+                            <X size={13} />
+                          </button>
+                        </div>
                       </label>
                       <label>
                         Số cổ phiếu
-                        <input value={row.shares} onChange={(event) => updateBuyRow(row.id, { shares: event.target.value.replace(/\D/g, "") })} placeholder="100" />
+                        <InputWithMax
+                          value={row.shares}
+                          onChange={(event) => {
+                            const shares = event.target.value.replace(/\D/g, "");
+                            updateBuyRow(row.id, { shares, sharesTouched: Boolean(shares) });
+                          }}
+                          onMax={() => void fillMaxBuyRow(row.id)}
+                          placeholder="100"
+                          inputMode="numeric"
+                        />
                       </label>
                       <div className="stock-row-value">
                         <span>Giá trị</span>
                         <strong>{formatVnd(value)}</strong>
                       </div>
-                      <button className="row-icon-button danger-text" onClick={() => removeBuyRow(row.id)} title="Xóa dòng" type="button">
-                        <X size={16} />
+                      <button className="stock-remove-mini stock-remove-desktop" onClick={() => removeBuyRow(row.id)} title="Xóa dòng" type="button">
+                        <X size={13} />
                       </button>
                     </div>
                   );
                 })}
               </div>
-              <div className="stock-form-actions">
-                <button className="ghost" onClick={addBuyRow} type="button"><Plus size={17} /> Thêm cổ phiếu</button>
-                <button className="primary" onClick={savePurchase} type="button"><Save size={17} /> Lưu lệnh mua</button>
-              </div>
-              <div className="form-grid stock-buy-meta-grid">
-                <label>
-                  Ngày mua
+              <div className="stock-form-actions stock-buy-actions">
+                <label className="stock-action-date" aria-label="Ngày mua">
                   <input type="date" value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} />
                 </label>
-                <label>
-                  Note
-                  <input value={purchaseNote} onChange={(event) => setPurchaseNote(event.target.value)} placeholder="Mua trên MBS" />
-                </label>
+                <button className="ghost" onClick={addBuyRow} type="button"><Plus size={17} /> Thêm</button>
+                <button className="primary" onClick={savePurchase} type="button"><Save size={17} /> Lưu</button>
               </div>
               {stockError && <span className="form-error">{stockError}</span>}
             </>
@@ -5870,14 +6108,11 @@ function StockPage({
                   <div className="stock-sale-form">
                     <label>
                       Số cổ phiếu rút
-                      <div className="stock-sale-shares">
-                        <input value={saleForm.shares} onChange={(event) => setSaleForm({ ...saleForm, shares: event.target.value.replace(/\D/g, "") })} placeholder="100" />
-                        <button className="ghost" onClick={() => setSaleForm({ ...saleForm, shares: String(holding.shares) })} type="button">Max</button>
-                      </div>
+                      <InputWithMax value={saleForm.shares} onChange={(event) => setSaleForm({ ...saleForm, shares: event.target.value.replace(/\D/g, "") })} onMax={() => setSaleForm({ ...saleForm, shares: String(holding.shares) })} placeholder="100" inputMode="numeric" />
                     </label>
                     <label>
                       Giá rút
-                      <input value={saleForm.price} onChange={(event) => setSaleForm({ ...saleForm, price: formatDecimalInput(event.target.value) })} placeholder={formatStockPrice(holding.marketPrice)} />
+                      <input value={saleForm.price} onChange={(event) => setSaleForm({ ...saleForm, price: formatDecimalChange(event) })} placeholder={formatStockPrice(holding.marketPrice)} />
                     </label>
                     <label>
                       Nơi nhận
@@ -6493,7 +6728,7 @@ function BankDepositPage({
             </div>
             <label>
               Số tiền
-              <input value={form.amount} onChange={(event) => setForm({ ...form, amount: formatMoneyInput(event.target.value) })} placeholder="6.000.000" />
+              <input value={form.amount} onChange={(event) => setForm({ ...form, amount: formatMoneyChange(event) })} placeholder="6.000.000" />
             </label>
             <label>
               Ngày gửi
@@ -6509,7 +6744,7 @@ function BankDepositPage({
             </label>
             <label>
               Lãi suất %
-              <input value={form.rate} onChange={(event) => setForm({ ...form, rate: formatDecimalInput(event.target.value) })} />
+              <input value={form.rate} onChange={(event) => setForm({ ...form, rate: formatDecimalChange(event) })} />
             </label>
             <label>
               Note
@@ -6748,6 +6983,11 @@ function SolPage({
       destination,
       btc: destination === "btc-direct" ? estimateBtcFromSolInput(prev.sol, prev.price, state.market.btcUsdt) : "",
     }));
+  };
+
+  const fillMaxWithdrawSol = () => {
+    setWithdrawBtcTouched(false);
+    updateWithdrawSol(formatSolInput(String(totalSol)));
   };
 
   const addSol = () => {
@@ -7018,11 +7258,11 @@ function SolPage({
               <div className="form-grid">
                 <label>
                   Số SOL
-                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: formatSolInput(event.target.value) })} placeholder="0,61" />
+                  <input value={form.sol} onChange={(event) => setForm({ ...form, sol: formatSolChange(event) })} placeholder="0,61" />
                 </label>
                 <label>
                   Giá mua
-                  <input value={form.price} onChange={(event) => setForm({ ...form, price: formatDecimalInput(event.target.value) })} placeholder="77,58" />
+                  <input value={form.price} onChange={(event) => setForm({ ...form, price: formatDecimalChange(event) })} placeholder="77,58" />
                 </label>
                 <label>
                   Ngày
@@ -7042,20 +7282,20 @@ function SolPage({
               <div className="form-grid sol-withdraw-grid">
                 <label>
                   Số SOL rút
-                  <input value={withdrawForm.sol} onChange={(event) => updateWithdrawSol(event.target.value)} placeholder="0,25" />
+                  <InputWithMax value={withdrawForm.sol} onChange={(event) => updateWithdrawSol(formatSolChange(event))} onMax={fillMaxWithdrawSol} placeholder="0,25" />
                 </label>
                 <label>
                   Giá SOL lúc rút
-                  <input value={withdrawForm.price} onChange={(event) => updateWithdrawPrice(event.target.value)} placeholder={state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "76,43"} />
+                  <input value={withdrawForm.price} onChange={(event) => updateWithdrawPrice(formatDecimalChange(event))} placeholder={state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "76,43"} />
                 </label>
                 <label>
                   Tiền VND nhận
-                  <input value={withdrawForm.vnd} onChange={(event) => updateWithdrawVnd(event.target.value)} placeholder="5.000.000" />
+                  <input value={withdrawForm.vnd} onChange={(event) => updateWithdrawVnd(formatMoneyChange(event))} placeholder="5.000.000" />
                 </label>
                 {withdrawForm.destination === "btc-direct" && (
                   <label>
                     Số BTC nhận
-                    <input value={withdrawForm.btc} onChange={(event) => { setWithdrawBtcTouched(true); setWithdrawForm({ ...withdrawForm, btc: formatDecimalInput(event.target.value) }); }} placeholder="0,0001234" />
+                    <input value={withdrawForm.btc} onChange={(event) => { setWithdrawBtcTouched(true); setWithdrawForm({ ...withdrawForm, btc: formatDecimalChange(event) }); }} placeholder="0,0001234" />
                   </label>
                 )}
                 <label>
@@ -8107,6 +8347,14 @@ function QuickActionButton({
     return formatVnd(value);
   };
 
+  const fillMaxQuickBtcTransferSource = () => {
+    if (btcTransfer.asset === "btc") {
+      setBtcTransfer((prev) => ({ ...prev, btc: formatDecimalInput(btcStats.btcBalance.toFixed(8)), received: "" }));
+      return;
+    }
+    setBtcTransfer((prev) => ({ ...prev, usdt: formatDecimalInput(String(btcStats.usdtBalance)), received: "" }));
+  };
+
   const estimateQuickUsdtFromVnd = (vndInput: string) => {
     const vndAmount = parseMoney(vndInput);
     const rate = state.market.usdtVnd || state.market.usdVnd;
@@ -8174,6 +8422,17 @@ function QuickActionButton({
     }));
   };
 
+  const fillMaxQuickSolTransfer = () => {
+    setSolTransferBtcTouched(false);
+    updateQuickSolTransferAmount(formatSolInput(String(solStats.balance)));
+  };
+
+  const fillMaxQuickStockTransfer = () => {
+    const holding = stockStats.holdings.find((item) => item.symbol === stockTransfer.symbol);
+    if (!holding) return;
+    setStockTransfer((prev) => ({ ...prev, shares: String(holding.shares), price: prev.price || formatStockPrice(holding.marketPrice) }));
+  };
+
   const resetBtcTransfer = () => {
     setBtcTransfer({
       asset: "usdt",
@@ -8187,28 +8446,43 @@ function QuickActionButton({
     });
   };
 
-  const quickStockAutoShares = (percentInput: string, priceInput: string) => {
-    const percent = Number(percentInput) || 0;
-    const price = parseDecimal(priceInput);
-    if (!stockStats.cash || !percent || !price) return "";
-    const rawShares = Math.floor((stockStats.cash * percent) / 100 / (price * STOCK_PRICE_UNIT));
-    const shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
-    return shares > 0 ? String(shares) : "";
+  const quickMarketPriceForBuyRow = (row: StockBuyRow) => stockMarketPrice(state, row.symbol)?.price ?? 0;
+  const quickEffectiveBuyPrice = (row: StockBuyRow) => parseDecimal(row.buyPrice) || quickMarketPriceForBuyRow(row);
+
+  const quickWithMarketPrice = (row: StockBuyRow) => {
+    if (row.buyPriceTouched || parseDecimal(row.buyPrice)) return row;
+    const marketPrice = quickMarketPriceForBuyRow(row);
+    return marketPrice ? { ...row, buyPrice: formatStockPrice(marketPrice) } : row;
   };
 
-  const recalculateQuickStockShares = (row: StockBuyRow): StockBuyRow => ({
-    ...row,
-    shares: quickStockAutoShares(row.percent, row.buyPrice),
-  });
+  const recalculateQuickStockRows = (rows: StockBuyRow[]) => {
+    const pricedRows = rows.map(quickWithMarketPrice);
+    const fixedValue = pricedRows
+      .filter((row) => row.sharesTouched && Number(row.shares) > 0)
+      .reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) }), 0);
+    const autoRows = pricedRows.filter((row) => !row.sharesTouched);
+    const autoPercentTotal = autoRows.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+    const remainingCash = Math.max(stockStats.cash - fixedValue, 0);
+
+    return pricedRows.map((row) => {
+      if (row.sharesTouched) return row;
+      const price = quickEffectiveBuyPrice(row);
+      const budget =
+        autoRows.length === 1
+          ? remainingCash
+          : autoPercentTotal
+            ? (remainingCash * (Number(row.percent) || 0)) / autoPercentTotal
+            : 0;
+      return { ...row, shares: stockSharesForBudget(budget, price) };
+    });
+  };
 
   const updateQuickStockRow = (id: string, patch: Partial<Omit<StockBuyRow, "id">>) => {
     setQuickStockRows((prev) =>
-      prev.map((row) => {
+      recalculateQuickStockRows(prev.map((row) => {
         if (row.id !== id) return row;
-        const next = { ...row, ...patch };
-        if ("percent" in patch || "buyPrice" in patch) return recalculateQuickStockShares(next);
-        return next;
-      })
+        return { ...row, ...patch };
+      }))
     );
   };
 
@@ -8217,20 +8491,20 @@ function QuickActionButton({
     setQuickStockRows((prev) => {
       const others = prev.filter((row) => row.id !== id);
       if (others.length === 0) {
-        return prev.map((row) => (row.id === id ? recalculateQuickStockShares({ ...row, percent: String(nextPercent) }) : row));
+        return recalculateQuickStockRows(prev.map((row) => (row.id === id ? { ...row, percent: String(nextPercent) } : row)));
       }
       const remaining = Math.max(100 - nextPercent, 0);
       const otherCurrentTotal = others.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
       let assigned = 0;
-      return prev.map((row) => {
-        if (row.id === id) return recalculateQuickStockShares({ ...row, percent: String(nextPercent) });
+      return recalculateQuickStockRows(prev.map((row) => {
+        if (row.id === id) return { ...row, percent: String(nextPercent) };
         const isLastOther = others[others.length - 1]?.id === row.id;
         const percent = isLastOther
           ? remaining - assigned
           : Math.round((otherCurrentTotal ? ((Number(row.percent) || 0) / otherCurrentTotal) * remaining : remaining / others.length) * 100) / 100;
         assigned += percent;
-        return recalculateQuickStockShares({ ...row, percent: String(Math.max(percent, 0)) });
-      });
+        return { ...row, percent: String(Math.max(percent, 0)) };
+      }));
     });
   };
 
@@ -8238,12 +8512,12 @@ function QuickActionButton({
     setQuickStockRows((prev) => {
       if (prev.length === 1) {
         const firstPercent = prev[0].percent === "100" ? "50" : prev[0].percent;
-        return [
-          recalculateQuickStockShares({ ...prev[0], percent: firstPercent }),
+        return recalculateQuickStockRows([
+          { ...prev[0], percent: firstPercent },
           { id: uid(), symbol: "", percent: String(Math.max(100 - (Number(firstPercent) || 0), 0)), shares: "", buyPrice: "" },
-        ];
+        ]);
       }
-      return [...prev, { id: uid(), symbol: "", percent: "0", shares: "", buyPrice: "" }];
+      return recalculateQuickStockRows([...prev, { id: uid(), symbol: "", percent: "0", shares: "", buyPrice: "" }]);
     });
   };
 
@@ -8251,16 +8525,55 @@ function QuickActionButton({
     setQuickStockRows((prev) => {
       if (prev.length === 1) return prev;
       const next = prev.filter((row) => row.id !== id);
-      if (next.length === 1) return [recalculateQuickStockShares({ ...next[0], percent: "100" })];
+      if (next.length === 1) return recalculateQuickStockRows([{ ...next[0], percent: "100" }]);
       const total = next.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
       if (!total) return next;
       let assigned = 0;
-      return next.map((row, index) => {
+      return recalculateQuickStockRows(next.map((row, index) => {
         const percent = index === next.length - 1 ? 100 - assigned : Math.round(((Number(row.percent) || 0) / total) * 10000) / 100;
         assigned += percent;
-        return recalculateQuickStockShares({ ...row, percent: String(Math.max(percent, 0)) });
-      });
+        return { ...row, percent: String(Math.max(percent, 0)) };
+      }));
     });
+  };
+
+  const fillMaxQuickStockBuyRow = async (id: string) => {
+    const row = quickStockRows.find((item) => item.id === id);
+    const symbol = row?.symbol.trim().toUpperCase() ?? "";
+    if (!row || !symbol) {
+      setError("Nhập mã cổ phiếu trước khi dùng Max.");
+      return;
+    }
+
+    let price = parseDecimal(row.buyPrice) || quickMarketPriceForBuyRow(row);
+    if (!price) {
+      try {
+        const quote = await fetchStockQuote(symbol);
+        price = quote.price;
+        setState((prev) => ({
+          ...prev,
+          stockMarketPrices: [
+            ...prev.stockMarketPrices.filter((item) => item.symbol !== symbol),
+            { symbol, price: quote.price, updatedAt: new Date().toISOString(), source: quote.source },
+          ],
+        }));
+      } catch {
+        setError("Chưa lấy được giá thị trường cho mã này.");
+        return;
+      }
+    }
+
+    setQuickStockRows((prev) => {
+      const rowsWithPrice = prev.map((item) =>
+        item.id === id ? { ...item, symbol, buyPrice: item.buyPrice || formatStockPrice(price), buyPriceTouched: item.buyPriceTouched } : item
+      );
+      const otherValue = rowsWithPrice
+        .filter((item) => item.id !== id)
+        .reduce((sum, item) => sum + stockLineValue({ shares: Number(item.shares) || 0, buyPrice: quickEffectiveBuyPrice(item) }), 0);
+      const shares = stockSharesForBudget(Math.max(stockStats.cash - otherValue, 0), price);
+      return recalculateQuickStockRows(rowsWithPrice.map((item) => (item.id === id ? { ...item, shares, sharesTouched: Boolean(shares) } : item)));
+    });
+    setError("");
   };
 
   const resetQuickStockForm = () => {
@@ -8390,7 +8703,7 @@ function QuickActionButton({
       const total = lines.reduce((sum, line) => sum + stockLineValue(line), 0);
       if (!lines.length) return setError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
       if (total > stockStats.cash) return setError("Tổng giá trị mua đang vượt quá tiền dư CK.");
-      const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: quickStockMeta.note.trim(), lines, createdAt: new Date().toISOString() };
+      const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: "", lines, createdAt: new Date().toISOString() };
       commitWithUndo("Đã mua cổ phiếu.", (prev) => ({ ...prev, stockPurchases: [...prev.stockPurchases, purchase] }));
       resetQuickStockForm();
       close();
@@ -8554,24 +8867,24 @@ function QuickActionButton({
               )}
               {kind === "income" && <>
                 <label>Mục thu<select value={income.categoryId} onChange={(event) => setIncome({ ...income, categoryId: event.target.value })}>{state.incomeCategories.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-                <label>Số tiền<input value={income.amount} onChange={(event) => setIncome({ ...income, amount: formatMoneyInput(event.target.value) })} placeholder="9.000.000" /></label>
+                <label>Số tiền<input value={income.amount} onChange={(event) => setIncome({ ...income, amount: formatMoneyChange(event) })} placeholder="9.000.000" /></label>
                 <label>Ngày<input type="date" value={income.date} onChange={(event) => setIncome({ ...income, date: event.target.value })} /></label>
                 <label>Note<input value={income.note} onChange={(event) => setIncome({ ...income, note: event.target.value })} /></label>
               </>}
               {kind === "expense" && <>
                 <label>Mục chi<select value={expense.categoryId} onChange={(event) => setExpense({ ...expense, categoryId: event.target.value })}>{state.expenseCategories.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-                <label>Số tiền<input value={expense.amount} onChange={(event) => setExpense({ ...expense, amount: formatMoneyInput(event.target.value) })} placeholder="500.000" /></label>
+                <label>Số tiền<input value={expense.amount} onChange={(event) => setExpense({ ...expense, amount: formatMoneyChange(event) })} placeholder="500.000" /></label>
                 <label>Ngày<input type="date" value={expense.date} onChange={(event) => setExpense({ ...expense, date: event.target.value })} /></label>
                 <label>Note<input value={expense.note} onChange={(event) => setExpense({ ...expense, note: event.target.value })} /></label>
               </>}
               {kind === "btc-usdt" && <>
-                <label>VND dùng mua<input value={usdt.vnd} onChange={(event) => updateQuickUsdtVnd(event.target.value)} placeholder="1.000.000" /></label>
-                <label>USDT nhận<input value={usdt.amount} onChange={(event) => setUsdt({ ...usdt, amount: formatDecimalInput(event.target.value) })} placeholder="39,25" /></label>
+                <label>VND dùng mua<input value={usdt.vnd} onChange={(event) => updateQuickUsdtVnd(formatMoneyChange(event))} placeholder="1.000.000" /></label>
+                <label>USDT nhận<input value={usdt.amount} onChange={(event) => setUsdt({ ...usdt, amount: formatDecimalChange(event) })} placeholder="39,25" /></label>
                 <label>Ngày<input type="date" value={usdt.date} onChange={(event) => setUsdt({ ...usdt, date: event.target.value })} /></label>
                 <label>Note<input value={usdt.note} onChange={(event) => setUsdt({ ...usdt, note: event.target.value })} /></label>
               </>}
               {kind === "btc-dca" && <>
-                <label>USDT mỗi kỳ<input value={dca.amount} onChange={(event) => setDca({ ...dca, amount: formatDecimalInput(event.target.value) })} /></label>
+                <label>USDT mỗi kỳ<input value={dca.amount} onChange={(event) => setDca({ ...dca, amount: formatDecimalChange(event) })} /></label>
                 <label>Tần suất<select value={dca.frequency} onChange={(event) => setDca({ ...dca, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
                 <label>Giờ chạy<input type="time" value={dca.time} onChange={(event) => setDca({ ...dca, time: event.target.value })} /></label>
                 <label>Ngày bắt đầu<input type="date" value={dca.startDate} onChange={(event) => setDca({ ...dca, startDate: event.target.value })} /></label>
@@ -8579,13 +8892,17 @@ function QuickActionButton({
               </>}
               {kind === "btc-transfer" && <>
                 <label>Tài sản nguồn<select value={btcTransfer.asset} onChange={(event) => updateBtcTransferAsset(event.target.value as "btc" | "usdt")}><option value="usdt">USDT</option><option value="btc">BTC</option></select></label>
-                {btcTransfer.asset === "btc" ? <label>Số BTC<input value={btcTransfer.btc} onChange={(event) => setBtcTransfer({ ...btcTransfer, btc: formatDecimalInput(event.target.value) })} placeholder="0,0001" /></label> : <label>Số USDT<input value={btcTransfer.usdt} onChange={(event) => setBtcTransfer({ ...btcTransfer, usdt: formatDecimalInput(event.target.value) })} placeholder="10" /></label>}
+                {btcTransfer.asset === "btc" ? (
+                  <label>Số BTC<InputWithMax value={btcTransfer.btc} onChange={(event) => setBtcTransfer({ ...btcTransfer, btc: formatDecimalChange(event) })} onMax={fillMaxQuickBtcTransferSource} placeholder="0,0001" /></label>
+                ) : (
+                  <label>Số USDT<InputWithMax value={btcTransfer.usdt} onChange={(event) => setBtcTransfer({ ...btcTransfer, usdt: formatDecimalChange(event) })} onMax={fillMaxQuickBtcTransferSource} placeholder="10" /></label>
+                )}
                 <label>Nơi nhận<select value={btcTransfer.destination} disabled={btcTransfer.asset === "btc"} onChange={(event) => updateBtcTransferDestination(event.target.value as BtcTransferTarget)}>
                   {btcTransfer.asset === "btc" ? <option value="usdt">USDT</option> : <option value="btc">BTC</option>}
                   {btcTransfer.asset === "usdt" && <><option value="stock">CK</option><option value="saving">Tiết kiệm</option><option value="emergency">Dự phòng</option><option value="cash">Tiền mặt</option></>}
                 </select></label>
-                <label>{btcTransfer.asset === "usdt" && btcTransfer.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={btcTransfer.price} onChange={(event) => setBtcTransfer({ ...btcTransfer, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(btcTransferPriceFor(btcTransfer.asset, btcTransfer.destination) || 0))} /></label>
-                <label>Số tiền nhận<input value={btcTransfer.received} onChange={(event) => setBtcTransfer({ ...btcTransfer, received: btcTransferReceiveUnit() === "VND" ? formatMoneyInput(event.target.value) : formatDecimalInput(event.target.value) })} placeholder={formatBtcTransferEstimate()} /></label>
+                <label>{btcTransfer.asset === "usdt" && btcTransfer.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={btcTransfer.price} onChange={(event) => setBtcTransfer({ ...btcTransfer, price: formatDecimalChange(event) })} placeholder={formatDecimalInput(String(btcTransferPriceFor(btcTransfer.asset, btcTransfer.destination) || 0))} /></label>
+                <label>Số tiền nhận<input value={btcTransfer.received} onChange={(event) => setBtcTransfer({ ...btcTransfer, received: btcTransferReceiveUnit() === "VND" ? formatMoneyChange(event) : formatDecimalChange(event) })} placeholder={formatBtcTransferEstimate()} /></label>
                 <label>Ngày<input type="date" value={btcTransfer.date} onChange={(event) => setBtcTransfer({ ...btcTransfer, date: event.target.value })} /></label>
                 <label>Note<input value={btcTransfer.note} onChange={(event) => setBtcTransfer({ ...btcTransfer, note: event.target.value })} /></label>
               </>}
@@ -8615,29 +8932,48 @@ function QuickActionButton({
                         </label>
                         <label>
                           Giá vào
-                          <input value={row.buyPrice} onChange={(event) => updateQuickStockRow(row.id, { buyPrice: formatDecimalInput(event.target.value) })} placeholder="27,5" />
+                          <div className="stock-price-remove-field">
+                            <input
+                              value={row.buyPrice}
+                              onChange={(event) => {
+                                const buyPrice = formatDecimalChange(event);
+                                updateQuickStockRow(row.id, { buyPrice, buyPriceTouched: Boolean(buyPrice) });
+                              }}
+                              placeholder={row.symbol ? formatStockPrice(quickMarketPriceForBuyRow(row) || 27.5) : "27,5"}
+                            />
+                            <button className="stock-remove-mini stock-remove-mobile" onClick={() => removeQuickStockRow(row.id)} title="Xóa dòng" type="button">
+                              <X size={13} />
+                            </button>
+                          </div>
                         </label>
                         <label>
                           Số cổ phiếu
-                          <input value={row.shares} onChange={(event) => updateQuickStockRow(row.id, { shares: event.target.value.replace(/\D/g, "") })} placeholder="100" />
+                          <InputWithMax
+                            value={row.shares}
+                            onChange={(event) => {
+                              const shares = event.target.value.replace(/\D/g, "");
+                              updateQuickStockRow(row.id, { shares, sharesTouched: Boolean(shares) });
+                            }}
+                            onMax={() => void fillMaxQuickStockBuyRow(row.id)}
+                            placeholder="100"
+                            inputMode="numeric"
+                          />
                         </label>
                         <div className="stock-row-value">
                           <span>Giá trị</span>
                           <strong>{formatVnd(value)}</strong>
                         </div>
-                        <button className="row-icon-button danger-text" onClick={() => removeQuickStockRow(row.id)} title="Xóa dòng" type="button">
-                          <X size={16} />
+                        <button className="stock-remove-mini stock-remove-desktop" onClick={() => removeQuickStockRow(row.id)} title="Xóa dòng" type="button">
+                          <X size={13} />
                         </button>
                       </div>
                     );
                   })}
                 </div>
-                <div className="stock-form-actions">
-                  <button className="ghost" onClick={addQuickStockRow} type="button"><Plus size={17} /> Thêm cổ phiếu</button>
-                </div>
-                <div className="form-grid stock-buy-meta-grid">
-                  <label>Ngày mua<input type="date" value={quickStockMeta.date} onChange={(event) => setQuickStockMeta({ ...quickStockMeta, date: event.target.value })} /></label>
-                  <label>Note<input value={quickStockMeta.note} onChange={(event) => setQuickStockMeta({ ...quickStockMeta, note: event.target.value })} placeholder="Mua trên MBS" /></label>
+                <div className="stock-form-actions stock-buy-actions">
+                  <label className="stock-action-date" aria-label="Ngày mua"><input type="date" value={quickStockMeta.date} onChange={(event) => setQuickStockMeta({ ...quickStockMeta, date: event.target.value })} /></label>
+                  <button className="ghost" onClick={addQuickStockRow} type="button"><Plus size={17} /> Thêm</button>
+                  <button className="primary" onClick={save} type="button"><Save size={17} /> Lưu</button>
                 </div>
               </>}
               {kind === "stock-transfer" && <>
@@ -8645,39 +8981,39 @@ function QuickActionButton({
                   const holding = stockStats.holdings.find((item) => item.symbol === event.target.value);
                   setStockTransfer({ ...stockTransfer, symbol: event.target.value, price: holding ? formatStockPrice(holding.marketPrice) : stockTransfer.price });
                 }}><option value="">Chọn mã</option>{stockStats.holdings.map((item) => <option value={item.symbol} key={item.symbol}>{item.symbol} · {item.shares.toLocaleString("vi-VN")}</option>)}</select></label>
-                <label>Số lượng<input value={stockTransfer.shares} onChange={(event) => setStockTransfer({ ...stockTransfer, shares: event.target.value.replace(/\D/g, "") })} /></label>
-                <label>Giá rút<input value={stockTransfer.price} onChange={(event) => setStockTransfer({ ...stockTransfer, price: formatDecimalInput(event.target.value) })} /></label>
+                <label>Số lượng<InputWithMax value={stockTransfer.shares} onChange={(event) => setStockTransfer({ ...stockTransfer, shares: event.target.value.replace(/\D/g, "") })} onMax={fillMaxQuickStockTransfer} inputMode="numeric" /></label>
+                <label>Giá rút<input value={stockTransfer.price} onChange={(event) => setStockTransfer({ ...stockTransfer, price: formatDecimalChange(event) })} /></label>
                 <label>Nơi nhận<select value={stockTransfer.destination} onChange={(event) => setStockTransfer({ ...stockTransfer, destination: event.target.value as SolDestination })}>{stockDestinationOptions.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
                 <label>Ngày<input type="date" value={stockTransfer.date} onChange={(event) => setStockTransfer({ ...stockTransfer, date: event.target.value })} /></label>
                 <label>Note<input value={stockTransfer.note} onChange={(event) => setStockTransfer({ ...stockTransfer, note: event.target.value })} /></label>
               </>}
               {kind === "deposit" && <>
                 <label>Quỹ<select value={deposit.fund} onChange={(event) => setDeposit({ ...deposit, fund: event.target.value as DepositFund })}><option value="saving">Tiết kiệm</option><option value="emergency">Dự phòng</option></select></label>
-                <label>Số tiền<input value={deposit.amount} onChange={(event) => setDeposit({ ...deposit, amount: formatMoneyInput(event.target.value) })} placeholder="6.000.000" /></label>
-                <label>Lãi suất %<input value={deposit.rate} onChange={(event) => setDeposit({ ...deposit, rate: formatDecimalInput(event.target.value) })} /></label>
+                <label>Số tiền<input value={deposit.amount} onChange={(event) => setDeposit({ ...deposit, amount: formatMoneyChange(event) })} placeholder="6.000.000" /></label>
+                <label>Lãi suất %<input value={deposit.rate} onChange={(event) => setDeposit({ ...deposit, rate: formatDecimalChange(event) })} /></label>
                 <label>Kỳ hạn tháng<input value={deposit.term} onChange={(event) => setDeposit({ ...deposit, term: event.target.value })} /></label>
                 <label>Ngày gửi<input type="date" value={deposit.date} onChange={(event) => setDeposit({ ...deposit, date: event.target.value })} /></label>
                 <label>4 số MB<input value={deposit.mbLast4} onChange={(event) => setDeposit({ ...deposit, mbLast4: event.target.value.replace(/\D/g, "").slice(0, 4) })} inputMode="numeric" maxLength={4} /></label>
                 <label>Note<input value={deposit.note} onChange={(event) => setDeposit({ ...deposit, note: event.target.value })} /></label>
               </>}
               {kind === "sol-buy" && <>
-                <label>Số SOL<input value={sol.amount} onChange={(event) => setSol({ ...sol, amount: formatSolInput(event.target.value) })} placeholder="0,5" /></label>
-                <label>Giá mua USDT<input value={sol.price} onChange={(event) => setSol({ ...sol, price: formatDecimalInput(event.target.value) })} placeholder={formatDecimalInput(String(state.market.solUsd || 0))} /></label>
+                <label>Số SOL<input value={sol.amount} onChange={(event) => setSol({ ...sol, amount: formatSolChange(event) })} placeholder="0,5" /></label>
+                <label>Giá mua USDT<input value={sol.price} onChange={(event) => setSol({ ...sol, price: formatDecimalChange(event) })} placeholder={formatDecimalInput(String(state.market.solUsd || 0))} /></label>
                 <label>Ngày<input type="date" value={sol.date} onChange={(event) => setSol({ ...sol, date: event.target.value })} /></label>
                 <label>Note<input value={sol.note} onChange={(event) => setSol({ ...sol, note: event.target.value })} /></label>
               </>}
               {kind === "sol-transfer" && <>
-                <label>Số SOL<input value={solTransfer.amount} onChange={(event) => updateQuickSolTransferAmount(event.target.value)} placeholder="0,1" /></label>
-                <label>Giá SOL/USDT<input value={solTransfer.price} onChange={(event) => updateQuickSolTransferPrice(event.target.value)} /></label>
-                <label>Số tiền nhận<input value={solTransfer.vnd} onChange={(event) => setSolTransfer({ ...solTransfer, vnd: formatMoneyInput(event.target.value) })} /></label>
-                {solTransfer.destination === "btc-direct" && <label>Số BTC nhận<input value={solTransfer.btc} onChange={(event) => { setSolTransferBtcTouched(true); setSolTransfer({ ...solTransfer, btc: formatDecimalInput(event.target.value) }); }} placeholder="0,0001234" /></label>}
+                <label>Số SOL<InputWithMax value={solTransfer.amount} onChange={(event) => updateQuickSolTransferAmount(formatSolChange(event))} onMax={fillMaxQuickSolTransfer} placeholder="0,1" /></label>
+                <label>Giá SOL/USDT<input value={solTransfer.price} onChange={(event) => updateQuickSolTransferPrice(formatDecimalChange(event))} /></label>
+                <label>Số tiền nhận<input value={solTransfer.vnd} onChange={(event) => setSolTransfer({ ...solTransfer, vnd: formatMoneyChange(event) })} /></label>
+                {solTransfer.destination === "btc-direct" && <label>Số BTC nhận<input value={solTransfer.btc} onChange={(event) => { setSolTransferBtcTouched(true); setSolTransfer({ ...solTransfer, btc: formatDecimalChange(event) }); }} placeholder="0,0001234" /></label>}
                 <label>Nơi nhận<select value={solTransfer.destination} onChange={(event) => updateQuickSolTransferDestination(event.target.value as SolDestination)}>{solDestinationOptions.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
                 <label>Ngày<input type="date" value={solTransfer.date} onChange={(event) => setSolTransfer({ ...solTransfer, date: event.target.value })} /></label>
                 <label>Note<input value={solTransfer.note} onChange={(event) => setSolTransfer({ ...solTransfer, note: event.target.value })} /></label>
               </>}
             </div>
             {error && <span className="form-error">{error}</span>}
-            {kind !== "undo" && <button className="primary full" onClick={save} type="button"><Save size={17} /> Lưu nhanh</button>}
+            {kind !== "undo" && kind !== "stock-buy" && <button className="primary full" onClick={save} type="button"><Save size={17} /> Lưu nhanh</button>}
           </section>
         </div>
       )}
