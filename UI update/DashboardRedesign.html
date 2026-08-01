@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Finance Pro | Personal Finance Manager</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Geist:wght@400;500;600&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Inter:wght@100..900&display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-surface-variant": "#ddc1ae",
+                        "on-error-container": "#ffdad6",
+                        "secondary-fixed": "#e0e2ec",
+                        "inverse-on-surface": "#3a2e25",
+                        "surface-container-high": "#33281f",
+                        "on-primary-fixed-variant": "#6f3900",
+                        "inverse-primary": "#914c00",
+                        "surface-container-low": "#241912",
+                        "surface-tint": "#ffb77f",
+                        "error-container": "#93000a",
+                        "surface-bright": "#43372e",
+                        "on-secondary-fixed-variant": "#44474f",
+                        "on-primary-fixed": "#2f1500",
+                        "on-secondary-container": "#b3b5be",
+                        "on-tertiary": "#00344d",
+                        "outline": "#a58c7b",
+                        "on-tertiary-fixed": "#001e2e",
+                        "background": "#0F1115",
+                        "on-error": "#690005",
+                        "error": "#ffb4ab",
+                        "surface": "#1b110a",
+                        "tertiary": "#88ceff",
+                        "primary-container": "#ff8a00",
+                        "on-primary": "#4e2600",
+                        "tertiary-fixed": "#c8e6ff",
+                        "tertiary-fixed-dim": "#88ceff",
+                        "surface-container": "#171A21",
+                        "secondary-fixed-dim": "#c4c6d0",
+                        "surface-dim": "#0F1115",
+                        "surface-container-lowest": "#150c06",
+                        "on-secondary": "#2d3038",
+                        "surface-container-highest": "#3f3229",
+                        "primary-fixed-dim": "#ffb77f",
+                        "outline-variant": "#564334",
+                        "on-tertiary-fixed-variant": "#004c6d",
+                        "primary-fixed": "#ffdcc4",
+                        "on-surface": "#f3dfd1",
+                        "on-secondary-fixed": "#191c23",
+                        "surface-variant": "#3f3229",
+                        "on-background": "#f3dfd1",
+                        "primary": "#ffb77f",
+                        "secondary": "#c4c6d0",
+                        "on-primary-container": "#613100",
+                        "secondary-container": "#44474f",
+                        "on-tertiary-container": "#004260",
+                        "inverse-surface": "#f3dfd1",
+                        "tertiary-container": "#00b3fc"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "12px",
+                        "2xl": "16px",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "32px",
+                        "sm": "12px",
+                        "base": "8px",
+                        "lg": "24px",
+                        "xs": "4px",
+                        "container-max": "1280px",
+                        "gutter": "24px",
+                        "md": "16px",
+                        "xxl": "48px"
+                    },
+                    "fontFamily": {
+                        "label-sm": ["Geist"],
+                        "display-xl": ["Inter"],
+                        "label-md": ["Geist"],
+                        "value-xl": ["Geist"],
+                        "body-sm": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "headline-sm": ["Inter"],
+                        "display-lg": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "display-lg-mobile": ["Inter"]
+                    },
+                    "fontSize": {
+                        "label-sm": ["12px", {"lineHeight": "14px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                        "display-xl": ["48px", {"lineHeight": "56px", "letterSpacing": "-0.04em", "fontWeight": "700"}],
+                        "label-md": ["14px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+                        "value-xl": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                        "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "body-lg": ["18px", {"lineHeight": "28px", "fontWeight": "400"}],
+                        "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "headline-sm": ["20px", {"lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                        "display-lg": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.03em", "fontWeight": "700"}],
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                        "display-lg-mobile": ["28px", {"lineHeight": "34px", "fontWeight": "700"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { background-color: #0F1115; }
+        .glass { backdrop-filter: blur(12px); background: rgba(15, 17, 21, 0.8); }
+        .card-glow:hover { box-shadow: 0 0 20px rgba(255, 138, 0, 0.08); transform: translateY(-2px); transition: all 0.3s ease; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .rim-light { border: 1px solid rgba(255, 255, 255, 0.05); }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="text-on-background font-body-md overflow-x-hidden">
+<!-- Top AppBar (Mobile/Desktop Hybrid) -->
+<header class="fixed top-0 w-full z-50 glass rim-light border-x-0 border-t-0 flex justify-between items-center px-md py-sm">
+<div class="flex items-center gap-sm">
+<div class="w-10 h-10 rounded-full overflow-hidden rim-light">
+<img class="w-full h-full object-cover" data-alt="A cinematic, high-definition portrait of a professional modern user in a minimalist tech setting. The lighting is moody and sophisticated with orange rim lights that match the brand identity. The background is a blurred obsidian workspace, creating a sense of calm and premium digital craft." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCLzqNZA-nR9mYKy1Pf0AwFd9ruTZUXzMz6Z8U_Cpk1gcJGoltnHKAvLDV4TPFMX4zKl9nIcqBY_5Fn4yZkF0YqbvOYPyQuDVYvdC7RpvEsUC1ljwCB3MeNHSVl0-7ihGggKK8IqnMZJiNHCdqWLyi368V1qO2WOPmpmWxXMDdNnzJeUkr4wqRHDGcNT8ENLiIwZXJ2W4W2QIKiomud4O8Nz6oKxGIofYxKBEffgFMSmGqc9jPIEQX5"/>
+</div>
+<div>
+<h1 class="font-headline-sm text-headline-sm text-on-surface">Finance Pro</h1>
+<p class="font-label-sm text-label-sm text-on-surface-variant">Tháng 07/2026</p>
+</div>
+</div>
+<button class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-white/5 transition-colors">
+<span class="material-symbols-outlined text-primary">notifications</span>
+</button>
+</header>
+<main class="pt-24 pb-32 px-md max-w-container-max mx-auto space-y-lg">
+<!-- Hero Metrics -->
+<section class="grid grid-cols-1 md:grid-cols-3 gap-md">
+<div class="bg-surface-container rim-light p-lg rounded-2xl card-glow">
+<div class="flex justify-between items-start mb-base">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">payments</span>
+<span class="text-xs font-label-sm text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">+12.4%</span>
+</div>
+<p class="font-label-sm text-label-sm text-on-surface-variant mb-xs">Thu nhập</p>
+<p class="font-display-lg-mobile text-display-lg-mobile md:font-display-lg md:text-display-lg text-on-surface">22.095.000đ</p>
+</div>
+<div class="bg-surface-container rim-light p-lg rounded-2xl card-glow">
+<div class="flex justify-between items-start mb-base">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">shopping_cart</span>
+<span class="text-xs font-label-sm text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">-4.2%</span>
+</div>
+<p class="font-label-sm text-label-sm text-on-surface-variant mb-xs">Chi tiêu</p>
+<p class="font-display-lg-mobile text-display-lg-mobile md:font-display-lg md:text-display-lg text-on-surface">12.500.000đ</p>
+</div>
+<div class="bg-surface-container rim-light p-lg rounded-2xl card-glow border-primary/20 bg-gradient-to-br from-surface-container to-primary/5">
+<div class="flex justify-between items-start mb-base">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">savings</span>
+<span class="text-xs font-label-sm text-primary bg-primary/10 px-2 py-0.5 rounded-full">Target 85%</span>
+</div>
+<p class="font-label-sm text-label-sm text-on-surface-variant mb-xs">Tiết kiệm</p>
+<p class="font-display-lg-mobile text-display-lg-mobile md:font-display-lg md:text-display-lg text-primary">9.595.000đ</p>
+</div>
+</section>
+<!-- Income/Expense Grid -->
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-lg">
+<!-- Thu nhập -->
+<div class="bg-surface-container rim-light rounded-2xl overflow-hidden">
+<div class="p-md flex justify-between items-center border-b border-white/5">
+<h2 class="font-headline-md text-headline-md text-on-surface flex items-center gap-xs">
+<span class="w-1 h-6 bg-primary rounded-full"></span>
+                        Thu nhập
+                    </h2>
+<button class="text-label-sm font-label-sm text-primary hover:underline transition-all">Chi tiết</button>
+</div>
+<div class="p-md space-y-md">
+<!-- Item -->
+<div class="space-y-xs">
+<div class="flex justify-between text-body-sm font-medium">
+<span class="text-on-surface">Fishing</span>
+<div class="flex items-center gap-xs">
+<span class="text-on-surface">10.461.000đ</span>
+<span class="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">47.3%</span>
+</div>
+</div>
+<div class="w-full bg-[#262B35] h-2 rounded-full overflow-hidden">
+<div class="bg-gradient-to-r from-primary-container to-primary h-full rounded-full" style="width: 47.3%"></div>
+</div>
+</div>
+<!-- Item -->
+<div class="space-y-xs">
+<div class="flex justify-between text-body-sm font-medium">
+<span class="text-on-surface">PT Valley</span>
+<div class="flex items-center gap-xs">
+<span class="text-on-surface">9.000.000đ</span>
+<span class="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">40.7%</span>
+</div>
+</div>
+<div class="w-full bg-[#262B35] h-2 rounded-full overflow-hidden">
+<div class="bg-gradient-to-r from-primary-container to-primary h-full rounded-full opacity-60" style="width: 40.7%"></div>
+</div>
+</div>
+<!-- Item -->
+<div class="space-y-xs">
+<div class="flex justify-between text-body-sm font-medium text-on-surface-variant">
+<span>Khác</span>
+<div class="flex items-center gap-xs">
+<span>2.300.000đ</span>
+<span class="text-[10px] bg-white/5 px-1.5 py-0.5 rounded">10.4%</span>
+</div>
+</div>
+<div class="w-full bg-[#262B35] h-2 rounded-full overflow-hidden">
+<div class="bg-on-surface-variant h-full rounded-full" style="width: 10.4%"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Chi tiêu -->
+<div class="bg-surface-container rim-light rounded-2xl overflow-hidden">
+<div class="p-md flex justify-between items-center border-b border-white/5">
+<h2 class="font-headline-md text-headline-md text-on-surface flex items-center gap-xs">
+<span class="w-1 h-6 bg-tertiary rounded-full"></span>
+                        Chi tiêu
+                    </h2>
+<button class="text-label-sm font-label-sm text-tertiary hover:underline transition-all">Chi tiết</button>
+</div>
+<div class="p-md space-y-md">
+<!-- Item -->
+<div class="space-y-xs">
+<div class="flex justify-between text-body-sm font-medium">
+<span class="text-on-surface">Chi tiêu cố định</span>
+<div class="flex items-center gap-xs">
+<span class="text-on-surface">4.500.000đ</span>
+<span class="text-[10px] bg-tertiary/10 text-tertiary px-1.5 py-0.5 rounded">36.0%</span>
+</div>
+</div>
+<div class="w-full bg-[#262B35] h-2 rounded-full overflow-hidden">
+<div class="bg-tertiary h-full rounded-full" style="width: 36.0%"></div>
+</div>
+</div>
+<!-- Item -->
+<div class="space-y-xs">
+<div class="flex justify-between text-body-sm font-medium">
+<span class="text-on-surface">Phát sinh</span>
+<div class="flex items-center gap-xs">
+<span class="text-on-surface">3.500.000đ</span>
+<span class="text-[10px] bg-tertiary/10 text-tertiary px-1.5 py-0.5 rounded">28.0%</span>
+</div>
+</div>
+<div class="w-full bg-[#262B35] h-2 rounded-full overflow-hidden">
+<div class="bg-tertiary/60 h-full rounded-full" style="width: 28.0%"></div>
+</div>
+</div>
+<!-- Item -->
+<div class="space-y-xs">
+<div class="flex justify-between text-body-sm font-medium text-on-surface-variant">
+<span>Đà Lạt</span>
+<div class="flex items-center gap-xs">
+<span>1.500.000đ</span>
+<span class="text-[10px] bg-white/5 px-1.5 py-0.5 rounded">12.0%</span>
+</div>
+</div>
+<div class="w-full bg-[#262B35] h-2 rounded-full overflow-hidden">
+<div class="bg-on-surface-variant h-full rounded-full" style="width: 12%"></div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Tiền được chia -->
+<section class="space-y-md">
+<div class="flex justify-between items-center">
+<h2 class="font-headline-md text-headline-md text-on-surface flex items-center gap-xs">
+<span class="w-1 h-6 bg-primary rounded-full"></span>
+                    Tiền được chia
+                </h2>
+<button class="p-2 rounded-full hover:bg-white/5 transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant text-sm">edit</span>
+</button>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-md">
+<!-- Card -->
+<div class="bg-surface-container rim-light p-md rounded-2xl hover:border-primary/40 transition-colors">
+<p class="text-[10px] font-bold text-tertiary mb-xs uppercase tracking-wider">BTC 20%</p>
+<p class="font-headline-sm text-headline-sm text-on-surface">1.679.000đ</p>
+</div>
+<!-- Card -->
+<div class="bg-surface-container rim-light p-md rounded-2xl hover:border-primary/40 transition-colors">
+<p class="text-[10px] font-bold text-tertiary mb-xs uppercase tracking-wider">CK 20%</p>
+<p class="font-headline-sm text-headline-sm text-on-surface">1.600.000đ</p>
+</div>
+<!-- Card -->
+<div class="bg-surface-container rim-light p-md rounded-2xl hover:border-primary/40 transition-colors">
+<p class="text-[10px] font-bold text-tertiary mb-xs uppercase tracking-wider">Tiết kiệm 40%</p>
+<p class="font-headline-sm text-headline-sm text-on-surface">3.000.000đ</p>
+</div>
+<!-- Card -->
+<div class="bg-surface-container rim-light p-md rounded-2xl hover:border-primary/40 transition-colors">
+<p class="text-[10px] font-bold text-tertiary mb-xs uppercase tracking-wider">Dự phòng 20%</p>
+<p class="font-headline-sm text-headline-sm text-on-surface">2.100.000đ</p>
+</div>
+</div>
+</section>
+<!-- To-do / Action Needed -->
+<section class="bg-surface-container rim-light rounded-2xl p-lg flex flex-col md:flex-row md:items-center justify-between gap-md border-l-4 border-primary shadow-2xl shadow-primary/5">
+<div class="space-y-xs">
+<div class="flex items-center gap-xs">
+<span class="bg-primary/20 text-primary text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Action Needed</span>
+<span class="text-on-surface-variant font-label-sm text-label-sm">Tháng này chưa chia quỹ</span>
+</div>
+<h3 class="font-headline-md text-headline-md text-on-surface">Hôm nay cần làm gì?</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Số tiền còn lại có thể chia: <span class="text-primary font-bold">9.595.000đ</span></p>
+</div>
+<button class="bg-primary-container text-on-primary-container px-lg py-md rounded-xl font-bold hover:brightness-110 active:scale-95 transition-all text-center">
+                Chia quỹ ngay
+            </button>
+</section>
+<!-- Checklist -->
+<section class="space-y-md">
+<h2 class="font-headline-md text-headline-md text-on-surface flex items-center gap-xs">
+<span class="w-1 h-6 bg-primary rounded-full"></span>
+                Khoản cố định
+            </h2>
+<div class="space-y-sm">
+<!-- Item -->
+<div class="bg-surface-container rim-light p-md rounded-2xl flex items-center justify-between group">
+<div class="flex items-center gap-md">
+<div class="w-6 h-6 border-2 border-primary rounded-md flex items-center justify-center cursor-pointer">
+<span class="material-symbols-outlined text-primary text-sm font-bold">check</span>
+</div>
+<span class="font-body-md text-on-surface">Đà Lạt</span>
+</div>
+<div class="flex items-center gap-lg">
+<span class="font-headline-sm text-headline-sm text-on-surface">1.500.000đ</span>
+<div class="flex gap-xs opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="p-1.5 hover:bg-white/5 rounded-lg"><span class="material-symbols-outlined text-xs">edit</span></button>
+<button class="p-1.5 hover:bg-white/5 rounded-lg"><span class="material-symbols-outlined text-xs text-error">delete</span></button>
+</div>
+</div>
+</div>
+<!-- Item -->
+<div class="bg-surface-container rim-light p-md rounded-2xl flex items-center justify-between group">
+<div class="flex items-center gap-md">
+<div class="w-6 h-6 border-2 border-outline-variant rounded-md flex items-center justify-center cursor-pointer"></div>
+<span class="font-body-md text-on-surface">Chi tiêu gia đình</span>
+</div>
+<div class="flex items-center gap-lg">
+<span class="font-headline-sm text-headline-sm text-on-surface">4.500.000đ</span>
+<div class="flex gap-xs opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="p-1.5 hover:bg-white/5 rounded-lg"><span class="material-symbols-outlined text-xs">edit</span></button>
+<button class="p-1.5 hover:bg-white/5 rounded-lg"><span class="material-symbols-outlined text-xs text-error">delete</span></button>
+</div>
+</div>
+</div>
+<!-- Item -->
+<div class="bg-surface-container rim-light p-md rounded-2xl flex items-center justify-between group">
+<div class="flex items-center gap-md">
+<div class="w-6 h-6 border-2 border-outline-variant rounded-md flex items-center justify-center cursor-pointer"></div>
+<span class="font-body-md text-on-surface">Mẹ</span>
+</div>
+<div class="flex items-center gap-lg">
+<span class="font-headline-sm text-headline-sm text-on-surface">3.000.000đ</span>
+<div class="flex gap-xs opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="p-1.5 hover:bg-white/5 rounded-lg"><span class="material-symbols-outlined text-xs">edit</span></button>
+<button class="p-1.5 hover:bg-white/5 rounded-lg"><span class="material-symbols-outlined text-xs text-error">delete</span></button>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- FAB -->
+<button class="fixed bottom-24 right-md w-14 h-14 bg-primary-container text-on-primary-container rounded-2xl shadow-xxl flex items-center justify-center hover:scale-110 active:scale-95 transition-all z-50">
+<span class="material-symbols-outlined text-3xl font-bold">add</span>
+</button>
+<!-- Bottom Navigation -->
+<nav class="fixed bottom-0 w-full z-50 glass rim-light border-x-0 border-b-0 flex justify-around items-center h-16 pb-safe px-xs">
+<button class="flex flex-col items-center justify-center text-primary font-bold bg-primary/10 rounded-xl px-4 py-1 transition-all">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">dashboard</span>
+<span class="text-[10px] font-label-sm">Dashboard</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant hover:bg-white/5 px-4 py-1 rounded-xl transition-all">
+<span class="material-symbols-outlined">bar_chart</span>
+<span class="text-[10px] font-label-sm">Reports</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant hover:bg-white/5 px-4 py-1 rounded-xl transition-all">
+<span class="material-symbols-outlined">account_balance_wallet</span>
+<span class="text-[10px] font-label-sm">Assets</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant hover:bg-white/5 px-4 py-1 rounded-xl transition-all">
+<span class="material-symbols-outlined">savings</span>
+<span class="text-[10px] font-label-sm">Savings</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant hover:bg-white/5 px-4 py-1 rounded-xl transition-all">
+<span class="material-symbols-outlined">settings</span>
+<span class="text-[10px] font-label-sm">Settings</span>
+</button>
+</nav>
+<script>
+        // Simple scale interaction for buttons
+        document.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('mousedown', () => btn.classList.add('scale-95'));
+            btn.addEventListener('mouseup', () => btn.classList.remove('scale-95'));
+            btn.addEventListener('mouseleave', () => btn.classList.remove('scale-95'));
+        });
+    </script>
+</body></html>

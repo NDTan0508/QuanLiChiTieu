@@ -17,6 +17,7 @@ import {
   BarChart3,
   Bitcoin,
   CalendarClock,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -140,7 +141,7 @@ type Allocation = {
 };
 
 type FundKey = "btc" | "stock";
-type InvestmentTab = FundKey | "mbb" | "sol";
+type InvestmentTab = "crypto" | "stock" | "mbb";
 type SolDestination = FundKey | DepositFund | "cash" | "btc-direct";
 type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | DepositFund;
 
@@ -466,6 +467,7 @@ const BACKUP_VERSION = 1;
 const AUTO_RESTORE_BACKUP_KEY = `${STORAGE_KEY}-pre-restore-backup`;
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
 const DEFAULT_START_MONTH = "2026-06";
+const FINANCIAL_RULE_START_MONTH = "2026-07";
 const CERTIFICATE_LOT = 100_000;
 const STOCK_PRICE_UNIT = 1_000;
 const STOCK_LOT = 100;
@@ -1509,6 +1511,12 @@ function exportCsvBundle(state: AppState) {
   const btcStats = btcPortfolioStats(state);
   const stockStats = stockPortfolioStats(state);
   const sol = solPosition(state.solTransactions);
+  const solValueVnd = sol.balance * state.market.solUsd * state.market.usdVnd;
+  const solCostVnd = sol.cost * state.market.usdVnd;
+  const cryptoValueVnd = btcStats.reportValueVnd + solValueVnd;
+  const cryptoPrincipalVnd = btcStats.capitalVnd + solCostVnd;
+  const cryptoPnlVnd = cryptoValueVnd - cryptoPrincipalVnd;
+  const cryptoPnlPercent = cryptoPrincipalVnd ? (cryptoPnlVnd / cryptoPrincipalVnd) * 100 : 0;
   const now = new Date().toISOString();
   const current = currentMonth();
   const summary = monthlySummary(state, current);
@@ -1579,9 +1587,8 @@ function exportCsvBundle(state: AppState) {
     ["Tổng chi", ...moneyPair(summary.expense)],
     ["Tiết kiệm trong tháng", ...moneyPair(summary.saving)],
     ["Đã chia quỹ", summary.allocation.confirmedAt ? "Có" : "Chưa"],
-    ["Tài sản BTC", ...moneyPair(btcStats.reportValueVnd)],
+    ["Tài sản Crypto", ...moneyPair(cryptoValueVnd)],
     ["Tài sản CK", ...moneyPair(stockStats.totalValue)],
-    ["Tài sản SOL", ...moneyPair(sol.balance * state.market.solUsd * state.market.usdVnd)],
   ]);
 
   section("Lãi/lỗ theo gốc", ["Quỹ", "Gốc đầu tư", "Gốc hiển thị", "Giá trị hiện tại", "Giá trị hiển thị", "Lãi/lỗ", "Lãi/lỗ hiển thị", "%"], assetPnlRows(state).map((item) => [
@@ -1625,7 +1632,7 @@ function exportCsvBundle(state: AppState) {
     ];
   }));
 
-  section("Chia quỹ", ["Tháng", "Xác nhận lúc", "Tiết kiệm tại thời điểm chia", "Tiết kiệm hiển thị", "% BTC", "BTC", "BTC hiển thị", "% CK", "CK", "CK hiển thị", "% Tiết kiệm", "Tiết kiệm", "Tiết kiệm hiển thị", "% Dự phòng", "Dự phòng", "Dự phòng hiển thị", "Yêu cầu tạo sổ tiết kiệm", "Đã tạo sổ tiết kiệm", "Yêu cầu tạo sổ dự phòng", "Đã tạo sổ dự phòng"], state.allocations.map((item) => [
+  section("Chia quỹ", ["Tháng", "Xác nhận lúc", "Tiết kiệm tại thời điểm chia", "Tiết kiệm hiển thị", "% Crypto", "Crypto", "Crypto hiển thị", "% CK", "CK", "CK hiển thị", "% Tiết kiệm", "Tiết kiệm", "Tiết kiệm hiển thị", "% Dự phòng", "Dự phòng", "Dự phòng hiển thị", "Yêu cầu tạo sổ tiết kiệm", "Đã tạo sổ tiết kiệm", "Yêu cầu tạo sổ dự phòng", "Đã tạo sổ dự phòng"], state.allocations.map((item) => [
     formatMonth(item.month),
     safeDateTime(item.confirmedAt),
     ...moneyPair(item.totalSavingAtConfirm ?? 0),
@@ -1647,26 +1654,29 @@ function exportCsvBundle(state: AppState) {
     item.id,
     safeDate(item.date),
     formatMonth(item.month),
-    item.fund === "btc" ? "BTC" : "CK",
+    item.fund === "btc" ? "Crypto" : "CK",
     item.type === "deposit" ? "Nạp vốn" : "Rút vốn",
     ...moneyPair(item.amount),
     item.note,
   ]));
 
-  section("BTC - Tổng quan", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
-    ["Tổng vốn BTC", ...moneyPair(btcStats.capitalVnd)],
+  section("Crypto - Tổng quan", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
+    ["Tổng vốn Crypto", ...moneyPair(cryptoPrincipalVnd)],
     ["VND chờ đổi USDT", ...moneyPair(btcStats.pendingVnd)],
     ["VND đã mua USDT/mua BTC", ...moneyPair(btcStats.investedValueVnd)],
     ["Số dư USDT", ...usdtPair(btcStats.usdtBalance)],
     ["BTC đang giữ", ...btcPair(btcStats.btcBalance)],
     ["Giá trị BTC theo USDT", ...usdtPair(btcStats.btcValueUsdt)],
-    ["Tổng tài sản BTC", ...moneyPair(btcStats.reportValueVnd)],
+    ["SOL đang giữ", ...solPair(sol.balance)],
+    ["Giá trị SOL theo USDT", ...usdtPair(sol.balance * state.market.solUsd)],
+    ["Tổng tài sản Crypto", ...moneyPair(cryptoValueVnd)],
     ["Giá vốn TB BTC", ...usdtPair(btcStats.averageCostUsdt)],
-    ["Lãi/lỗ BTC", ...moneyPair(btcStats.pnlVnd)],
-    ["Lãi/lỗ BTC USDT", ...usdtPair(btcStats.pnlUsdt)],
+    ["Giá vốn TB SOL", ...usdtPair(sol.balance ? sol.cost / sol.balance : 0)],
+    ["Lãi/lỗ Crypto", ...moneyPair(cryptoPnlVnd)],
+    ["Lãi/lỗ Crypto %", percentText(cryptoPnlPercent)],
   ]);
 
-  section("BTC - Mua USDT", ["ID", "Ngày", "VND dùng mua", "VND hiển thị", "USDT thực nhận", "USDT hiển thị", "Giá USDT/VND lúc mua", "Ghi chú"], sortedByDate(state.btcUsdtTopups).map((item) => [
+  section("Crypto - Mua USDT", ["ID", "Ngày", "VND dùng mua", "VND hiển thị", "USDT thực nhận", "USDT hiển thị", "Giá USDT/VND lúc mua", "Ghi chú"], sortedByDate(state.btcUsdtTopups).map((item) => [
     item.id,
     safeDate(item.date),
     ...moneyPair(item.vndAmount),
@@ -1675,7 +1685,7 @@ function exportCsvBundle(state: AppState) {
     item.note,
   ]));
 
-  section("BTC - Kế hoạch DCA", ["ID", "Trạng thái", "Tần suất", "Giờ chạy", "Ngày bắt đầu", "Giao dịch tiếp theo", "Lần chạy cuối", "USDT mỗi kỳ", "USDT mỗi kỳ hiển thị", "Đã đầu tư USDT", "Đã đầu tư hiển thị", "Giá trị hiện tại USDT", "Giá trị hiện tại hiển thị", "Lãi/lỗ USDT", "Lãi/lỗ hiển thị", "%", "BTC tích lũy", "BTC hiển thị", "Giá gần nhất", "Giá gần nhất hiển thị", "Giá trung bình", "Giá trung bình hiển thị", "Số lệnh", "Ghi chú trạng thái", "Ghi chú"], state.btcDcaPlans.map((plan) => {
+  section("Crypto - Kế hoạch DCA BTC", ["ID", "Trạng thái", "Tần suất", "Giờ chạy", "Ngày bắt đầu", "Giao dịch tiếp theo", "Lần chạy cuối", "USDT mỗi kỳ", "USDT mỗi kỳ hiển thị", "Đã đầu tư USDT", "Đã đầu tư hiển thị", "Giá trị hiện tại USDT", "Giá trị hiện tại hiển thị", "Lãi/lỗ USDT", "Lãi/lỗ hiển thị", "%", "BTC tích lũy", "BTC hiển thị", "Giá gần nhất", "Giá gần nhất hiển thị", "Giá trung bình", "Giá trung bình hiển thị", "Số lệnh", "Ghi chú trạng thái", "Ghi chú"], state.btcDcaPlans.map((plan) => {
     const planStats = dcaPlanStatsForExport(plan);
     return [
       plan.id,
@@ -1699,7 +1709,7 @@ function exportCsvBundle(state: AppState) {
     ];
   }));
 
-  section("BTC - Lệnh mua BTC", ["ID", "Loại", "Kế hoạch DCA", "Thời điểm", "USDT dùng mua", "USDT hiển thị", "BTC nhận", "BTC hiển thị", "Giá BTC/USDT", "Giá hiển thị", "Chi phí VND nếu mua trực tiếp", "Chi phí hiển thị", "Ghi chú"], state.btcTrades.map((item) => [
+  section("Crypto - Lệnh mua BTC", ["ID", "Loại", "Kế hoạch DCA", "Thời điểm", "USDT dùng mua", "USDT hiển thị", "BTC nhận", "BTC hiển thị", "Giá BTC/USDT", "Giá hiển thị", "Chi phí VND nếu mua trực tiếp", "Chi phí hiển thị", "Ghi chú"], state.btcTrades.map((item) => [
     item.id,
     item.type === "dca" ? "DCA" : "Mua thêm",
     item.planId ?? "",
@@ -1711,7 +1721,7 @@ function exportCsvBundle(state: AppState) {
     item.note,
   ]));
 
-  section("BTC - Rút / chuyển / đổi", ["ID", "Ngày", "Tài sản nguồn", "Nơi nhận", "BTC", "BTC hiển thị", "USDT", "USDT hiển thị", "Giá BTC/USDT", "Giá hiển thị", "Giá trị VND", "VND hiển thị", "Ghi chú"], sortedByDate(state.btcTransfers).map((item) => [
+  section("Crypto - Rút / chuyển BTC-USDT", ["ID", "Ngày", "Tài sản nguồn", "Nơi nhận", "BTC", "BTC hiển thị", "USDT", "USDT hiển thị", "Giá BTC/USDT", "Giá hiển thị", "Giá trị VND", "VND hiển thị", "Ghi chú"], sortedByDate(state.btcTransfers).map((item) => [
     item.id,
     safeDate(item.date),
     item.asset.toUpperCase(),
@@ -1777,15 +1787,7 @@ function exportCsvBundle(state: AppState) {
     safeDateTime(item.updatedAt),
   ]));
 
-  section("SOL - Tổng quan", ["Chỉ tiêu", "Giá trị", "Hiển thị"], [
-    ["SOL đang giữ", ...solPair(sol.balance)],
-    ["Giá vốn SOL", ...usdtPair(sol.cost)],
-    ["SOL sở hữu theo thị trường", ...usdtPair(sol.balance * state.market.solUsd)],
-    ["Giá trị VND", ...moneyPair(sol.balance * state.market.solUsd * state.market.usdVnd)],
-    ["Giá SOL/USD", ...usdtPair(state.market.solUsd)],
-  ]);
-
-  section("SOL - Giao dịch", ["ID", "Loại", "Ngày", "SOL", "SOL hiển thị", "Giá SOL", "Giá hiển thị", "Giá trị USDT", "USDT hiển thị", "Giá trị VND", "VND hiển thị", "Nơi nhận", "Ghi chú"], sortedByDate(state.solTransactions).map((item) => {
+  section("Crypto - Giao dịch SOL", ["ID", "Loại", "Ngày", "SOL", "SOL hiển thị", "Giá SOL", "Giá hiển thị", "Giá trị USDT", "USDT hiển thị", "Giá trị VND", "VND hiển thị", "Nơi nhận", "Ghi chú"], sortedByDate(state.solTransactions).map((item) => {
     const price = isSolWithdrawal(item) ? item.sellPrice : item.buyPrice;
     const vndAmount = isSolWithdrawal(item) ? item.vndAmount : item.solAmount * price * state.market.usdVnd;
     return [
@@ -2079,6 +2081,24 @@ function monthlySummary(state: AppState, month: string) {
   return { incomeRows, expenseRows, income, expense, saving, allocation, allocationAmounts };
 }
 
+function averageMonthlyExpenseSince(state: AppState, startMonth = FINANCIAL_RULE_START_MONTH) {
+  const months = new Set<string>();
+  state.expenseEntries.forEach((item) => {
+    if (item.month >= startMonth) months.add(item.month);
+  });
+  state.monthlyExpenses.forEach((item) => {
+    if (item.month >= startMonth && item.checked) months.add(item.month);
+  });
+  if (currentMonth() >= startMonth) months.add(currentMonth());
+
+  const expenses = [...months]
+    .sort()
+    .map((month) => monthlySummary(state, month).expense)
+    .filter((expense) => expense > 0);
+
+  return expenses.length ? expenses.reduce((sum, expense) => sum + expense, 0) / expenses.length : 0;
+}
+
 function activePrincipal(deposit: BankDeposit) {
   if (deposit.status === "active") return deposit.principal;
   return 0;
@@ -2137,9 +2157,8 @@ function assetPnlRows(state: AppState) {
   const saving = depositFundPnl(state, "saving");
   const emergency = depositFundPnl(state, "emergency");
   const rows = [
-    makeAssetPnlRow("btc", "BTC", btcStats.capitalVnd, btcStats.reportValueVnd),
+    makeAssetPnlRow("btc", "Crypto", btcStats.capitalVnd + solPrincipal, btcStats.reportValueVnd + solCurrent),
     makeAssetPnlRow("stock", "CK", stockStats.fundCash, stockStats.totalValue),
-    makeAssetPnlRow("sol", "SOL", solPrincipal, solCurrent),
     makeAssetPnlRow("saving", "Tiết kiệm", saving.principal, saving.current),
     makeAssetPnlRow("emergency", "Dự phòng", emergency.principal, emergency.current),
   ];
@@ -2227,7 +2246,7 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   }
 
   if (btcStats.pendingVnd > 0) {
-    tasks.push({ id: "btc-pending", title: "Còn VND chưa đổi USDT", detail: `Còn ${formatVnd(btcStats.pendingVnd)} chờ đổi sang USDT`, action: "Mua USDT", badge: "BTC", page: "investment", tab: "btc", investmentAction: "btc-topup" });
+    tasks.push({ id: "btc-pending", title: "Còn VND chưa đổi USDT", detail: `Còn ${formatVnd(btcStats.pendingVnd)} chờ đổi sang USDT`, action: "Mua USDT", badge: "BTC", page: "investment", tab: "crypto", investmentAction: "btc-topup" });
   }
 
   const pendingSolStockCash = pendingStockCashFromTransfer(state, "SOL", stockStats.cash);
@@ -2249,7 +2268,7 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   const dailyNeed = activePlans.reduce((sum, plan) => sum + (plan.frequency === "daily" ? plan.amountUsdt : 0), 0);
   if (dailyNeed > 0) {
     const daysLeft = Math.floor(btcStats.usdtBalance / dailyNeed);
-    if (daysLeft < 5) tasks.push({ id: "usdt-days", title: "USDT chỉ còn đủ DCA dưới 5 ngày", detail: `Còn đủ khoảng ${daysLeft} ngày với lịch hiện tại`, action: "Mua USDT", badge: "BTC", tone: daysLeft <= 2 ? "danger" : "warning", page: "investment", tab: "btc", investmentAction: "btc-topup" });
+    if (daysLeft < 5) tasks.push({ id: "usdt-days", title: "USDT chỉ còn đủ DCA dưới 5 ngày", detail: `Còn đủ khoảng ${daysLeft} ngày với lịch hiện tại`, action: "Mua USDT", badge: "BTC", tone: daysLeft <= 2 ? "danger" : "warning", page: "investment", tab: "crypto", investmentAction: "btc-topup" });
   }
 
   return tasks.slice(0, 12);
@@ -2434,6 +2453,7 @@ function MetricCard({
   label,
   value,
   subValue,
+  subTone,
   icon,
   tone,
   percent,
@@ -2442,6 +2462,7 @@ function MetricCard({
   label: string;
   value: string;
   subValue?: string;
+  subTone?: "success" | "danger";
   icon: JSX.Element;
   tone?: string;
   percent?: number;
@@ -2459,7 +2480,7 @@ function MetricCard({
       <div>
         <small>{label} {typeof percent === "number" && <b>{percent}%</b>}</small>
         <strong>{value}</strong>
-        {subValue && <em>{subValue}</em>}
+        {subValue && <em className={subTone ? `metric-sub ${subTone}` : undefined}>{subValue}</em>}
       </div>
     </article>
   );
@@ -2658,6 +2679,10 @@ function UnifiedDashboardPage({
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
 }) {
   const summary = monthlySummary(state, month);
+  const minMonthlySaving = summary.income * 0.1;
+  const maxMonthlyExpense = summary.income * 0.6;
+  const savingRuleOk = summary.saving >= minMonthlySaving;
+  const expenseRuleOk = summary.expense <= maxMonthlyExpense;
   const preferredMoneyRowId = (rows: Array<{ id: string; value: number }>) =>
     [...rows].filter((row) => row.value > 0).sort((a, b) => b.value - a.value)[0]?.id ?? rows[0]?.id ?? null;
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(() => preferredMoneyRowId(summary.incomeRows));
@@ -3026,8 +3051,8 @@ function UnifiedDashboardPage({
 
       <section className="metrics-grid">
         <MetricCard label="Thu nhập" value={formatVnd(summary.income)} icon={<BadgeDollarSign size={20} />} />
-        <MetricCard label="Chi tiêu" value={formatVnd(summary.expense)} icon={<ArrowDownCircle size={20} />} />
-        <MetricCard label="Tiết kiệm" value={formatVnd(summary.saving)} icon={<PiggyBank size={20} />} tone="highlight" />
+        <MetricCard label="Chi tiêu" value={formatVnd(summary.expense)} subValue={`Max: ${formatVnd(maxMonthlyExpense)}`} subTone={expenseRuleOk ? "success" : "danger"} icon={<ArrowDownCircle size={20} />} />
+        <MetricCard label="Tiết kiệm" value={formatVnd(summary.saving)} subValue={`Min: ${formatVnd(minMonthlySaving)}`} subTone={savingRuleOk ? "success" : "danger"} icon={<PiggyBank size={20} />} tone="highlight" />
       </section>
 
       {taskPanel("dashboard-task-mobile")}
@@ -3108,7 +3133,7 @@ function UnifiedDashboardPage({
       <section className="two-column compact dashboard-lower-grid">
         <article className="panel">
           <div className="panel-title">
-            <h2>Checklist khoản cố định</h2>
+            <h2>Khoản cố định</h2>
           </div>
           <div className="check-list">
             {fixedCategories.map((category) => {
@@ -3117,18 +3142,24 @@ function UnifiedDashboardPage({
               return (
                 <div key={category.id} className={record.checked ? "done fixed-check-row" : "fixed-check-row"}>
                   <button className={record.checked ? "check-icon checked" : "check-icon"} title={record.checked ? "Bỏ tick khoản cố định" : "Tick khoản cố định"} onClick={() => updateMonthlyExpense(category, { checked: !record.checked })} type="button">
-                    <CheckCircle2 size={18} />
+                    {record.checked && <Check size={16} />}
                   </button>
-                  <span>{category.name}</span>
-                  <strong>{formatVnd(record.amount)}</strong>
-                  <button className="row-icon-button" title="Sửa số tiền tháng này" onClick={() => setEditingFixed({ categoryId: category.id, amount: record.amount.toLocaleString("vi-VN") })} type="button">
-                    <Pencil size={16} />
-                  </button>
-                  {!accumulationGoal && (
-                    <button className="row-icon-button danger-text" title="Xóa mục" onClick={() => deleteExpenseCategory(category)} type="button">
-                      <X size={16} />
-                    </button>
-                  )}
+                  <span className="fixed-check-name">{category.name}</span>
+                  <div className="fixed-check-right">
+                    <strong>{formatVnd(record.amount)}</strong>
+                    <div className="fixed-check-actions">
+                      <button className="row-icon-button" title="Sửa số tiền tháng này" onClick={() => setEditingFixed({ categoryId: category.id, amount: record.amount.toLocaleString("vi-VN") })} type="button">
+                        <Pencil size={15} />
+                      </button>
+                      {!accumulationGoal ? (
+                        <button className="row-icon-button danger-text" title="Xóa mục" onClick={() => deleteExpenseCategory(category)} type="button">
+                          <Trash2 size={15} />
+                        </button>
+                      ) : (
+                        <span className="row-icon-placeholder" aria-hidden="true" />
+                      )}
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -3707,7 +3738,7 @@ function AccumulationPage({
       <header className="page-header">
         <div>
           <p className="eyebrow">Kế hoạch chi cố định</p>
-            <h1>{showHistory}</h1>
+          <h1>Tích lũy</h1>
         </div>
         <div className="page-header-actions">
           <button className="ghost" onClick={() => {
@@ -3776,21 +3807,36 @@ function AccumulationPage({
               const progress = accumulationProgress(state, goal);
               const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
               return (
-                <article className="accumulation-card ended" key={goal.id}>
-                  <div className="panel-title">
-                    <div>
-                      <h2>{goal.name}</h2>
-                      <small>{goal.endedAt ? `Kết thúc ${formatDate(goal.endedAt)}` : "Đã kết thúc"}</small>
+                <article className="accumulation-card accumulation-goal-card ended" key={goal.id}>
+                  <PiggyBank className="accumulation-card-bg-icon" size={86} />
+                  <div className="accumulation-goal-head">
+                    <div className="accumulation-goal-title">
+                      <span className="accumulation-goal-icon"><PiggyBank size={25} /></span>
+                      <div>
+                        <h2>{goal.name}</h2>
+                        <small>{goal.endedAt ? `Kết thúc ${formatDate(goal.endedAt)}` : "Đã kết thúc"}</small>
+                      </div>
                     </div>
-                    <strong>{percent.toFixed(0)}%</strong>
+                    <span className="accumulation-percent-badge">{percent.toFixed(0)}%</span>
                   </div>
-                  <div className="progress-track">
-                    <span style={{ width: `${percent}%` }} />
+                  <div className="accumulation-progress-block">
+                    <div>
+                      <span>Tiến độ</span>
+                      <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong>
+                    </div>
+                    <div className="progress-track">
+                      <span style={{ width: `${percent}%` }} />
+                    </div>
                   </div>
-                  <div className="accumulation-summary">
-                    <span>Mục tiêu <strong>{formatVnd(goal.targetAmount)}</strong></span>
-                    <span>Đã tích lũy <strong>{formatVnd(progress)}</strong></span>
-                    <span>Tiến độ <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong></span>
+                  <div className="accumulation-stat-grid">
+                    <div>
+                      <small>Mục tiêu</small>
+                      <strong>{formatVnd(goal.targetAmount)}</strong>
+                    </div>
+                    <div>
+                      <small>Đã tích lũy</small>
+                      <strong>{formatVnd(progress)}</strong>
+                    </div>
                   </div>
                 </article>
               );
@@ -3806,35 +3852,46 @@ function AccumulationPage({
             const progress = accumulationProgress(state, goal);
             const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
             const remainingAmount = Math.max(goal.targetAmount - progress, 0);
-            const nextRecord = state.monthlyExpenses
-              .filter((item) => item.categoryId === goal.categoryId && !item.checked && item.month >= currentMonth())
-              .sort((a, b) => a.month.localeCompare(b.month))[0];
             const paidMonths = state.monthlyExpenses.filter((item) => item.categoryId === goal.categoryId && item.checked).length;
+            const unpaidMonths = accumulationUnpaidMonths(state, goal);
             return (
-              <article className={`accumulation-card ${goal.status}`} key={goal.id}>
+              <article className={`accumulation-card accumulation-goal-card ${goal.status}`} key={goal.id}>
+                <PiggyBank className="accumulation-card-bg-icon" size={86} />
                 <button className="accumulation-delete-button" onClick={() => deleteGoal(goal)} title={`Xóa ${goal.name}`} type="button" aria-label={`Xóa ${goal.name}`}>
                   <X size={16} />
                 </button>
-                <div className="panel-title">
-                  <div>
-                    <h2>{goal.name}</h2>
-                    <small>{goal.status === "ended" ? "Đã kết thúc" : goal.dueDate ? `Cần dùng ${formatDate(goal.dueDate)}` : `Bắt đầu ${formatMonth(goal.startMonth)}`}</small>
+                <div className="accumulation-goal-head">
+                  <div className="accumulation-goal-title">
+                    <span className="accumulation-goal-icon"><PiggyBank size={25} /></span>
+                    <div>
+                      <h2>{goal.name}</h2>
+                      <small>{goal.status === "ended" ? "Đã kết thúc" : goal.dueDate ? `Dự kiến: ${formatDate(goal.dueDate)}` : `Bắt đầu: ${formatMonth(goal.startMonth)}`}</small>
+                    </div>
                   </div>
-                  <strong>{percent.toFixed(0)}%</strong>
+                  <span className="accumulation-percent-badge">{percent.toFixed(0)}%</span>
                 </div>
-                <div className="progress-track">
-                  <span style={{ width: `${percent}%` }} />
+                <div className="accumulation-progress-block">
+                  <div>
+                    <span>Tiến độ</span>
+                    <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong>
+                  </div>
+                  <div className="progress-track">
+                    <span style={{ width: `${percent}%` }} />
+                  </div>
                 </div>
-                <div className="accumulation-summary">
-                  <span>Mục tiêu <strong>{formatVnd(goal.targetAmount)}</strong></span>
-                  <span>Đã dồn <strong>{formatVnd(progress)}</strong></span>
-                  <span>Còn lại <strong>{formatVnd(remainingAmount)}</strong></span>
-                  <span>Số tháng dồn <strong>{paidMonths}/{goal.months}</strong></span>
-                  <span>Tháng kế tiếp <strong>{nextRecord ? `${formatMonth(nextRecord.month)} · ${formatVnd(nextRecord.amount)}` : "Không còn"}</strong></span>
+                <div className="accumulation-stat-grid">
+                  <div>
+                    <small>Cần thêm</small>
+                    <strong>{formatVnd(remainingAmount)}</strong>
+                  </div>
+                  <div>
+                    <small>Dự kiến còn</small>
+                    <strong>{unpaidMonths > 0 ? `${unpaidMonths} tháng` : "Hoàn tất"}</strong>
+                  </div>
                 </div>
                 <div className="card-actions accumulation-actions">
-                  {goal.status === "active" && <button className="ghost accumulation-action-button" onClick={() => openEdit(goal)}><Pencil size={16} /> Sửa</button>}
-                  {goal.status === "active" && <button className="ghost accumulation-action-button" onClick={() => endGoal(goal)}>Kết thúc</button>}
+                  {goal.status === "active" && <button className="primary accumulation-end-button" onClick={() => endGoal(goal)}>Kết thúc</button>}
+                  {goal.status === "active" && <button className="ghost accumulation-edit-button" onClick={() => openEdit(goal)} title={`Sửa ${goal.name}`} type="button"><Pencil size={17} /></button>}
                 </div>
               </article>
             );
@@ -4670,7 +4727,7 @@ function BtcPage({
   }, [state.market.btcUsdt, state.market.usdtVnd, state.market.usdVnd, transferForm.asset, transferForm.destination]);
 
   useEffect(() => {
-    if (actionIntent?.tab !== "btc" || actionIntent.action !== "btc-topup") return;
+    if (actionIntent?.tab !== "crypto" || actionIntent.action !== "btc-topup") return;
     setTopupFormOpen(true);
     onActionHandled?.();
   }, [actionIntent?.id]);
@@ -6205,10 +6262,9 @@ function InvestmentPage({
   const [investmentRefreshing, setInvestmentRefreshing] = useState(false);
   const investmentRefreshTimer = useRef<number | null>(null);
   const tabs: Array<{ id: InvestmentTab; label: string }> = [
-    { id: "btc", label: "BTC" },
+    { id: "crypto", label: "Crypto" },
     { id: "stock", label: "CK" },
     { id: "mbb", label: "Sổ MB" },
-    { id: "sol", label: "SOL" },
   ];
 
   useEffect(() => () => {
@@ -6262,10 +6318,9 @@ function InvestmentPage({
           </button>
         ))}
       </div>
-      {activeTab === "btc" && <BtcPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
+      {activeTab === "crypto" && <CryptoPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
       {activeTab === "stock" && <StockPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} embedded />}
       {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} embedded fixedFilter="all" />}
-      {activeTab === "sol" && <SolPage state={state} setState={setState} commitWithUndo={commitWithUndo} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
     </div>
   );
 }
@@ -7363,14 +7418,800 @@ function SolPage({
   return <div className="page">{content}</div>;
 }
 
+function CryptoPage({
+  state,
+  setState,
+  commitWithUndo,
+  actionIntent,
+  onActionHandled,
+  onRefreshMarket,
+  marketStatus,
+  btcCloudAccountId,
+  embedded = false,
+}: {
+  state: AppState;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  commitWithUndo: CommitWithUndo;
+  actionIntent?: InvestmentActionIntent | null;
+  onActionHandled?: () => void;
+  onRefreshMarket: (silent?: boolean) => Promise<boolean>;
+  marketStatus: string;
+  btcCloudAccountId: string;
+  embedded?: boolean;
+}) {
+  type CryptoAction = "topup" | "dca" | "sol" | "withdraw" | null;
+  type CryptoTransferAsset = "btc" | "usdt" | "sol";
+
+  const btcStats = btcPortfolioStats(state);
+  const solStats = solPosition(state.solTransactions);
+  const [activeAction, setActiveAction] = useState<CryptoAction>(null);
+  const [topupForm, setTopupForm] = useState({ vnd: "", usdt: "", date: today(), note: "" });
+  const [planForm, setPlanForm] = useState({ amountUsdt: "2", frequency: "daily" as BtcDcaFrequency, time: "12:00", startDate: today() });
+  const [legacyDcaForm, setLegacyDcaForm] = useState({
+    amountUsdt: "2",
+    frequency: "daily" as BtcDcaFrequency,
+    time: "12:00",
+    startDate: "2026-07-13",
+    nextDate: "2026-07-30",
+    activeRuns: "14",
+    btcAmount: "0,00043251",
+    latestPriceUsdt: "64.337,674905",
+    averagePriceUsdt: "64.565,25594748",
+    note: "DCA Binance",
+  });
+  const [solForm, setSolForm] = useState({ sol: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", date: today(), note: "" });
+  const [transferForm, setTransferForm] = useState({
+    asset: "btc" as CryptoTransferAsset,
+    btc: "",
+    usdt: "",
+    sol: "",
+    price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+    received: "",
+    btcReceived: "",
+    destination: "usdt" as BtcTransferTarget | "btc-direct",
+    date: today(),
+    note: "",
+  });
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [showLegacyDca, setShowLegacyDca] = useState(false);
+  const [expandedDcaPlanIds, setExpandedDcaPlanIds] = useState<string[]>([]);
+  const [historyDcaPlanIds, setHistoryDcaPlanIds] = useState<string[]>([]);
+  const [editingDcaAssetPlanId, setEditingDcaAssetPlanId] = useState<string | null>(null);
+  const [dcaAssetForm, setDcaAssetForm] = useState({ btcAmount: "", averagePriceUsdt: "" });
+  const [cryptoError, setCryptoError] = useState("");
+  const solValueUsd = solStats.balance * state.market.solUsd;
+  const solValueVnd = solValueUsd * state.market.usdVnd;
+  const solPnlUsd = solValueUsd - solStats.cost;
+  const solPnlVnd = solPnlUsd * state.market.usdVnd;
+  const cryptoValue = btcStats.totalValueVnd + solValueVnd;
+  const cryptoPrincipal = btcStats.capitalVnd + solStats.cost * state.market.usdVnd;
+  const cryptoPnl = cryptoValue - cryptoPrincipal;
+  const cryptoPnlPercent = cryptoPrincipal ? (cryptoPnl / cryptoPrincipal) * 100 : 0;
+  const usdtVndRate = state.market.usdtVnd || state.market.usdVnd;
+  const btcValueVnd = btcStats.btcValueUsdt * usdtVndRate;
+  const usdtValueVnd = btcStats.usdtBalance * usdtVndRate;
+  const solAverageCost = solStats.balance ? solStats.cost / solStats.balance : 0;
+  const activeDcaPlans = state.btcDcaPlans.filter((plan) => plan.isActive);
+  const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
+  const destinationOptions = (asset: CryptoTransferAsset): Array<{ id: BtcTransferTarget | "btc-direct"; label: string }> => {
+    if (asset === "btc") return [{ id: "usdt", label: "USDT" }];
+    if (asset === "usdt") {
+      return [
+        { id: "btc", label: "BTC" },
+        { id: "stock", label: "CK" },
+        { id: "saving", label: "Tiết kiệm" },
+        { id: "emergency", label: "Dự phòng" },
+        { id: "cash", label: "Tiền mặt" },
+      ];
+    }
+    return [
+      { id: "btc", label: "BTC - về USDT" },
+      { id: "btc-direct", label: "BTC - mua BTC trực tiếp" },
+      { id: "stock", label: "CK" },
+      { id: "saving", label: "Tiết kiệm" },
+      { id: "emergency", label: "Dự phòng" },
+      { id: "cash", label: "Tiền mặt" },
+    ];
+  };
+  const assetRows = [
+    { id: "btc", name: "Bitcoin", symbol: "BTC", amount: formatBtc(btcStats.btcBalance), value: btcValueVnd, icon: <Bitcoin size={18} /> },
+    { id: "sol", name: "Solana", symbol: "SOL", amount: formatSolAmount(solStats.balance), value: solValueVnd, icon: <Coins size={18} /> },
+    { id: "usdt", name: "Tether", symbol: "USDT", amount: formatUsdt(btcStats.usdtBalance), value: usdtValueVnd, icon: <CircleDollarSign size={18} /> },
+  ];
+
+  useEffect(() => {
+    const nextPrice = transferPriceFor(transferForm.asset, transferForm.destination);
+    if (!nextPrice) return;
+    setTransferForm((prev) => (prev.price === formatDecimalInput(String(nextPrice)) ? prev : { ...prev, price: formatDecimalInput(String(nextPrice)) }));
+  }, [state.market.btcUsdt, state.market.solUsd, state.market.usdtVnd, state.market.usdVnd, transferForm.asset, transferForm.destination]);
+
+  useEffect(() => {
+    if (!state.market.solUsd) return;
+    setSolForm((prev) => (prev.price ? prev : { ...prev, price: formatDecimalInput(String(state.market.solUsd)) }));
+  }, [state.market.solUsd]);
+
+  useEffect(() => {
+    if (actionIntent?.tab !== "crypto" || actionIntent.action !== "btc-topup") return;
+    setActiveAction("topup");
+    onActionHandled?.();
+  }, [actionIntent?.id]);
+
+  const syncBtcRow = (table: string, id: string, payload: unknown, columns: Record<string, unknown> = {}) => {
+    if (!btcCloudAccountId) return;
+    void upsertCloudPayloadRow(table, btcCloudAccountId, id, payload, columns).catch(() => {
+      setCryptoError("Đã lưu local, nhưng chưa đồng bộ được BTC cloud.");
+    });
+  };
+
+  function transferPriceFor(asset: CryptoTransferAsset, destination: BtcTransferTarget | "btc-direct") {
+    if (asset === "sol") return state.market.solUsd;
+    if (asset === "usdt" && destination !== "btc") return usdtVndRate;
+    return state.market.btcUsdt;
+  }
+
+  const transferSourceAmount = () => {
+    if (transferForm.asset === "btc") return parseDecimal(transferForm.btc);
+    if (transferForm.asset === "sol") return parseDecimal(transferForm.sol);
+    return parseDecimal(transferForm.usdt);
+  };
+
+  const transferReceiveUnit = () => {
+    if (transferForm.asset === "btc" && transferForm.destination === "usdt") return "USDT";
+    if (transferForm.asset === "usdt" && transferForm.destination === "btc") return "BTC";
+    return "VND";
+  };
+
+  const transferEstimatedReceive = () => {
+    const source = transferSourceAmount();
+    const price = parseDecimal(transferForm.price) || transferPriceFor(transferForm.asset, transferForm.destination);
+    if (!source || !price) return 0;
+    if (transferForm.asset === "btc") return source * price;
+    if (transferForm.asset === "usdt" && transferForm.destination === "btc") return source / price;
+    if (transferForm.asset === "usdt") return source * price;
+    return source * price * state.market.usdVnd;
+  };
+
+  const transferEstimatedBtcFromSol = () => {
+    if (transferForm.asset !== "sol" || transferForm.destination !== "btc-direct") return "";
+    return estimateBtcFromSolInput(transferForm.sol, transferForm.price, state.market.btcUsdt);
+  };
+
+  const formatTransferReceive = () => {
+    const value = transferEstimatedReceive();
+    const unit = transferReceiveUnit();
+    if (unit === "BTC") return formatBtc(value);
+    if (unit === "USDT") return formatUsdt(value);
+    return formatVnd(value);
+  };
+
+  const estimateUsdtFromVnd = (vndInput: string) => {
+    const vndAmount = parseMoney(vndInput);
+    return vndAmount && usdtVndRate ? formatDecimalInput((vndAmount / usdtVndRate).toFixed(3)) : "";
+  };
+
+  const updateTopupVnd = (value: string) => {
+    const vnd = formatMoneyInput(value);
+    setTopupForm((prev) => ({ ...prev, vnd, usdt: vnd ? estimateUsdtFromVnd(vnd) || prev.usdt : "" }));
+  };
+
+  const topupUsdtRate = () => {
+    const vndAmount = parseMoney(topupForm.vnd);
+    const usdtAmount = parseDecimal(topupForm.usdt);
+    return vndAmount && usdtAmount ? vndAmount / usdtAmount : 0;
+  };
+
+  const openAction = (action: Exclude<CryptoAction, null>) => {
+    setActiveAction((current) => (current === action ? null : action));
+    setCryptoError("");
+    if (action !== "dca") setShowLegacyDca(false);
+  };
+
+  const saveTopup = () => {
+    const vndAmount = parseMoney(topupForm.vnd);
+    const usdtAmount = parseDecimal(topupForm.usdt);
+    if (!vndAmount || !usdtAmount) return setCryptoError("Nhập VND và USDT thực nhận hợp lệ.");
+    if (vndAmount > btcStats.pendingVnd) return setCryptoError("Số VND mua USDT đang lớn hơn vốn crypto chưa đổi.");
+    const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: topupForm.date, note: topupForm.note.trim() };
+    commitWithUndo("Đã thêm mua USDT.", (prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
+    syncBtcRow("btc_usdt_topups", topup.id, topup);
+    setTopupForm({ vnd: "", usdt: "", date: today(), note: "" });
+    setActiveAction(null);
+    setCryptoError("");
+  };
+
+  const saveSol = () => {
+    const sol = parseDecimal(solForm.sol);
+    const price = parseDecimal(solForm.price);
+    if (!sol || !price) return setCryptoError("Nhập số SOL và giá mua hợp lệ.");
+    commitWithUndo("Đã thêm SOL.", (prev) => ({
+      ...prev,
+      solTransactions: [...prev.solTransactions, { id: uid(), type: "buy", solAmount: sol, buyPrice: price, date: solForm.date, note: solForm.note.trim() }],
+    }));
+    setSolForm({ sol: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", date: today(), note: "" });
+    setActiveAction(null);
+    setCryptoError("");
+  };
+
+  const savePlan = () => {
+    const amountUsdt = parseDecimal(planForm.amountUsdt);
+    if (!amountUsdt) return setCryptoError("Nhập số USDT mỗi kỳ hợp lệ.");
+    const existingPlan = state.btcDcaPlans.find((item) => item.id === editingPlanId);
+    const plan: BtcDcaPlan = normalizeDcaPlan({
+      id: editingPlanId ?? uid(),
+      amountUsdt,
+      frequency: planForm.frequency,
+      time: planForm.time,
+      startDate: planForm.startDate,
+      nextRunAt: nextDcaRunAt(planForm),
+      isActive: existingPlan?.isActive ?? true,
+      status: existingPlan?.status ?? "active",
+      btcAmountOverride: existingPlan?.btcAmountOverride,
+      averagePriceUsdtOverride: existingPlan?.averagePriceUsdtOverride,
+      note: existingPlan?.note || "DCA Binance",
+    });
+    commitWithUndo(editingPlanId ? "Đã sửa kế hoạch DCA." : "Đã tạo kế hoạch DCA.", (prev) => ({
+      ...prev,
+      btcDcaPlans: editingPlanId ? prev.btcDcaPlans.map((item) => (item.id === editingPlanId ? plan : item)) : [...prev.btcDcaPlans, plan],
+    }));
+    syncBtcRow("btc_dca_plans", plan.id, plan, { is_active: plan.isActive, next_run_at: plan.nextRunAt, status: plan.status });
+    setPlanForm({ amountUsdt: "2", frequency: "daily", time: "12:00", startDate: today() });
+    setEditingPlanId(null);
+    setActiveAction(null);
+    setCryptoError("");
+  };
+
+  const saveLegacyDca = () => {
+    const amountUsdt = parseDecimal(legacyDcaForm.amountUsdt);
+    const activeRuns = Math.floor(parseDecimal(legacyDcaForm.activeRuns));
+    const btcAmount = parseDecimal(legacyDcaForm.btcAmount);
+    const latestPriceUsdt = parseDecimal(legacyDcaForm.latestPriceUsdt);
+    const averagePriceUsdt = parseDecimal(legacyDcaForm.averagePriceUsdt);
+    if (!amountUsdt || !activeRuns || !btcAmount || !latestPriceUsdt || !averagePriceUsdt || !legacyDcaForm.nextDate) {
+      return setCryptoError("Nhập đủ số kỳ, BTC tích lũy, giá gần nhất và giá trung bình.");
+    }
+    const totalInvestedUsdt = amountUsdt * activeRuns;
+    if (totalInvestedUsdt - btcStats.usdtBalance > 0.000001) {
+      return setCryptoError(`Số dư USDT không đủ để import DCA này. Cần khoảng ${formatUsdt(totalInvestedUsdt)}, hiện có ${formatUsdt(btcStats.usdtBalance)}.`);
+    }
+
+    const planId = uid();
+    const plan: BtcDcaPlan = normalizeDcaPlan({
+      id: planId,
+      amountUsdt,
+      frequency: legacyDcaForm.frequency,
+      time: legacyDcaForm.time,
+      startDate: legacyDcaForm.startDate,
+      nextRunAt: localDateTimeIso(legacyDcaForm.nextDate, legacyDcaForm.time),
+      isActive: true,
+      status: "active",
+      btcAmountOverride: btcAmount,
+      averagePriceUsdtOverride: averagePriceUsdt,
+      note: legacyDcaForm.note.trim(),
+    });
+    const totalNote = legacyDcaForm.note.trim() || "Import DCA Binance";
+    const perRunUsdt = amountUsdt;
+    let trades: BtcTrade[];
+    if (activeRuns === 1) {
+      trades = [{ id: uid(), type: "dca", usdtAmount: totalInvestedUsdt, btcAmount, btcPriceUsdt: averagePriceUsdt, executedAt: localDateTimeIso(legacyDcaForm.startDate, legacyDcaForm.time), planId, note: totalNote }];
+    } else {
+      const latestBtc = perRunUsdt / latestPriceUsdt;
+      const remainingBtc = btcAmount - latestBtc;
+      const remainingUsdt = perRunUsdt * (activeRuns - 1);
+      const previousPriceUsdt = remainingBtc > 0 ? remainingUsdt / remainingBtc : 0;
+      if (!previousPriceUsdt) return setCryptoError("Dữ liệu giá không hợp lệ để tạo lịch sử DCA.");
+      trades = Array.from({ length: activeRuns }, (_, index) => {
+        const price = index === activeRuns - 1 ? latestPriceUsdt : previousPriceUsdt;
+        return { id: uid(), type: "dca" as const, usdtAmount: perRunUsdt, btcAmount: perRunUsdt / price, btcPriceUsdt: price, executedAt: localDateTimeIso(shiftDcaDate(legacyDcaForm.startDate, legacyDcaForm.frequency, index), legacyDcaForm.time), planId, note: totalNote };
+      });
+    }
+
+    commitWithUndo("Đã import DCA cũ.", (prev) => ({ ...prev, btcDcaPlans: [...prev.btcDcaPlans, plan], btcTrades: [...prev.btcTrades, ...trades] }));
+    syncBtcRow("btc_dca_plans", plan.id, plan, { is_active: plan.isActive, next_run_at: plan.nextRunAt, status: plan.status });
+    trades.forEach((trade) => syncBtcRow("btc_trades", trade.id, trade, { executed_at: trade.executedAt, plan_id: plan.id }));
+    setExpandedDcaPlanIds((prev) => [...prev, plan.id]);
+    setShowLegacyDca(false);
+    setActiveAction(null);
+    setCryptoError("");
+  };
+
+  const dcaPlanStats = (plan: BtcDcaPlan) => {
+    const trades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
+    const investedUsdt = trades.reduce((sum, trade) => sum + trade.usdtAmount, 0);
+    const tradeBtcAmount = trades.reduce((sum, trade) => sum + trade.btcAmount, 0);
+    const tradeAveragePriceUsdt = tradeBtcAmount ? investedUsdt / tradeBtcAmount : 0;
+    const btcAmount = plan.btcAmountOverride && plan.btcAmountOverride > 0 ? plan.btcAmountOverride : tradeBtcAmount;
+    const averagePriceUsdt = plan.averagePriceUsdtOverride && plan.averagePriceUsdtOverride > 0 ? plan.averagePriceUsdtOverride : tradeAveragePriceUsdt;
+    const currentValueUsdt = btcAmount * state.market.btcUsdt;
+    const pnlUsdt = currentValueUsdt - investedUsdt;
+    const pnlPercent = investedUsdt ? (pnlUsdt / investedUsdt) * 100 : 0;
+    const latestTrade = [...trades].sort((a, b) => b.executedAt.localeCompare(a.executedAt))[0];
+    return {
+      activeDays: trades.length,
+      averagePriceUsdt,
+      btcAmount,
+      currentValueUsdt,
+      investedUsdt,
+      latestPriceUsdt: latestTrade?.btcPriceUsdt || 0,
+      pnlPercent,
+      pnlUsdt,
+      startAt: new Date(`${plan.startDate}T${plan.time}:00`).toISOString(),
+      tradeCount: trades.length,
+    };
+  };
+
+  const editPlan = (plan: BtcDcaPlan) => {
+    setEditingPlanId(plan.id);
+    setPlanForm({ amountUsdt: String(plan.amountUsdt), frequency: plan.frequency, time: plan.time, startDate: plan.startDate });
+    setShowLegacyDca(false);
+    setActiveAction("dca");
+  };
+
+  const togglePlan = (plan: BtcDcaPlan) => {
+    const next: BtcDcaPlan = { ...plan, isActive: !plan.isActive, status: !plan.isActive ? "active" : "paused", statusNote: !plan.isActive ? "" : "Đã tạm dừng", nextRunAt: !plan.isActive ? nextDcaRunAt(plan) : plan.nextRunAt };
+    commitWithUndo(next.isActive ? "Đã bật lại DCA." : "Đã tạm dừng DCA.", (prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
+    syncBtcRow("btc_dca_plans", next.id, next, { is_active: next.isActive, next_run_at: next.nextRunAt, status: next.status });
+  };
+
+  const deletePlan = (plan: BtcDcaPlan) => {
+    const relatedTrades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
+    if (!window.confirm(`Xóa lệnh DCA này? ${relatedTrades.length} giao dịch DCA liên quan sẽ được xóa khỏi Crypto và hoàn lại USDT vào số dư.`)) return;
+    commitWithUndo(
+      "Đã xóa lệnh DCA.",
+      (prev) =>
+        withTrashItem(
+          { ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id), btcTrades: prev.btcTrades.filter((trade) => !(trade.type === "dca" && trade.planId === plan.id)) },
+          makeTrashItem("btc-dca", plan.id, `lệnh DCA ${formatUsdt(plan.amountUsdt)}`, plan, { btcTrades: relatedTrades })
+        ),
+      { action: "delete", entityType: "btc-dca", entityId: plan.id }
+    );
+    if (!btcCloudAccountId) return;
+    void deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được DCA trên cloud."));
+    relatedTrades.forEach((trade) => void deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được toàn bộ giao dịch DCA trên cloud.")));
+  };
+
+  const editDcaAsset = (plan: BtcDcaPlan) => {
+    const planStats = dcaPlanStats(plan);
+    setEditingDcaAssetPlanId(plan.id);
+    setDcaAssetForm({ btcAmount: String(planStats.btcAmount || ""), averagePriceUsdt: String(planStats.averagePriceUsdt || "") });
+    setExpandedDcaPlanIds((prev) => (prev.includes(plan.id) ? prev : [...prev, plan.id]));
+  };
+
+  const saveDcaAsset = (plan: BtcDcaPlan) => {
+    const btcAmountOverride = parseDecimal(dcaAssetForm.btcAmount);
+    const averagePriceUsdtOverride = parseDecimal(dcaAssetForm.averagePriceUsdt);
+    if (!btcAmountOverride || !averagePriceUsdtOverride) return setCryptoError("Nhập BTC tích lũy và giá trung bình hợp lệ.");
+    const next: BtcDcaPlan = { ...plan, btcAmountOverride, averagePriceUsdtOverride };
+    commitWithUndo("Đã chỉnh số BTC DCA.", (prev) => ({ ...prev, btcDcaPlans: prev.btcDcaPlans.map((item) => (item.id === plan.id ? next : item)) }));
+    syncBtcRow("btc_dca_plans", next.id, next, { is_active: next.isActive, next_run_at: next.nextRunAt, status: next.status });
+    setEditingDcaAssetPlanId(null);
+    setDcaAssetForm({ btcAmount: "", averagePriceUsdt: "" });
+    setCryptoError("");
+  };
+
+  const updateTransferAsset = (asset: CryptoTransferAsset) => {
+    const destination = destinationOptions(asset)[0].id;
+    setTransferForm((prev) => ({ ...prev, asset, destination, price: formatDecimalInput(String(transferPriceFor(asset, destination) || "")), received: "", btcReceived: "" }));
+    setCryptoError("");
+  };
+
+  const updateTransferDestination = (destination: BtcTransferTarget | "btc-direct") => {
+    setTransferForm((prev) => ({ ...prev, destination, price: formatDecimalInput(String(transferPriceFor(prev.asset, destination) || "")), received: "", btcReceived: destination === "btc-direct" ? transferEstimatedBtcFromSol() : "" }));
+    setCryptoError("");
+  };
+
+  const updateTransferSol = (value: string) => {
+    const sol = formatSolInput(value);
+    setTransferForm((prev) => ({ ...prev, sol, btcReceived: prev.destination === "btc-direct" ? estimateBtcFromSolInput(sol, prev.price, state.market.btcUsdt) : prev.btcReceived }));
+  };
+
+  const updateTransferPrice = (value: string) => {
+    const price = formatDecimalInput(value);
+    setTransferForm((prev) => ({ ...prev, price, btcReceived: prev.asset === "sol" && prev.destination === "btc-direct" ? estimateBtcFromSolInput(prev.sol, price, state.market.btcUsdt) : prev.btcReceived }));
+  };
+
+  const fillMaxTransferSource = () => {
+    if (transferForm.asset === "btc") return setTransferForm((prev) => ({ ...prev, btc: formatDecimalInput(btcStats.btcBalance.toFixed(8)), received: "" }));
+    if (transferForm.asset === "sol") return updateTransferSol(formatSolInput(String(solStats.balance)));
+    setTransferForm((prev) => ({ ...prev, usdt: formatDecimalInput(String(btcStats.usdtBalance)), received: "" }));
+  };
+
+  const resetTransferForm = () => {
+    setTransferForm({ asset: "btc", btc: "", usdt: "", sol: "", price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "", received: "", btcReceived: "", destination: "usdt", date: today(), note: "" });
+  };
+
+  const saveTransfer = () => {
+    const source = transferSourceAmount();
+    const price = parseDecimal(transferForm.price) || transferPriceFor(transferForm.asset, transferForm.destination);
+    const receivedInput = transferReceiveUnit() === "VND" ? parseMoney(transferForm.received) : parseDecimal(transferForm.received);
+    const received = receivedInput || transferEstimatedReceive();
+    if (!source || !price || !received) return setCryptoError("Nhập tài sản, giá và số tiền nhận hợp lệ.");
+
+    if (transferForm.asset === "btc") {
+      if (transferForm.destination !== "usdt") return setCryptoError("BTC chỉ được đổi sang USDT trong quỹ Crypto.");
+      if (source - btcStats.btcBalance > 0.00000001) return setCryptoError("Số BTC rút lớn hơn số BTC đang có.");
+      const transfer: BtcTransfer = { id: uid(), asset: "btc", btcAmount: source, usdtAmount: received, btcPriceUsdt: price, vndAmount: 0, destination: "usdt", date: transferForm.date, note: transferForm.note.trim() };
+      commitWithUndo("Đã chuyển BTC sang USDT.", (prev) => ({ ...prev, btcTransfers: [...prev.btcTransfers, transfer] }));
+      syncBtcRow("btc_transfers", transfer.id, transfer, { transfer_at: `${transfer.date}T00:00:00` });
+      resetTransferForm();
+      setActiveAction(null);
+      setCryptoError("");
+      return;
+    }
+
+    if (transferForm.asset === "usdt") {
+      if (source > btcStats.usdtBalance) return setCryptoError("Số USDT lớn hơn số dư USDT.");
+      if (transferForm.destination === "btc") {
+        const trade: BtcTrade = { id: uid(), type: "manual-buy", usdtAmount: source, btcAmount: received, btcPriceUsdt: price, executedAt: new Date(`${transferForm.date}T00:00:00`).toISOString(), note: transferForm.note.trim() || "Chuyển USDT sang BTC" };
+        commitWithUndo("Đã chuyển USDT sang BTC.", (prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
+        syncBtcRow("btc_trades", trade.id, trade, { executed_at: trade.executedAt, plan_id: null });
+        resetTransferForm();
+        setActiveAction(null);
+        setCryptoError("");
+        return;
+      }
+      const vndAmount = Math.round(received);
+      const transfer: BtcTransfer = { id: uid(), asset: "usdt", btcAmount: 0, usdtAmount: source, btcPriceUsdt: state.market.btcUsdt, vndAmount, destination: transferForm.destination as BtcTransferDestination, date: transferForm.date, note: transferForm.note.trim() };
+      const transferNote = transfer.note ? `Rút từ Crypto · ${transfer.note} [btc-transfer:${transfer.id}]` : `Rút từ Crypto [btc-transfer:${transfer.id}]`;
+      commitWithUndo("Đã lưu rút/chuyển Crypto.", (prev) => ({
+        ...prev,
+        btcTransfers: [...prev.btcTransfers, transfer],
+        fundTransactions: [
+          ...prev.fundTransactions,
+          { id: uid(), fund: "btc", type: "withdraw", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote },
+          ...(transfer.destination === "stock" ? [{ id: uid(), fund: "stock" as const, type: "deposit" as const, amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }] : []),
+        ],
+        incomeTransactions: transfer.destination === "cash" ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }] : prev.incomeTransactions,
+      }));
+      syncBtcRow("btc_transfers", transfer.id, transfer, { transfer_at: `${transfer.date}T00:00:00` });
+      resetTransferForm();
+      setActiveAction(null);
+      setCryptoError("");
+      return;
+    }
+
+    if (source - solStats.balance > 0.00000001) return setCryptoError("Số SOL rút lớn hơn số SOL đang có.");
+    const vndAmount = Math.round(received);
+    const btcAmount = parseDecimal(transferForm.btcReceived) || parseDecimal(transferEstimatedBtcFromSol());
+    if (transferForm.destination === "btc-direct" && !btcAmount) return setCryptoError("Nhập số BTC nhận hợp lệ.");
+    const userNote = transferForm.note.trim();
+    const note = userNote || "Rút từ SOL";
+    const transferNote = userNote ? `Rút từ SOL · ${userNote}` : "Rút từ SOL";
+    const withdrawal: SolWithdrawTransaction = { id: uid(), type: "withdraw", solAmount: source, sellPrice: price, vndAmount, destination: transferForm.destination as SolDestination, date: transferForm.date, note };
+    const usdtAmount = source * price;
+    const btcTopup: BtcUsdtTopup | null = withdrawal.destination === "btc" ? { id: uid(), vndAmount, usdtAmount, date: withdrawal.date, note: `${transferNote} · USDT từ SOL` } : null;
+    const btcTrade: BtcTrade | null = withdrawal.destination === "btc-direct" ? { id: uid(), type: "manual-buy", usdtAmount, btcAmount, btcPriceUsdt: usdtAmount / btcAmount, costVnd: vndAmount, executedAt: new Date(`${withdrawal.date}T00:00:00`).toISOString(), note: `${transferNote} · Mua BTC trực tiếp ${solBtcTradeMarker(withdrawal.id)}` } : null;
+    commitWithUndo("Đã rút/chuyển SOL.", (prev) => ({
+      ...prev,
+      solTransactions: [...prev.solTransactions, withdrawal],
+      btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
+      btcTrades: btcTrade ? [...prev.btcTrades, btcTrade] : prev.btcTrades,
+      fundTransactions:
+        withdrawal.destination === "btc" || withdrawal.destination === "btc-direct" || withdrawal.destination === "stock"
+          ? [...prev.fundTransactions, { id: uid(), fund: withdrawal.destination === "btc-direct" ? "btc" : withdrawal.destination, type: "deposit", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }]
+          : prev.fundTransactions,
+      incomeTransactions: withdrawal.destination === "cash" ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }] : prev.incomeTransactions,
+    }));
+    if (btcTopup) syncBtcRow("btc_usdt_topups", btcTopup.id, btcTopup);
+    if (btcTrade) syncBtcRow("btc_trades", btcTrade.id, btcTrade, { executed_at: btcTrade.executedAt, plan_id: null });
+    resetTransferForm();
+    setActiveAction(null);
+    setCryptoError("");
+  };
+
+  const btcRows = [
+    ...state.btcUsdtTopups.map((item) => ({ kind: "btc-topup" as const, date: item.date, item })),
+    ...state.btcTrades.filter((item) => item.type !== "dca").map((item) => ({ kind: "btc-trade" as const, date: dateValueFromDateTime(item.executedAt), item })),
+    ...state.btcTransfers.map((item) => ({ kind: "btc-transfer" as const, date: item.date, item })),
+  ];
+  const solRows = state.solTransactions.map((item) => ({ kind: "sol" as const, date: item.date, item }));
+  const historyRows = [...btcRows, ...solRows].sort((a, b) => b.date.localeCompare(a.date));
+
+  const solTransferNoteForHistory = (item: SolWithdrawTransaction) =>
+    item.note && item.note !== "Rút từ SOL" ? `Rút từ SOL · ${item.note}` : "Rút từ SOL";
+
+  const deleteHistoryRow = (row: (typeof historyRows)[number]) => {
+    if (row.kind === "sol") {
+      const item = row.item;
+      if (!window.confirm(`Xóa ${isSolWithdrawal(item) ? "lệnh rút/chuyển SOL" : "lệnh thêm SOL"} này? Số dư Crypto và các quỹ liên quan sẽ được tính lại.`)) return;
+      const relatedBtcTopups = isSolWithdrawal(item) && item.destination === "btc"
+        ? state.btcUsdtTopups.filter((topup) => topup.date === item.date && topup.note === `${solTransferNoteForHistory(item)} · USDT từ SOL` && Math.abs(topup.vndAmount - item.vndAmount) <= 1 && Math.abs(topup.usdtAmount - item.solAmount * item.sellPrice) <= 0.000001)
+        : [];
+      const relatedBtcTrades = isSolWithdrawal(item) && item.destination === "btc-direct" ? state.btcTrades.filter((trade) => trade.note.includes(solBtcTradeMarker(item.id))) : [];
+      commitWithUndo(isSolWithdrawal(item) ? "Đã xóa lệnh rút/chuyển SOL." : "Đã xóa lệnh thêm SOL.", (prev) => {
+        if (!isSolWithdrawal(item)) {
+          return withTrashItem({ ...prev, solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id) }, makeTrashItem("sol", item.id, `lệnh thêm SOL ${formatSolAmount(item.solAmount)}`, item));
+        }
+        const transferNote = solTransferNoteForHistory(item);
+        const relatedBtcTopupIds = new Set(relatedBtcTopups.map((topup) => topup.id));
+        const relatedBtcTradeIds = new Set(relatedBtcTrades.map((trade) => trade.id));
+        const relatedFundTransactions = item.destination === "btc" || item.destination === "btc-direct" || item.destination === "stock"
+          ? prev.fundTransactions.filter((transaction) => transaction.fund === (item.destination === "btc-direct" ? "btc" : item.destination) && transaction.type === "deposit" && transaction.amount === item.vndAmount && transaction.date === item.date && transaction.note === transferNote)
+          : [];
+        const relatedIncomeTransactions = item.destination === "cash" ? prev.incomeTransactions.filter((transaction) => transaction.categoryId === "other-income" && transaction.amount === item.vndAmount && transaction.date === item.date && transaction.note === transferNote) : [];
+        return withTrashItem(
+          {
+            ...prev,
+            solTransactions: prev.solTransactions.filter((transaction) => transaction.id !== item.id),
+            btcUsdtTopups: relatedBtcTopupIds.size ? prev.btcUsdtTopups.filter((topup) => !relatedBtcTopupIds.has(topup.id)) : prev.btcUsdtTopups,
+            btcTrades: relatedBtcTradeIds.size ? prev.btcTrades.filter((trade) => !relatedBtcTradeIds.has(trade.id)) : prev.btcTrades,
+            fundTransactions: relatedFundTransactions.length ? prev.fundTransactions.filter((transaction) => !relatedFundTransactions.some((candidate) => candidate.id === transaction.id)) : prev.fundTransactions,
+            incomeTransactions: relatedIncomeTransactions.length ? prev.incomeTransactions.filter((transaction) => !relatedIncomeTransactions.some((candidate) => candidate.id === transaction.id)) : prev.incomeTransactions,
+          },
+          makeTrashItem("sol", item.id, `lệnh rút/chuyển SOL ${formatSolAmount(item.solAmount)}`, item, { btcUsdtTopups: relatedBtcTopups, btcTrades: relatedBtcTrades, fundTransactions: relatedFundTransactions, incomeTransactions: relatedIncomeTransactions })
+        );
+      }, { action: "delete", entityType: "sol", entityId: item.id });
+      relatedBtcTopups.forEach((topup) => void deleteCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, topup.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được USDT từ SOL trên BTC cloud.")));
+      relatedBtcTrades.forEach((trade) => void deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được BTC mua từ SOL trên BTC cloud.")));
+      return;
+    }
+
+    const label = row.kind === "btc-topup" ? "lệnh mua USDT" : row.kind === "btc-trade" ? "lệnh mua BTC" : "lệnh rút/chuyển Crypto";
+    if (!window.confirm(`Xóa ${label} này? Số dư và lịch sử Crypto sẽ được cập nhật lại.`)) return;
+    const entityType: AuditEntityType = row.kind === "btc-topup" ? "btc-topup" : row.kind === "btc-trade" ? "btc-trade" : "btc-transfer";
+    commitWithUndo(`Đã xóa ${label}.`, (prev) => {
+      const relatedPayloads = row.kind === "btc-transfer"
+        ? {
+            fundTransactions: prev.fundTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`)),
+            incomeTransactions: prev.incomeTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`)),
+          }
+        : undefined;
+      return withTrashItem(
+        {
+          ...prev,
+          btcUsdtTopups: row.kind === "btc-topup" ? prev.btcUsdtTopups.filter((item) => item.id !== row.item.id) : prev.btcUsdtTopups,
+          btcTrades: row.kind === "btc-trade" ? prev.btcTrades.filter((item) => item.id !== row.item.id) : prev.btcTrades,
+          btcTransfers: row.kind === "btc-transfer" ? prev.btcTransfers.filter((item) => item.id !== row.item.id) : prev.btcTransfers,
+          fundTransactions: row.kind === "btc-transfer" ? prev.fundTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`)) : prev.fundTransactions,
+          incomeTransactions: row.kind === "btc-transfer" ? prev.incomeTransactions.filter((item) => !item.note.includes(btcTransferDepositMarker(row.item.id)) && !item.note.includes(`[btc-transfer:${row.item.id}]`)) : prev.incomeTransactions,
+        },
+        makeTrashItem(entityType, row.item.id, label, row.item, relatedPayloads)
+      );
+    }, { action: "delete", entityType, entityId: row.item.id });
+    if (!btcCloudAccountId) return;
+    const table = row.kind === "btc-topup" ? "btc_usdt_topups" : row.kind === "btc-trade" ? "btc_trades" : "btc_transfers";
+    void deleteCloudPayloadRow(table, btcCloudAccountId, row.item.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được dòng BTC cloud."));
+  };
+
+  const content = (
+    <div className="crypto-page">
+      <section className="crypto-portfolio-card">
+        <span className={`crypto-pnl-pill ${cryptoPnl < 0 ? "loss" : "gain"}`}>{cryptoPnlPercent.toFixed(1)}%</span>
+        <small>Tổng tài sản Crypto</small>
+        <strong>{formatVnd(cryptoValue)}</strong>
+        <div>
+          <span>Vốn ban đầu <b>{formatVnd(cryptoPrincipal)}</b></span>
+          <span>Lãi/lỗ <b className={cryptoPnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(cryptoPnl)}</b></span>
+        </div>
+      </section>
+
+      <section className="crypto-action-grid" aria-label="Thao tác Crypto">
+        <button className={activeAction === "topup" ? "active" : ""} onClick={() => openAction("topup")} type="button"><CircleDollarSign size={19} /><span>Mua USDT</span></button>
+        <button className={activeAction === "dca" ? "active" : ""} onClick={() => openAction("dca")} type="button"><CalendarClock size={19} /><span>DCA</span></button>
+        <button className={activeAction === "withdraw" ? "active" : ""} onClick={() => openAction("withdraw")} type="button"><ArrowDownCircle size={19} /><span>Rút tiền</span></button>
+        <button className={activeAction === "sol" ? "active" : ""} onClick={() => openAction("sol")} type="button"><Plus size={19} /><span>Thêm SOL</span></button>
+      </section>
+
+      {activeAction && (
+        <section className="panel crypto-form-panel">
+          <div className="panel-title">
+            <h2>{activeAction === "topup" ? "Mua USDT" : activeAction === "dca" ? (showLegacyDca ? "Nhập DCA cũ" : editingPlanId ? "Sửa DCA" : "Tạo DCA") : activeAction === "sol" ? "Thêm SOL" : "Rút / chuyển Crypto"}</h2>
+            <button className="icon-button" onClick={() => { setActiveAction(null); setShowLegacyDca(false); setEditingPlanId(null); setCryptoError(""); }} type="button" title="Đóng"><X size={16} /></button>
+          </div>
+          {activeAction === "topup" && (
+            <div className="form-grid btc-form-grid">
+              <label>VND dùng mua<input value={topupForm.vnd} onChange={(event) => updateTopupVnd(formatMoneyChange(event))} placeholder="1.000.000" /></label>
+              <label>USDT thực nhận<input value={topupForm.usdt} onChange={(event) => setTopupForm({ ...topupForm, usdt: formatDecimalChange(event) })} placeholder="39,250" /></label>
+              <label>Ngày<input type="date" value={topupForm.date} onChange={(event) => setTopupForm({ ...topupForm, date: event.target.value })} /></label>
+              <label>Giá USDT (VND)<input value={topupUsdtRate() ? formatVnd(topupUsdtRate()) : ""} readOnly placeholder="Tự tính" /></label>
+              <label>Note<input value={topupForm.note} onChange={(event) => setTopupForm({ ...topupForm, note: event.target.value })} placeholder="Binance P2P" /></label>
+              <button className="primary btc-form-submit" onClick={saveTopup} type="button"><Save size={17} /> Lưu USDT</button>
+            </div>
+          )}
+          {activeAction === "dca" && !showLegacyDca && (
+            <div className="form-grid btc-form-grid">
+              <label>USDT mỗi kỳ<input value={planForm.amountUsdt} onChange={(event) => setPlanForm({ ...planForm, amountUsdt: formatDecimalChange(event) })} placeholder="2" /></label>
+              <label>Tần suất<select value={planForm.frequency} onChange={(event) => setPlanForm({ ...planForm, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
+              <label>Giờ chạy<input type="time" value={planForm.time} onChange={(event) => setPlanForm({ ...planForm, time: event.target.value })} /></label>
+              <label>Ngày bắt đầu<input type="date" value={planForm.startDate} onChange={(event) => setPlanForm({ ...planForm, startDate: event.target.value })} /></label>
+              <button className="ghost btc-form-submit" onClick={() => setShowLegacyDca(true)} type="button"><Upload size={17} /> Nhập DCA cũ</button>
+              <button className="primary btc-form-submit" onClick={savePlan} type="button"><Save size={17} /> Lưu kế hoạch</button>
+            </div>
+          )}
+          {activeAction === "dca" && showLegacyDca && (
+            <div className="form-grid btc-form-grid">
+              <label>USDT mỗi kỳ<input value={legacyDcaForm.amountUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, amountUsdt: formatDecimalChange(event) })} placeholder="2" /></label>
+              <label>Tần suất<select value={legacyDcaForm.frequency} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, frequency: event.target.value as BtcDcaFrequency })}><option value="daily">Hàng ngày</option><option value="weekly">Hàng tuần</option><option value="monthly">Hàng tháng</option></select></label>
+              <label>Giờ chạy<input type="time" value={legacyDcaForm.time} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, time: event.target.value })} /></label>
+              <label>Ngày bắt đầu<input type="date" value={legacyDcaForm.startDate} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, startDate: event.target.value })} /></label>
+              <label>Ngày giao dịch tiếp theo<input type="date" value={legacyDcaForm.nextDate} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, nextDate: event.target.value })} /></label>
+              <label>Số kỳ đã kích hoạt<input value={legacyDcaForm.activeRuns} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, activeRuns: event.target.value })} placeholder="14" /></label>
+              <label>BTC tích lũy<input value={legacyDcaForm.btcAmount} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, btcAmount: formatDecimalChange(event) })} placeholder="0,00043251" /></label>
+              <label>Giá gần nhất (USDT)<input value={legacyDcaForm.latestPriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, latestPriceUsdt: formatDecimalChange(event) })} placeholder="64.337,674905" /></label>
+              <label>Giá trung bình (USDT)<input value={legacyDcaForm.averagePriceUsdt} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, averagePriceUsdt: formatDecimalChange(event) })} placeholder="64.565,25594748" /></label>
+              <label>Note<input value={legacyDcaForm.note} onChange={(event) => setLegacyDcaForm({ ...legacyDcaForm, note: event.target.value })} placeholder="DCA Binance" /></label>
+              <button className="ghost btc-form-submit" onClick={() => setShowLegacyDca(false)} type="button"><X size={17} /> Quay lại</button>
+              <button className="primary btc-form-submit" onClick={saveLegacyDca} type="button"><Upload size={17} /> Import DCA</button>
+            </div>
+          )}
+          {activeAction === "sol" && (
+            <div className="form-grid btc-form-grid">
+              <label>Số SOL<input value={solForm.sol} onChange={(event) => setSolForm({ ...solForm, sol: formatSolChange(event) })} placeholder="0,61" /></label>
+              <label>Giá mua USDT<input value={solForm.price} onChange={(event) => setSolForm({ ...solForm, price: formatDecimalChange(event) })} placeholder={formatDecimalInput(String(state.market.solUsd || 0))} /></label>
+              <label>Ngày<input type="date" value={solForm.date} onChange={(event) => setSolForm({ ...solForm, date: event.target.value })} /></label>
+              <label>Note<input value={solForm.note} onChange={(event) => setSolForm({ ...solForm, note: event.target.value })} /></label>
+              <button className="primary btc-form-submit" onClick={saveSol} type="button"><Plus size={17} /> Thêm SOL</button>
+            </div>
+          )}
+          {activeAction === "withdraw" && (
+            <div className="form-grid btc-form-grid">
+              <label>Tài sản nguồn<select value={transferForm.asset} onChange={(event) => updateTransferAsset(event.target.value as CryptoTransferAsset)}><option value="btc">BTC</option><option value="usdt">USDT</option><option value="sol">SOL</option></select></label>
+              {transferForm.asset === "btc" && <label>Số BTC<InputWithMax value={transferForm.btc} onChange={(event) => setTransferForm({ ...transferForm, btc: formatDecimalChange(event) })} onMax={fillMaxTransferSource} placeholder="0,0001" /></label>}
+              {transferForm.asset === "usdt" && <label>Số USDT<InputWithMax value={transferForm.usdt} onChange={(event) => setTransferForm({ ...transferForm, usdt: formatDecimalChange(event) })} onMax={fillMaxTransferSource} placeholder="10" /></label>}
+              {transferForm.asset === "sol" && <label>Số SOL<InputWithMax value={transferForm.sol} onChange={(event) => updateTransferSol(formatSolChange(event))} onMax={fillMaxTransferSource} placeholder="0,25" /></label>}
+              <label>{transferForm.asset === "sol" ? "Giá SOL/USDT" : transferForm.asset === "usdt" && transferForm.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={transferForm.price} onChange={(event) => updateTransferPrice(formatDecimalChange(event))} placeholder={formatDecimalInput(String(transferPriceFor(transferForm.asset, transferForm.destination) || 0))} /></label>
+              <label>Số tiền nhận<input value={transferForm.received} onChange={(event) => setTransferForm({ ...transferForm, received: transferReceiveUnit() === "VND" ? formatMoneyChange(event) : formatDecimalChange(event) })} placeholder={formatTransferReceive()} /></label>
+              {transferForm.asset === "sol" && transferForm.destination === "btc-direct" && <label>Số BTC nhận<input value={transferForm.btcReceived} onChange={(event) => setTransferForm({ ...transferForm, btcReceived: formatDecimalChange(event) })} placeholder={transferEstimatedBtcFromSol()} /></label>}
+              <label>Nơi nhận<select value={transferForm.destination} disabled={transferForm.asset === "btc"} onChange={(event) => updateTransferDestination(event.target.value as BtcTransferTarget | "btc-direct")}>{destinationOptions(transferForm.asset).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+              <label>Ngày<input type="date" value={transferForm.date} onChange={(event) => setTransferForm({ ...transferForm, date: event.target.value })} /></label>
+              <label>Note<input value={transferForm.note} onChange={(event) => setTransferForm({ ...transferForm, note: event.target.value })} placeholder="Chuyển quỹ" /></label>
+              <button className="primary btc-form-submit" onClick={saveTransfer} type="button"><ArrowDownCircle size={17} /> Lưu giao dịch</button>
+            </div>
+          )}
+          {cryptoError && <span className="form-error">{cryptoError}</span>}
+        </section>
+      )}
+
+      <section className="crypto-section">
+        <div className="crypto-section-title">
+          <h2>Danh mục tài sản</h2>
+        </div>
+        <div className="crypto-asset-list">
+          {assetRows.map((asset) => (
+            <article className="crypto-asset-row" key={asset.id}>
+              <span className={`crypto-token-icon ${asset.id}`}>{asset.icon}</span>
+              <div>
+                <strong>{asset.name}</strong>
+                <small>{asset.symbol}</small>
+              </div>
+              <div>
+                <strong>{asset.amount}</strong>
+                <small>≈ {formatVnd(asset.value)}</small>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel crypto-market-panel">
+        <div className="panel-title">
+          <h2>Giá thị trường</h2>
+          <button className="ghost report-refresh-button" onClick={() => onRefreshMarket()} type="button" aria-label="Cập nhật giá"><RefreshCw size={17} /></button>
+        </div>
+        <small className="market-status">{marketStatus || (state.market.updatedAt ? `Cập nhật ${formatDateTime(state.market.updatedAt)}` : "Chưa cập nhật")}</small>
+        <div className="market-grid crypto-market-grid">
+          <div><small>BTC/USDT</small><strong>{state.market.btcUsdt ? formatUsdt(state.market.btcUsdt) : "Đang chờ"}</strong></div>
+          <div><small>SOL/USDT</small><strong>{state.market.solUsd ? formatUsd(state.market.solUsd) : "Đang chờ"}</strong></div>
+          <div><small>USDT/VND</small><strong>{usdtVndRate ? formatVnd(usdtVndRate) : "Đang chờ"}</strong></div>
+          <div><small>Giá TB BTC</small><strong>{btcStats.averageCostUsdt ? formatUsdt(btcStats.averageCostUsdt) : "0 USDT"}</strong></div>
+          <div><small>Giá TB SOL</small><strong>{solAverageCost ? formatUsd(solAverageCost) : "0 USDT"}</strong></div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title"><h2>Lệnh DCA đang chạy</h2><small>{activeDcaPlans.length} kế hoạch</small></div>
+        <div className="btc-plan-list">
+          {activeDcaPlans.length === 0 ? <p className="muted">Chưa có kế hoạch DCA đang chạy.</p> : activeDcaPlans.map((plan) => {
+            const planStats = dcaPlanStats(plan);
+            const isExpanded = expandedDcaPlanIds.includes(plan.id);
+            const isHistoryOpen = historyDcaPlanIds.includes(plan.id);
+            const dcaTrades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id).sort((a, b) => b.executedAt.localeCompare(a.executedAt));
+            return (
+              <article className="btc-plan-card" key={plan.id}>
+                <div className="btc-plan-header">
+                  <div>
+                    <div className="btc-plan-top-row">
+                      <span className="status-badge btc-plan-status success">Đang chạy</span>
+                      <div className="btc-plan-top-actions">
+                        <button className={`btc-plan-icon-button ${isHistoryOpen ? "active" : ""}`} onClick={() => setHistoryDcaPlanIds((prev) => (prev.includes(plan.id) ? prev.filter((id) => id !== plan.id) : [...prev, plan.id]))} title="Lịch sử DCA" type="button"><History size={15} /></button>
+                        <button className="btc-plan-delete-button danger-text" onClick={() => deletePlan(plan)} title="Xóa lệnh DCA" type="button"><X size={16} /></button>
+                      </div>
+                    </div>
+                    <div className="btc-plan-title-row">
+                      <h3>BTC Gói định kỳ</h3>
+                      <strong className={`btc-plan-pnl ${planStats.pnlUsdt < 0 ? "stock-pnl loss" : "stock-pnl gain"}`}>{formatUsdt(planStats.pnlUsdt)} · {planStats.pnlPercent.toFixed(2)}%</strong>
+                    </div>
+                  </div>
+                  <div className="btc-plan-actions">
+                    <button className="ghost" onClick={() => setExpandedDcaPlanIds((prev) => (prev.includes(plan.id) ? prev.filter((id) => id !== plan.id) : [...prev, plan.id]))} type="button">{isExpanded ? "Ẩn chi tiết" : "Xem chi tiết"}</button>
+                    <button className="ghost" onClick={() => editPlan(plan)} type="button"><Pencil size={16} /> Sửa</button>
+                    <button className="ghost" onClick={() => togglePlan(plan)} type="button">Tạm dừng</button>
+                  </div>
+                </div>
+                <div className="btc-plan-summary">
+                  <span>Tần suất <strong>{dcaFrequencyLabel[plan.frequency]}, {plan.time}</strong></span>
+                  <span>Số tiền đầu tư <strong>{formatUsdt(plan.amountUsdt)}</strong></span>
+                </div>
+                {isExpanded && (
+                  <>
+                    <div className="btc-plan-detail-grid">
+                      <span>Số lượng nắm giữ <strong>{formatBtc(planStats.btcAmount)}</strong></span>
+                      <span>Giá trị hiện tại <strong>{formatUsdt(planStats.currentValueUsdt)}</strong></span>
+                      <span>Ngày bắt đầu <strong>{formatShortDateTime(planStats.startAt)}</strong></span>
+                      <span>Giao dịch tiếp theo <strong>{formatShortDateTime(plan.nextRunAt)}</strong></span>
+                    </div>
+                    <div className="btc-plan-asset">
+                      <div className="btc-plan-asset-title"><span className="btc-token-mark"><Bitcoin size={16} /></span><strong>BTC</strong><button className="btc-plan-icon-button" onClick={() => editDcaAsset(plan)} title="Sửa số BTC và giá trung bình" type="button"><Pencil size={15} /></button></div>
+                      {editingDcaAssetPlanId === plan.id ? (
+                        <div className="form-grid btc-form-grid btc-dca-asset-edit">
+                          <label>Số lượng tích lũy<input value={dcaAssetForm.btcAmount} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, btcAmount: formatDecimalChange(event) })} placeholder="0,00043251" /></label>
+                          <label>Giá trung bình (USDT)<input value={dcaAssetForm.averagePriceUsdt} onChange={(event) => setDcaAssetForm({ ...dcaAssetForm, averagePriceUsdt: formatDecimalChange(event) })} placeholder="64.565,25594748" /></label>
+                          <button className="primary btc-form-submit" onClick={() => saveDcaAsset(plan)} type="button"><Save size={16} /> Lưu BTC</button>
+                          <button className="ghost btc-form-submit" onClick={() => setEditingDcaAssetPlanId(null)} type="button"><X size={16} /> Hủy</button>
+                        </div>
+                      ) : (
+                        <div className="btc-plan-detail-grid">
+                          <span>Giá gần nhất <strong>{planStats.latestPriceUsdt ? formatUsdt(planStats.latestPriceUsdt) : "0 USDT"}</strong></span>
+                          <span>Giá trung bình <strong>{planStats.averagePriceUsdt ? formatUsdt(planStats.averagePriceUsdt) : "0 USDT"}</strong></span>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+                {isHistoryOpen && (
+                  <div className="btc-dca-history">
+                    <div className="btc-dca-history-title"><strong>Lịch sử giao dịch DCA</strong><small>{dcaTrades.length} lệnh</small></div>
+                    {dcaTrades.length === 0 ? <p className="muted">Chưa có giao dịch DCA nào.</p> : (
+                      <div className="btc-dca-history-list">
+                        {dcaTrades.map((trade) => (
+                          <div key={trade.id}><span><Bitcoin size={14} /></span><div><strong>{formatBtc(trade.btcAmount)} · {formatUsdt(trade.usdtAmount)}</strong><small>{formatShortDateTime(trade.executedAt)} · Giá mua {formatUsdt(trade.btcPriceUsdt)} · {trade.note || "Không ghi chú"}</small></div></div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-title"><h2>Lịch sử</h2><small>{historyRows.length} giao dịch Crypto</small></div>
+        <div className="timeline crypto-history">
+          {historyRows.length === 0 ? <p className="muted">Chưa có giao dịch Crypto.</p> : historyRows.map((row) => (
+            <div key={`${row.kind}-${row.item.id}`}>
+              <span className={row.kind === "btc-transfer" || (row.kind === "sol" && isSolWithdrawal(row.item)) ? "withdraw" : "deposit"}>{row.kind === "btc-transfer" || (row.kind === "sol" && isSolWithdrawal(row.item)) ? "-" : "+"}</span>
+              <div className="timeline-row-content">
+                <div>
+                  {row.kind === "btc-topup" && <><strong>{formatUsdt(row.item.usdtAmount)} · {formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · Mua USDT · Giá {row.item.usdtAmount ? formatVnd(row.item.vndAmount / row.item.usdtAmount) : "0đ"} · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "btc-trade" && <><strong>{formatBtc(row.item.btcAmount)} · {formatUsdt(row.item.usdtAmount)}</strong><small>{formatDate(dateValueFromDateTime(row.item.executedAt))} · Mua BTC @ {formatUsdt(row.item.btcPriceUsdt)} · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "btc-transfer" && <><strong>{row.item.destination === "usdt" ? formatUsdt(row.item.usdtAmount) : formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · {row.item.destination === "usdt" ? "Chuyển" : "Rút"} {row.item.asset.toUpperCase()} về {btcTransferDestinationLabel(row.item.destination)} · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "sol" && isSolWithdrawal(row.item) && <><strong>-{formatSolAmount(row.item.solAmount)} · {formatVnd(row.item.vndAmount)}</strong><small>{formatDate(row.item.date)} · Rút SOL về {solDestinationLabel(row.item.destination)} · Giá {formatUsd(row.item.sellPrice)} · {row.item.note || "Không ghi chú"}</small></>}
+                  {row.kind === "sol" && !isSolWithdrawal(row.item) && <><strong>{formatSolAmount(row.item.solAmount)} · {formatUsd(row.item.solAmount * row.item.buyPrice)}</strong><small>{formatDate(row.item.date)} · Thêm SOL @ {formatUsd(row.item.buyPrice)} · {row.item.note || "Không ghi chú"}</small></>}
+                </div>
+                <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteHistoryRow(row)} title="Xóa lịch sử" type="button"><X size={15} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+
+  if (embedded) return content;
+  return <div className="page">{content}</div>;
+}
+
 function ReportsPage({
   state,
   setState,
   onRefreshMarket,
+  onOpenAccumulation,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
+  onOpenAccumulation: () => void;
 }) {
   const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
   const [reportRefreshSuccess, setReportRefreshSuccess] = useState(false);
@@ -7407,31 +8248,57 @@ function ReportsPage({
 
   const btcStats = btcPortfolioStats(state);
   const stockStats = stockPortfolioStats(state);
-  const btc = btcStats.reportValueVnd;
+  const solVnd = solPosition(state.solTransactions).balance * state.market.solUsd * state.market.usdVnd;
+  const btc = btcStats.reportValueVnd + solVnd;
   const stock = stockStats.totalValue;
   const savingActive = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
   const emergencyActive = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
   const saving = savingActive + pendingSolDepositTotal(state, "saving") + pendingStockSaleDepositTotal(state, "saving") + pendingBtcTransferDepositTotal(state, "saving");
   const emergency = emergencyActive + pendingSolDepositTotal(state, "emergency") + pendingStockSaleDepositTotal(state, "emergency") + pendingBtcTransferDepositTotal(state, "emergency");
-  const solVnd = solPosition(state.solTransactions).balance * state.market.solUsd * state.market.usdVnd;
-  const totalAssets = btc + stock + saving + emergency + solVnd;
+  const totalAssets = btc + stock + saving + emergency;
+  const averageExpense = averageMonthlyExpenseSince(state);
+  const retirementTarget = averageExpense * 300;
+  const emergencyTarget = averageExpense * 6;
+  const retirementProgress = retirementTarget ? Math.min((totalAssets / retirementTarget) * 100, 100) : 0;
+  const emergencyProgress = emergencyTarget ? Math.min((emergency / emergencyTarget) * 100, 100) : 0;
   const assetPercent = (value: number) => totalAssets ? Math.round((value / totalAssets) * 100) : 0;
   const reportChartLabels: Record<ReportChartKey, string> = {
     "current-assets": "Tổng tài sản hiện tại",
     "net-accumulation": "Tổng số tiền tích lũy",
-    btc: "BTC",
+    btc: "Crypto",
     stock: "CK",
     saving: "Quỹ tiết kiệm",
     emergency: "Quỹ dự phòng",
   };
   const fundRows = [
-    { id: "btc" as const, label: "BTC", value: btc },
+    { id: "btc" as const, label: "Crypto", value: btc },
     { id: "stock" as const, label: "CK", value: stock },
     { id: "saving" as const, label: "Quỹ tiết kiệm", value: saving },
     { id: "emergency" as const, label: "Quỹ dự phòng", value: emergency },
   ];
   const pnlRows = assetPnlRows(state);
+  const totalPnlRow = pnlRows.find((row) => row.id === "total");
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
+  const compactMoney = (value: number) => {
+    const absolute = Math.abs(value);
+    if (absolute >= 1_000_000_000) return `${(value / 1_000_000_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}B`;
+    if (absolute >= 1_000_000) return `${(value / 1_000_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}M`;
+    if (absolute >= 1_000) return `${(value / 1_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}K`;
+    return Math.round(value).toLocaleString("vi-VN");
+  };
+  const allocationRows = [
+    { label: "Quỹ Đầu tư", value: btc + stock, color: "#ff8a00" },
+    { label: "Quỹ Tiết kiệm", value: saving, color: "#88ceff" },
+    { label: "Quỹ Dự phòng", value: emergency, color: "#c4c6d0" },
+  ];
+  const investmentPercent = totalAssets ? Math.round(((btc + stock) / totalAssets) * 100) : 0;
+  const savingPercent = totalAssets ? Math.round((saving / totalAssets) * 100) : 0;
+  const emergencyPercent = Math.max(100 - investmentPercent - savingPercent, 0);
+  const allocationLegendRows = [
+    { ...allocationRows[0], percent: investmentPercent },
+    { ...allocationRows[1], percent: savingPercent },
+    { ...allocationRows[2], percent: emergencyPercent },
+  ];
   const pnlRowDetails = (row: AssetPnlRow) => {
     const detail = (label: string, value: string) => ({ label, value });
     if (row.id === "total") {
@@ -7440,12 +8307,16 @@ function ReportsPage({
         .map((item) => detail(item.label, `${formatVnd(item.current)} · gốc ${formatVnd(item.principal)}`));
     }
     if (row.id === "btc") {
+      const sol = solPosition(state.solTransactions);
+      const solCurrentUsd = sol.balance * state.market.solUsd;
       return [
-        detail("Vốn BTC", formatVnd(btcStats.capitalVnd)),
+        detail("Vốn Crypto", formatVnd(row.principal)),
         detail("VND chờ mua USDT", formatVnd(btcStats.pendingVnd)),
         detail("USDT còn", formatUsdt(btcStats.usdtBalance)),
         detail("BTC đang nắm giữ", formatBtc(btcStats.btcBalance)),
-        detail("BTC giữ quy VND", formatVnd(btcStats.btcValueUsdt * (state.market.usdtVnd || state.market.usdVnd))),
+        detail("SOL đang nắm giữ", formatSolAmount(sol.balance)),
+        detail("BTC quy VND", formatVnd(btcStats.btcValueUsdt * (state.market.usdtVnd || state.market.usdVnd))),
+        detail("SOL quy VND", formatVnd(solCurrentUsd * state.market.usdVnd)),
         detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
       ];
     }
@@ -7459,17 +8330,6 @@ function ReportsPage({
         ...stockStats.holdings.map((holding) =>
           detail(holding.symbol, `${holding.shares.toLocaleString("vi-VN")} cp · ${formatVnd(holding.marketValue)}`)
         ),
-      ];
-    }
-    if (row.id === "sol") {
-      const sol = solPosition(state.solTransactions);
-      const solCurrentUsd = sol.balance * state.market.solUsd;
-      return [
-        detail("SOL đang giữ", formatSolAmount(sol.balance)),
-        detail("Giá thị trường", formatUsd(state.market.solUsd)),
-        detail("Giá trị hiện tại", `${formatUsd(solCurrentUsd)} · ${formatVnd(solCurrentUsd * state.market.usdVnd)}`),
-        detail("Gốc SOL", `${formatUsd(sol.cost)} · ${formatVnd(sol.cost * state.market.usdVnd)}`),
-        detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
       ];
     }
     if (row.id === "saving" || row.id === "emergency") {
@@ -7576,12 +8436,12 @@ function ReportsPage({
       const summary = monthlySummary(state, month);
       const withdrawn = monthlyWithdrawal(state, month);
       const previousNetAccumulation = rows[rows.length - 1]?.netAccumulation ?? 0;
-      const rowBtc = btcPortfolioStats(state, month).reportValueVnd;
+      const rowSol = solValueAtMonth(month);
+      const rowBtc = btcPortfolioStats(state, month).reportValueVnd + rowSol;
       const rowStock = stockPortfolioStats(state, month).totalValue;
       const rowSaving = depositFundBalanceAtMonth("saving", month);
       const rowEmergency = depositFundBalanceAtMonth("emergency", month);
-      const rowSol = solValueAtMonth(month);
-      const currentAssets = rowBtc + rowStock + rowSaving + rowEmergency + rowSol;
+      const currentAssets = rowBtc + rowStock + rowSaving + rowEmergency;
       const netAccumulation = Math.max(previousNetAccumulation + summary.saving - withdrawn, 0);
       const values: Record<ReportChartKey, number> = {
         "current-assets": currentAssets,
@@ -7628,6 +8488,26 @@ function ReportsPage({
           )}
         </div>
       </header>
+      <section className="financial-rule-grid">
+        <article className="financial-rule-card">
+          <div>
+            <small>Tự do tài chính</small>
+            <strong>{formatVnd(retirementTarget)}</strong>
+            <span>Chi tiêu TB: {formatVnd(averageExpense)}</span>
+          </div>
+          <b>{retirementProgress.toFixed(0)}%</b>
+          <div className="financial-rule-progress"><span style={{ width: `${retirementProgress}%` }} /></div>
+        </article>
+        <article className="financial-rule-card emergency">
+          <div>
+            <small>Dự phòng 6 tháng</small>
+            <strong>{formatVnd(emergencyTarget)}</strong>
+            <span>Quỹ dự phòng hiện tại: {formatVnd(emergency)}</span>
+          </div>
+          <b>{emergencyProgress.toFixed(0)}%</b>
+          <div className="financial-rule-progress"><span style={{ width: `${emergencyProgress}%` }} /></div>
+        </article>
+      </section>
       <section className="metrics-grid report-metrics">
         <MetricCard
           label="Tài sản"
@@ -7643,7 +8523,13 @@ function ReportsPage({
           tone={activeReportChart === "net-accumulation" ? "highlight" : undefined}
           onClick={() => setActiveReportChart("net-accumulation")}
         />
-        <MetricCard label="SOL" value={formatVnd(solVnd)} percent={assetPercent(solVnd)} icon={<Coins size={20} />} />
+        <MetricCard
+          label="Lãi/lỗ"
+          value={formatVnd(totalPnlRow?.pnl ?? 0)}
+          percent={Number((totalPnlRow?.pnlPercent ?? 0).toFixed(1))}
+          icon={<Coins size={20} />}
+          tone={(totalPnlRow?.pnl ?? 0) < 0 ? "loss" : undefined}
+        />
       </section>
       <section className="panel">
         <div className="panel-title">
@@ -7677,41 +8563,68 @@ function ReportsPage({
           />
         ))}
       </section>
-      <section className="panel">
-        <div className="panel-title">
-          <h2>Tích lũy</h2>
-          <small>Các mục đang dồn tiền</small>
-        </div>
-        {activeAccumulationGoals.length === 0 ? (
-          <p className="muted">Chưa có mục tích lũy đang hoạt động.</p>
-        ) : (
-          <div className="accumulation-grid">
-            {activeAccumulationGoals.map((goal) => {
-              const progress = accumulationProgress(state, goal);
-              const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
-              const paidMonths = accumulationPaidMonths(state, goal);
-              const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
-              return (
-                <article className="accumulation-card" key={goal.id}>
-                  <div className="panel-title">
-                    <div>
-                      <h2>{goal.name}</h2>
-                      <small>{formatMonth(goal.startMonth)} - {formatMonth(endMonth)}</small>
-                    </div>
-                    <strong>{percent.toFixed(0)}%</strong>
-                  </div>
-                  <div className="progress-track">
-                    <span style={{ width: `${percent}%` }} />
-                  </div>
-                  <div className="accumulation-summary">
-                    <span>Mục tiêu <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong></span>
-                    <span>Số tháng dồn <strong>{paidMonths}/{goal.months}</strong></span>
-                  </div>
-                </article>
-              );
-            })}
+      <section className="report-bento-grid">
+        <article className="panel report-goals-card">
+          <div className="report-card-title">
+            <h2>Mục tiêu tích lũy</h2>
+            <button type="button" onClick={onOpenAccumulation}>Xem tất cả</button>
           </div>
-        )}
+          {activeAccumulationGoals.length === 0 ? (
+            <p className="muted">Chưa có mục tích lũy đang hoạt động.</p>
+          ) : (
+            <div className="report-goal-list">
+              {activeAccumulationGoals.slice(0, 3).map((goal, index) => {
+                const progress = accumulationProgress(state, goal);
+                const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
+                const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
+                return (
+                  <div className="report-goal-item" key={goal.id}>
+                    <div className="report-goal-row">
+                      <div>
+                        <strong>{goal.name}</strong>
+                        <small>{formatMonth(goal.startMonth)} - {formatMonth(endMonth)}</small>
+                      </div>
+                      <div>
+                        <b>{percent.toFixed(0)}%</b>
+                        <small>{compactMoney(progress)} / {compactMoney(goal.targetAmount)}</small>
+                      </div>
+                    </div>
+                    <div className="report-mini-progress">
+                      <span className={index === 2 ? "tertiary" : ""} style={{ width: `${percent}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </article>
+        <article className="panel report-allocation-card">
+          <div className="report-card-title">
+            <h2>Phân bổ quỹ tài chính</h2>
+          </div>
+          <div className="report-allocation-body">
+            <div
+              className="report-donut"
+              style={{
+                "--investment": `${investmentPercent}%`,
+                "--saving": `${investmentPercent + savingPercent}%`,
+              } as React.CSSProperties}
+            >
+              <div>
+                <strong>100%</strong>
+                <span>Portfolio</span>
+              </div>
+            </div>
+            <div className="report-allocation-legend">
+              {allocationLegendRows.map((item) => (
+                <div key={item.label}>
+                  <span style={{ "--legend-color": item.color } as React.CSSProperties}>{item.label}</span>
+                  <strong>{item.percent}%</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        </article>
       </section>
       <section className="panel">
         <div className="panel-title">
@@ -7795,11 +8708,10 @@ function GrowthTooltip({
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
   const breakdown = [
-    { label: "BTC", value: point.btc },
+    { label: "Crypto", value: point.btc },
     { label: "CK", value: point.stock },
     { label: "Tiết kiệm", value: point.saving },
     { label: "Dự phòng", value: point.emergency },
-    { label: "SOL", value: point.sol },
   ];
 
   return (
@@ -8182,12 +9094,13 @@ function SettingsPage({
   );
 }
 
-type QuickActionGroup = "income" | "expense" | "btc" | "stock" | "mbb" | "sol" | "undo";
+type QuickActionGroup = "income" | "expense" | "crypto" | "stock" | "mbb" | "undo";
 type QuickActionKind =
   | "income"
   | "expense"
   | "btc-usdt"
   | "btc-dca"
+  | "crypto-transfer"
   | "btc-transfer"
   | "stock-buy"
   | "stock-transfer"
@@ -8229,6 +9142,18 @@ function QuickActionButton({
     date: today(),
     note: "",
   });
+  const [cryptoTransfer, setCryptoTransfer] = useState({
+    asset: "btc" as "btc" | "usdt" | "sol",
+    btc: "",
+    usdt: "",
+    sol: "",
+    price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+    received: "",
+    btcReceived: "",
+    destination: "usdt" as BtcTransferTarget | "btc-direct",
+    date: today(),
+    note: "",
+  });
   const [quickStockRows, setQuickStockRows] = useState<StockBuyRow[]>(() => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }]);
   const [quickStockMeta, setQuickStockMeta] = useState({ date: today(), note: "" });
   const [stockTransfer, setStockTransfer] = useState({ symbol: "", shares: "", price: "", destination: "stock" as SolDestination, date: today(), note: "" });
@@ -8239,29 +9164,25 @@ function QuickActionButton({
   const groups: Array<{ id: QuickActionGroup; label: string; defaultKind: QuickActionKind }> = [
     { id: "income", label: "Thu nhập", defaultKind: "income" },
     { id: "expense", label: "Chi tiêu", defaultKind: "expense" },
-    { id: "btc", label: "BTC", defaultKind: "btc-usdt" },
+    { id: "crypto", label: "Crypto", defaultKind: "btc-usdt" },
     { id: "stock", label: "CK", defaultKind: "stock-buy" },
     { id: "mbb", label: "Sổ MBB", defaultKind: "deposit" },
-    { id: "sol", label: "SOL", defaultKind: "sol-buy" },
     { id: "undo", label: "Undo", defaultKind: "undo" },
   ];
   const subActions: Record<QuickActionGroup, Array<{ id: QuickActionKind; label: string }>> = {
     income: [{ id: "income", label: "Thêm thu nhập" }],
     expense: [{ id: "expense", label: "Thêm chi tiêu" }],
-    btc: [
+    crypto: [
       { id: "btc-usdt", label: "Mua USDT" },
       { id: "btc-dca", label: "Tạo DCA" },
-      { id: "btc-transfer", label: "Rút / chuyển" },
+      { id: "sol-buy", label: "Mua SOL" },
+      { id: "crypto-transfer", label: "Rút Crypto" },
     ],
     stock: [
       { id: "stock-buy", label: "Mua CK" },
       { id: "stock-transfer", label: "Rút / chuyển" },
     ],
     mbb: [{ id: "deposit", label: "Tạo sổ" }],
-    sol: [
-      { id: "sol-buy", label: "Mua SOL" },
-      { id: "sol-transfer", label: "Rút / chuyển" },
-    ],
     undo: [{ id: "undo", label: "Hoàn tác" }],
   };
   const btcStats = btcPortfolioStats(state);
@@ -8284,6 +9205,26 @@ function QuickActionButton({
     { id: "emergency", label: "Dự phòng" },
     { id: "cash", label: "Tiền mặt" },
   ];
+  const quickCryptoDestinationOptions = (asset: "btc" | "usdt" | "sol"): Array<{ id: BtcTransferTarget | "btc-direct"; label: string }> => {
+    if (asset === "btc") return [{ id: "usdt", label: "USDT" }];
+    if (asset === "usdt") {
+      return [
+        { id: "btc", label: "BTC" },
+        { id: "stock", label: "CK" },
+        { id: "saving", label: "Tiết kiệm" },
+        { id: "emergency", label: "Dự phòng" },
+        { id: "cash", label: "Tiền mặt" },
+      ];
+    }
+    return [
+      { id: "btc", label: "BTC - về USDT" },
+      { id: "btc-direct", label: "BTC - mua BTC trực tiếp" },
+      { id: "stock", label: "CK" },
+      { id: "saving", label: "Tiết kiệm" },
+      { id: "emergency", label: "Dự phòng" },
+      { id: "cash", label: "Tiền mặt" },
+    ];
+  };
 
   const close = () => {
     setOpen(false);
@@ -8310,6 +9251,89 @@ function QuickActionButton({
   const btcTransferPriceFor = (asset: "btc" | "usdt", destination: BtcTransferTarget) => {
     if (asset === "btc" || destination === "btc") return state.market.btcUsdt;
     return state.market.usdtVnd || state.market.usdVnd;
+  };
+
+  const quickCryptoPriceFor = (asset: "btc" | "usdt" | "sol", destination: BtcTransferTarget | "btc-direct") => {
+    if (asset === "sol") return state.market.solUsd;
+    if (asset === "usdt" && destination !== "btc") return state.market.usdtVnd || state.market.usdVnd;
+    return state.market.btcUsdt;
+  };
+
+  const quickCryptoSource = () => {
+    if (cryptoTransfer.asset === "btc") return parseDecimal(cryptoTransfer.btc);
+    if (cryptoTransfer.asset === "sol") return parseDecimal(cryptoTransfer.sol);
+    return parseDecimal(cryptoTransfer.usdt);
+  };
+
+  const quickCryptoReceiveUnit = () => {
+    if (cryptoTransfer.asset === "btc" && cryptoTransfer.destination === "usdt") return "USDT";
+    if (cryptoTransfer.asset === "usdt" && cryptoTransfer.destination === "btc") return "BTC";
+    return "VND";
+  };
+
+  const quickCryptoEstimate = () => {
+    const source = quickCryptoSource();
+    const price = parseDecimal(cryptoTransfer.price) || quickCryptoPriceFor(cryptoTransfer.asset, cryptoTransfer.destination);
+    if (!source || !price) return 0;
+    if (cryptoTransfer.asset === "btc") return source * price;
+    if (cryptoTransfer.asset === "usdt" && cryptoTransfer.destination === "btc") return source / price;
+    if (cryptoTransfer.asset === "usdt") return source * price;
+    return source * price * state.market.usdVnd;
+  };
+
+  const quickCryptoBtcFromSol = () => {
+    if (cryptoTransfer.asset !== "sol" || cryptoTransfer.destination !== "btc-direct") return "";
+    return estimateBtcFromSolInput(cryptoTransfer.sol, cryptoTransfer.price, state.market.btcUsdt);
+  };
+
+  const formatQuickCryptoEstimate = () => {
+    const value = quickCryptoEstimate();
+    const unit = quickCryptoReceiveUnit();
+    if (unit === "BTC") return formatBtc(value);
+    if (unit === "USDT") return formatUsdt(value);
+    return formatVnd(value);
+  };
+
+  const updateQuickCryptoAsset = (asset: "btc" | "usdt" | "sol") => {
+    const destination = quickCryptoDestinationOptions(asset)[0].id;
+    setCryptoTransfer((prev) => ({ ...prev, asset, destination, price: formatDecimalInput(String(quickCryptoPriceFor(asset, destination) || "")), received: "", btcReceived: "" }));
+    setError("");
+  };
+
+  const updateQuickCryptoDestination = (destination: BtcTransferTarget | "btc-direct") => {
+    setCryptoTransfer((prev) => ({ ...prev, destination, price: formatDecimalInput(String(quickCryptoPriceFor(prev.asset, destination) || "")), received: "", btcReceived: destination === "btc-direct" ? quickCryptoBtcFromSol() : "" }));
+    setError("");
+  };
+
+  const updateQuickCryptoSol = (value: string) => {
+    const solAmount = formatSolInput(value);
+    setCryptoTransfer((prev) => ({ ...prev, sol: solAmount, btcReceived: prev.destination === "btc-direct" ? estimateBtcFromSolInput(solAmount, prev.price, state.market.btcUsdt) : prev.btcReceived }));
+  };
+
+  const updateQuickCryptoPrice = (value: string) => {
+    const price = formatDecimalInput(value);
+    setCryptoTransfer((prev) => ({ ...prev, price, btcReceived: prev.asset === "sol" && prev.destination === "btc-direct" ? estimateBtcFromSolInput(prev.sol, price, state.market.btcUsdt) : prev.btcReceived }));
+  };
+
+  const fillMaxQuickCryptoSource = () => {
+    if (cryptoTransfer.asset === "btc") return setCryptoTransfer((prev) => ({ ...prev, btc: formatDecimalInput(btcStats.btcBalance.toFixed(8)), received: "" }));
+    if (cryptoTransfer.asset === "sol") return updateQuickCryptoSol(formatSolInput(String(solStats.balance)));
+    setCryptoTransfer((prev) => ({ ...prev, usdt: formatDecimalInput(String(btcStats.usdtBalance)), received: "" }));
+  };
+
+  const resetQuickCryptoTransfer = () => {
+    setCryptoTransfer({
+      asset: "btc",
+      btc: "",
+      usdt: "",
+      sol: "",
+      price: state.market.btcUsdt ? formatDecimalInput(String(state.market.btcUsdt)) : "",
+      received: "",
+      btcReceived: "",
+      destination: "usdt",
+      date: today(),
+      note: "",
+    });
   };
 
   const updateBtcTransferAsset = (asset: "btc" | "usdt") => {
@@ -8619,6 +9643,81 @@ function QuickActionButton({
       close();
       return;
     }
+    if (kind === "crypto-transfer") {
+      const source = quickCryptoSource();
+      const price = parseDecimal(cryptoTransfer.price) || quickCryptoPriceFor(cryptoTransfer.asset, cryptoTransfer.destination);
+      const receivedInput = quickCryptoReceiveUnit() === "VND" ? parseMoney(cryptoTransfer.received) : parseDecimal(cryptoTransfer.received);
+      const received = receivedInput || quickCryptoEstimate();
+      if (!source || !price || !received) return setError("Nhập tài sản, giá và số tiền nhận hợp lệ.");
+
+      if (cryptoTransfer.asset === "btc") {
+        if (cryptoTransfer.destination !== "usdt") return setError("BTC chỉ được đổi sang USDT trong quỹ Crypto.");
+        if (source - btcStats.btcBalance > 0.00000001) return setError("Số BTC lớn hơn số BTC đang có.");
+        const transfer: BtcTransfer = { id: uid(), asset: "btc", btcAmount: source, usdtAmount: received, btcPriceUsdt: price, vndAmount: 0, destination: "usdt", date: cryptoTransfer.date, note: cryptoTransfer.note.trim() };
+        commitWithUndo("Đã chuyển BTC sang USDT.", (prev) => ({ ...prev, btcTransfers: [...prev.btcTransfers, transfer] }));
+        if (btcCloudAccountId) void upsertCloudPayloadRow("btc_transfers", btcCloudAccountId, transfer.id, transfer, { transfer_at: `${transfer.date}T00:00:00` });
+        resetQuickCryptoTransfer();
+        close();
+        return;
+      }
+
+      if (cryptoTransfer.asset === "usdt") {
+        if (source > btcStats.usdtBalance) return setError("Số USDT lớn hơn số dư USDT.");
+        if (cryptoTransfer.destination === "btc") {
+          const trade: BtcTrade = { id: uid(), type: "manual-buy", usdtAmount: source, btcAmount: received, btcPriceUsdt: price, executedAt: new Date(`${cryptoTransfer.date}T00:00:00`).toISOString(), note: cryptoTransfer.note.trim() || "Chuyển USDT sang BTC" };
+          commitWithUndo("Đã chuyển USDT sang BTC.", (prev) => ({ ...prev, btcTrades: [...prev.btcTrades, trade] }));
+          if (btcCloudAccountId) void upsertCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id, trade, { executed_at: trade.executedAt, plan_id: null });
+          resetQuickCryptoTransfer();
+          close();
+          return;
+        }
+        const vndAmount = Math.round(received);
+        const transfer: BtcTransfer = { id: uid(), asset: "usdt", btcAmount: 0, usdtAmount: source, btcPriceUsdt: state.market.btcUsdt, vndAmount, destination: cryptoTransfer.destination as BtcTransferDestination, date: cryptoTransfer.date, note: cryptoTransfer.note.trim() };
+        const transferNote = transfer.note ? `Rút từ Crypto · ${transfer.note} [btc-transfer:${transfer.id}]` : `Rút từ Crypto [btc-transfer:${transfer.id}]`;
+        commitWithUndo("Đã lưu rút/chuyển Crypto.", (prev) => ({
+          ...prev,
+          btcTransfers: [...prev.btcTransfers, transfer],
+          fundTransactions: [
+            ...prev.fundTransactions,
+            { id: uid(), fund: "btc", type: "withdraw", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote },
+            ...(transfer.destination === "stock" ? [{ id: uid(), fund: "stock" as const, type: "deposit" as const, amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }] : []),
+          ],
+          incomeTransactions: transfer.destination === "cash" ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: transfer.date, month: monthFromDate(transfer.date), note: transferNote }] : prev.incomeTransactions,
+        }));
+        if (btcCloudAccountId) void upsertCloudPayloadRow("btc_transfers", btcCloudAccountId, transfer.id, transfer, { transfer_at: `${transfer.date}T00:00:00` });
+        resetQuickCryptoTransfer();
+        close();
+        return;
+      }
+
+      if (source - solStats.balance > 0.00000001) return setError("Số SOL rút lớn hơn số SOL đang có.");
+      const vndAmount = Math.round(received);
+      const btcAmount = parseDecimal(cryptoTransfer.btcReceived) || parseDecimal(quickCryptoBtcFromSol());
+      if (cryptoTransfer.destination === "btc-direct" && !btcAmount) return setError("Nhập số BTC nhận hợp lệ.");
+      const userNote = cryptoTransfer.note.trim();
+      const note = userNote || "Rút từ SOL";
+      const transferNote = userNote ? `Rút từ SOL · ${userNote}` : "Rút từ SOL";
+      const withdrawal: SolWithdrawTransaction = { id: uid(), type: "withdraw", solAmount: source, sellPrice: price, vndAmount, destination: cryptoTransfer.destination as SolDestination, date: cryptoTransfer.date, note };
+      const usdtAmount = source * price;
+      const btcTopup: BtcUsdtTopup | null = withdrawal.destination === "btc" ? { id: uid(), vndAmount, usdtAmount, date: withdrawal.date, note: `${transferNote} · USDT từ SOL` } : null;
+      const btcTrade: BtcTrade | null = withdrawal.destination === "btc-direct" ? { id: uid(), type: "manual-buy", usdtAmount, btcAmount, btcPriceUsdt: usdtAmount / btcAmount, costVnd: vndAmount, executedAt: new Date(`${withdrawal.date}T00:00:00`).toISOString(), note: `${transferNote} · Mua BTC trực tiếp ${solBtcTradeMarker(withdrawal.id)}` } : null;
+      commitWithUndo("Đã rút/chuyển SOL.", (prev) => ({
+        ...prev,
+        solTransactions: [...prev.solTransactions, withdrawal],
+        btcUsdtTopups: btcTopup ? [...prev.btcUsdtTopups, btcTopup] : prev.btcUsdtTopups,
+        btcTrades: btcTrade ? [...prev.btcTrades, btcTrade] : prev.btcTrades,
+        fundTransactions:
+          withdrawal.destination === "btc" || withdrawal.destination === "btc-direct" || withdrawal.destination === "stock"
+            ? [...prev.fundTransactions, { id: uid(), fund: withdrawal.destination === "btc-direct" ? "btc" : withdrawal.destination, type: "deposit", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }]
+            : prev.fundTransactions,
+        incomeTransactions: withdrawal.destination === "cash" ? [...prev.incomeTransactions, { id: uid(), categoryId: "other-income", amount: vndAmount, date: withdrawal.date, month: monthFromDate(withdrawal.date), note: transferNote }] : prev.incomeTransactions,
+      }));
+      if (btcTopup && btcCloudAccountId) void upsertCloudPayloadRow("btc_usdt_topups", btcCloudAccountId, btcTopup.id, btcTopup);
+      if (btcTrade && btcCloudAccountId) void upsertCloudPayloadRow("btc_trades", btcCloudAccountId, btcTrade.id, btcTrade, { executed_at: btcTrade.executedAt, plan_id: null });
+      resetQuickCryptoTransfer();
+      close();
+      return;
+    }
     if (kind === "btc-transfer") {
       const source = btcTransferSource();
       const price = btcTransferPrice();
@@ -8890,6 +9989,26 @@ function QuickActionButton({
                 <label>Ngày bắt đầu<input type="date" value={dca.startDate} onChange={(event) => setDca({ ...dca, startDate: event.target.value })} /></label>
                 <label>Note<input value={dca.note} onChange={(event) => setDca({ ...dca, note: event.target.value })} /></label>
               </>}
+              {kind === "crypto-transfer" && <>
+                <label>Tài sản nguồn<select value={cryptoTransfer.asset} onChange={(event) => updateQuickCryptoAsset(event.target.value as "btc" | "usdt" | "sol")}><option value="btc">BTC</option><option value="usdt">USDT</option><option value="sol">SOL</option></select></label>
+                {cryptoTransfer.asset === "btc" && (
+                  <label>Số BTC<InputWithMax value={cryptoTransfer.btc} onChange={(event) => setCryptoTransfer({ ...cryptoTransfer, btc: formatDecimalChange(event) })} onMax={fillMaxQuickCryptoSource} placeholder="0,0001" /></label>
+                )}
+                {cryptoTransfer.asset === "usdt" && (
+                  <label>Số USDT<InputWithMax value={cryptoTransfer.usdt} onChange={(event) => setCryptoTransfer({ ...cryptoTransfer, usdt: formatDecimalChange(event) })} onMax={fillMaxQuickCryptoSource} placeholder="10" /></label>
+                )}
+                {cryptoTransfer.asset === "sol" && (
+                  <label>Số SOL<InputWithMax value={cryptoTransfer.sol} onChange={(event) => updateQuickCryptoSol(formatSolChange(event))} onMax={fillMaxQuickCryptoSource} placeholder="0,25" /></label>
+                )}
+                <label>{cryptoTransfer.asset === "sol" ? "Giá SOL/USDT" : cryptoTransfer.asset === "usdt" && cryptoTransfer.destination !== "btc" ? "Giá USDT/VND" : "Giá BTC/USDT"}<input value={cryptoTransfer.price} onChange={(event) => updateQuickCryptoPrice(formatDecimalChange(event))} placeholder={formatDecimalInput(String(quickCryptoPriceFor(cryptoTransfer.asset, cryptoTransfer.destination) || 0))} /></label>
+                <label>Số tiền nhận<input value={cryptoTransfer.received} onChange={(event) => setCryptoTransfer({ ...cryptoTransfer, received: quickCryptoReceiveUnit() === "VND" ? formatMoneyChange(event) : formatDecimalChange(event) })} placeholder={formatQuickCryptoEstimate()} /></label>
+                {cryptoTransfer.asset === "sol" && cryptoTransfer.destination === "btc-direct" && (
+                  <label>Số BTC nhận<input value={cryptoTransfer.btcReceived} onChange={(event) => setCryptoTransfer({ ...cryptoTransfer, btcReceived: formatDecimalChange(event) })} placeholder={quickCryptoBtcFromSol()} /></label>
+                )}
+                <label>Nơi nhận<select value={cryptoTransfer.destination} disabled={cryptoTransfer.asset === "btc"} onChange={(event) => updateQuickCryptoDestination(event.target.value as BtcTransferTarget | "btc-direct")}>{quickCryptoDestinationOptions(cryptoTransfer.asset).map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label>
+                <label>Ngày<input type="date" value={cryptoTransfer.date} onChange={(event) => setCryptoTransfer({ ...cryptoTransfer, date: event.target.value })} /></label>
+                <label>Note<input value={cryptoTransfer.note} onChange={(event) => setCryptoTransfer({ ...cryptoTransfer, note: event.target.value })} /></label>
+              </>}
               {kind === "btc-transfer" && <>
                 <label>Tài sản nguồn<select value={btcTransfer.asset} onChange={(event) => updateBtcTransferAsset(event.target.value as "btc" | "usdt")}><option value="usdt">USDT</option><option value="btc">BTC</option></select></label>
                 {btcTransfer.asset === "btc" ? (
@@ -9025,7 +10144,7 @@ export function App() {
   const [state, setState] = useStoredState();
   const [unlocked, setUnlocked] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
-  const [assetTab, setAssetTab] = useState<InvestmentTab>("btc");
+  const [assetTab, setAssetTab] = useState<InvestmentTab>("crypto");
   const [month, setMonth] = useState(currentMonth);
   const [activePin, setActivePin] = useState("");
   const [cloudStatus, setCloudStatus] = useState("");
@@ -9050,7 +10169,7 @@ export function App() {
     [state.stockPurchases, state.stockSales]
   );
   const navigateToPage = (nextPage: Page) => {
-    if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("btc");
+    if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("crypto");
     setPage(nextPage);
     if (nextPage === "dashboard") setMonth(currentMonth());
   };
@@ -9483,7 +10602,7 @@ export function App() {
         {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} commitWithUndo={commitWithUndo} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} setInvestmentAction={setInvestmentAction} onRefreshMarket={refreshMarket} />}
         {page === "accumulation" && <AccumulationPage state={state} setState={setState} commitWithUndo={commitWithUndo} />}
         {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
-        {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} />}
+        {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} onOpenAccumulation={() => navigateToPage("accumulation")} />}
         {page === "settings" && (
           <SettingsPage
             state={state}
