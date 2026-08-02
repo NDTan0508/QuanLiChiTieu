@@ -37,4 +37,15 @@ const marketApiProxy = () => ({
 
 export default defineConfig({
   plugins: [marketApiProxy(), react()],
+  build: {
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          charts: ["recharts"],
+          icons: ["lucide-react"],
+        },
+      },
+    },
+  },
 });

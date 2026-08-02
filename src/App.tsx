@@ -3,9 +3,6 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -19,8 +16,6 @@ import {
   CalendarClock,
   Check,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   CircleDollarSign,
   Coins,
   Download,
@@ -28,15 +23,12 @@ import {
   History,
   Pencil,
   Landmark,
-  LayoutDashboard,
   LineChart,
-  Lock,
   PiggyBank,
   Plus,
   RefreshCw,
   RotateCcw,
   Save,
-  Settings,
   Trash2,
   Upload,
   X,
@@ -54,13 +46,35 @@ import {
   saveCloudState,
   upsertCloudPayloadRow,
 } from "./cloudSync";
+import { AppNav, type AppNavPage } from "./components/AppNav";
+import { BreakdownPie } from "./components/BreakdownPie";
+import { MetricCard } from "./components/MetricCard";
+import { MonthPicker } from "./components/MonthPicker";
+import { SourceTraceModal } from "./components/SourceTraceModal";
+import { AdminPage, type AdminActionResult } from "./pages/AdminPage";
+import { PinGate } from "./pages/PinGate";
+import {
+  DEFAULT_ALLOCATION_STRATEGIES,
+  DEFAULT_FINANCIAL_ACCOUNTS,
+  FINANCIAL_SCHEMA_VERSION,
+  normalizeFinancialMetadata,
+  stableEventId,
+} from "./domain/financialTypes";
+import type {
+  AllocationPlan,
+  AdjustmentTransaction,
+  AllocationStrategy,
+  CorporateAction,
+  FinancialAccount,
+  HealthIssue,
+  MoneyFlowEdge,
+  ReconciliationSession,
+  TransactionMeta,
+} from "./domain/financialTypes";
+import { buildFinancialIndex } from "./domain/financialIndex";
+import { runHealthChecks } from "./domain/healthCheck";
 
-type Page =
-  | "dashboard"
-  | "accumulation"
-  | "investment"
-  | "reports"
-  | "settings";
+type Page = AppNavPage;
 
 type IncomeCategory = {
   id: string;
@@ -75,6 +89,7 @@ type IncomeTransaction = {
   date: string;
   month: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type ExpenseCategory = {
@@ -93,6 +108,7 @@ type MonthlyExpense = {
   endAmount: number;
   amount: number;
   checked: boolean;
+  meta?: TransactionMeta;
 };
 
 type AccumulationStatus = "active" | "ended" | "deleted";
@@ -111,6 +127,7 @@ type AccumulationGoal = {
   deletedAt?: string;
   createdAt: string;
   updatedAt: string;
+  meta?: TransactionMeta;
 };
 
 type ExpenseEntry = {
@@ -120,6 +137,7 @@ type ExpenseEntry = {
   amount: number;
   date: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type Allocation = {
@@ -138,6 +156,7 @@ type Allocation = {
   emergencyDepositRequestedAt?: string;
   savingDepositCreatedAt?: string;
   emergencyDepositCreatedAt?: string;
+  meta?: TransactionMeta;
 };
 
 type FundKey = "btc" | "stock";
@@ -161,6 +180,7 @@ type StockPurchase = {
   note: string;
   lines: StockPurchaseLine[];
   createdAt?: string;
+  meta?: TransactionMeta;
 };
 
 type StockSale = {
@@ -173,6 +193,7 @@ type StockSale = {
   date: string;
   note: string;
   createdAt?: string;
+  meta?: TransactionMeta;
 };
 
 type StockMarketPrice = {
@@ -208,6 +229,7 @@ type FundTransaction = {
   date: string;
   month: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type DepositStatus =
@@ -241,6 +263,7 @@ type BankDeposit = {
   settledAt?: string;
   settledAmount?: number;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type AllocationAmounts = {
@@ -277,6 +300,7 @@ type SolBuyTransaction = {
   buyPrice: number;
   date: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type SolWithdrawTransaction = {
@@ -288,6 +312,7 @@ type SolWithdrawTransaction = {
   destination: SolDestination;
   date: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type SolTransaction = SolBuyTransaction | SolWithdrawTransaction;
@@ -298,6 +323,7 @@ type BtcUsdtTopup = {
   usdtAmount: number;
   date: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type BtcDcaFrequency = "daily" | "weekly" | "monthly";
@@ -317,6 +343,7 @@ type BtcDcaPlan = {
   btcAmountOverride?: number;
   averagePriceUsdtOverride?: number;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type BtcTradeType = "dca" | "manual-buy";
@@ -331,6 +358,7 @@ type BtcTrade = {
   executedAt: string;
   planId?: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type BtcTransferDestination = "stock" | TransferDepositFund | "cash";
@@ -346,6 +374,7 @@ type BtcTransfer = {
   destination: BtcTransferTarget;
   date: string;
   note: string;
+  meta?: TransactionMeta;
 };
 
 type BtcCloudLedger = {
@@ -381,6 +410,12 @@ type AuditEntityType =
   | "expense-category"
   | "allocation"
   | "accumulation"
+  | "financial-account"
+  | "health"
+  | "reconciliation"
+  | "adjustment"
+  | "corporate-action"
+  | "allocation-plan"
   | "btc-topup"
   | "btc-dca"
   | "btc-trade"
@@ -424,6 +459,7 @@ type BackupMeta = {
 };
 
 type AppState = {
+  schemaVersion: number;
   incomeCategories: IncomeCategory[];
   incomeTransactions: IncomeTransaction[];
   expenseCategories: ExpenseCategory[];
@@ -446,6 +482,14 @@ type AppState = {
   auditLogs: AuditLog[];
   trashItems: TrashItem[];
   backupMeta?: BackupMeta;
+  financialAccounts: FinancialAccount[];
+  moneyFlowEdges: MoneyFlowEdge[];
+  healthIssues: HealthIssue[];
+  reconciliationSessions: ReconciliationSession[];
+  adjustmentTransactions: AdjustmentTransaction[];
+  corporateActions: CorporateAction[];
+  allocationStrategies: AllocationStrategy[];
+  allocationPlans: AllocationPlan[];
 };
 
 type UndoEntry = {
@@ -463,10 +507,17 @@ type CommitMeta = {
 };
 type CommitWithUndo = (label: string, updater: React.SetStateAction<AppState>, meta?: CommitMeta) => void;
 type InvestmentActionKind = "btc-topup" | "stock-purchase" | "mbb-deposit";
+type PlanActionLink = {
+  allocationPlanId: string;
+  planItemId: string;
+};
 type InvestmentActionIntent = {
   id: string;
   tab: InvestmentTab;
   action: InvestmentActionKind;
+  planLink?: PlanActionLink;
+  amountVnd?: number;
+  targetFund?: string;
 };
 
 type MbbDepositIntent = {
@@ -477,14 +528,16 @@ type MbbDepositIntent = {
 
 const STORAGE_KEY = "quan-li-chi-tieu-state-v3-account-pin-reset";
 const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
-const BACKUP_VERSION = 1;
+const BACKUP_VERSION = 2;
 const AUTO_RESTORE_BACKUP_KEY = `${STORAGE_KEY}-pre-restore-backup`;
+const AUTO_MIGRATION_BACKUP_KEY = `${STORAGE_KEY}-pre-migration-backup`;
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
 const DEFAULT_START_MONTH = "2026-06";
 const FINANCIAL_RULE_START_MONTH = "2026-07";
 const FINANCIAL_RULE_MIN_MONTHLY_EXPENSE = 10_000_000;
 const CERTIFICATE_LOT = 100_000;
 const STOCK_PRICE_UNIT = 1_000;
+const STOCK_PAR_VALUE = 10_000;
 const STOCK_LOT = 100;
 const MARKET_PRICE_REFRESH_MS = 60 * 1000;
 const COLORS = ["#f97316", "#14b8a6", "#eab308", "#60a5fa", "#f43f5e", "#a78bfa"];
@@ -1171,9 +1224,12 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
     .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
   const purchases = state.stockPurchases.filter((purchase) => !upToMonth || purchase.month <= upToMonth);
   const sales = state.stockSales.filter((sale) => !upToMonth || monthFromDate(sale.date) <= upToMonth);
+  const corporateActions = state.corporateActions.filter((action) => action.status === "applied" && (!upToMonth || monthFromDate(action.appliedAt ?? action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? "") <= upToMonth));
   const invested = purchases.reduce((sum, purchase) => sum + purchase.lines.reduce((lineSum, line) => lineSum + stockLineValue(line), 0), 0);
   const holdings = new Map<string, { symbol: string; shares: number; cost: number; lastBuyPrice: number }>();
   let soldToCashBalance = 0;
+  let corporateCashBalance = 0;
+  let corporateCost = 0;
   const events = [
     ...purchases.flatMap((purchase, purchaseIndex) =>
       purchase.lines.map((line, lineIndex) => ({
@@ -1190,6 +1246,13 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
       createdAt: sale.createdAt,
       order: index,
       sale,
+    })),
+    ...corporateActions.map((action, index) => ({
+      kind: "corporate-action" as const,
+      date: action.appliedAt ?? action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? "",
+      createdAt: action.appliedAt,
+      order: index,
+      action,
     })),
   ].sort((left, right) => {
     const dateOrder = left.date.localeCompare(right.date);
@@ -1209,6 +1272,45 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
       existing.cost += stockLineValue(event.line);
       existing.lastBuyPrice = event.line.buyPrice;
       holdings.set(symbol, existing);
+      return;
+    }
+
+    if (event.kind === "corporate-action") {
+      const action = event.action;
+      const symbol = action.symbol.toUpperCase();
+      const existing = holdings.get(symbol);
+      if (!existing) return;
+      const ratioFrom = action.ratioFrom || 1;
+      const ratioTo = action.ratioTo || 1;
+      if (action.type === "cash_dividend") {
+        const netCash = action.cashReceived ?? action.eligibleShares * (action.cashPerShare ?? 0) * (1 - (action.taxRate ?? 0) / 100) - (action.fee ?? 0);
+        corporateCashBalance += Math.max(netCash, 0);
+        return;
+      }
+      if (action.type === "stock_dividend" || action.type === "bonus_issue") {
+        existing.shares += action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+        holdings.set(symbol, existing);
+        return;
+      }
+      if (action.type === "stock_split" || action.type === "reverse_split") {
+        existing.shares = Math.floor((existing.shares * ratioTo) / ratioFrom);
+        holdings.set(symbol, existing);
+        return;
+      }
+      if (action.type === "rights_issue") {
+        const addedShares = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+        const addedCost = stockLineValue({ shares: addedShares, buyPrice: action.subscriptionPrice ?? existing.lastBuyPrice });
+        existing.shares += addedShares;
+        existing.cost += addedCost;
+        existing.lastBuyPrice = action.subscriptionPrice ?? existing.lastBuyPrice;
+        corporateCost += addedCost;
+        holdings.set(symbol, existing);
+        return;
+      }
+      if (action.type === "symbol_change" && action.newSymbol) {
+        holdings.delete(symbol);
+        holdings.set(action.newSymbol.toUpperCase(), { ...existing, symbol: action.newSymbol.toUpperCase() });
+      }
       return;
     }
 
@@ -1248,18 +1350,19 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
     });
   const stockValue = rows.reduce((sum, item) => sum + item.marketValue, 0);
   const totalCost = rows.reduce((sum, item) => sum + item.cost, 0);
-  const pnl = stockValue - totalCost;
-  const cash = Math.max(fundCash - invested + soldToCashBalance, 0);
+  const cash = Math.max(fundCash - invested - corporateCost + soldToCashBalance + corporateCashBalance, 0);
+  const totalValue = cash + stockValue;
+  const pnl = totalValue - fundCash;
 
   return {
     fundCash,
     cash,
     invested,
     stockValue,
-    totalValue: cash + stockValue,
+    totalValue,
     totalCost,
     pnl,
-    pnlPercent: totalCost ? (pnl / totalCost) * 100 : 0,
+    pnlPercent: fundCash ? (pnl / fundCash) * 100 : 0,
     holdings: rows,
   };
 }
@@ -1579,6 +1682,7 @@ function exportCsvBundle(state: AppState) {
   const btcStats = btcPortfolioStats(state);
   const stockStats = stockPortfolioStats(state);
   const sol = solPosition(state.solTransactions);
+  const financialIndex = buildFinancialIndex(state);
   const solValueVnd = sol.balance * state.market.solUsd * state.market.usdVnd;
   const solCostVnd = sol.cost * state.market.usdVnd;
   const cryptoValueVnd = btcStats.reportValueVnd + solValueVnd;
@@ -1595,6 +1699,7 @@ function exportCsvBundle(state: AppState) {
   const usdtPair = (value: number) => [Number(value.toFixed(6)), formatUsdt(value)];
   const btcPair = (value: number) => [Number(value.toFixed(8)), formatBtc(value)];
   const solPair = (value: number) => [Number(value.toFixed(8)), formatSolAmount(value)];
+  const jsonCell = (value: unknown) => (value === undefined ? "" : JSON.stringify(value));
   const depositFundLabel = (fund: DepositFund) => {
     const labels: Record<DepositFund, string> = {
       saving: "Tiết kiệm",
@@ -1923,6 +2028,24 @@ function exportCsvBundle(state: AppState) {
     ];
   }));
 
+  section("Corporate actions", ["ID", "Mã", "Loại", "Ngày nhận", "Tỷ lệ từ", "Tỷ lệ đến", "Tiền/cp", "Giá quyền mua", "Thuế", "Số cổ đủ quyền", "Số cổ nhận/mua", "Tiền thực nhận", "Số tiền mua quyền", "Trạng thái", "Đã áp dụng lúc"], state.corporateActions.map((item) => [
+    item.id,
+    item.symbol,
+    item.type,
+    safeDate(item.paymentDate ?? item.receiveDate),
+    item.ratioFrom ?? "",
+    item.ratioTo ?? "",
+    item.cashPerShare ?? "",
+    item.subscriptionPrice ?? "",
+    item.taxRate ?? "",
+    item.eligibleShares,
+    item.resultingShares ?? "",
+    item.cashReceived ?? "",
+    item.type === "rights_issue" ? corporateActionRightsIssueCost(item) : "",
+    item.status,
+    safeDateTime(item.appliedAt),
+  ]));
+
   section("Thùng rác 30 ngày", ["ID", "Loại dữ liệu", "ID gốc", "Nhãn", "Xóa lúc", "Hết hạn lúc", "Dữ liệu liên quan"], state.trashItems.map((item) => [
     item.id,
     item.entityType,
@@ -1990,8 +2113,9 @@ function normalizeState(state: AppState): AppState {
   );
   const btcDcaPlans = (state.btcDcaPlans ?? []).map(normalizeDcaPlan);
 
-  return {
+  const normalized: AppState = {
     ...state,
+    schemaVersion: state.schemaVersion ?? 1,
     settings: {
       ...state.settings,
       dismissedCryptoAllocationIds: state.settings?.dismissedCryptoAllocationIds ?? [],
@@ -2011,6 +2135,14 @@ function normalizeState(state: AppState): AppState {
     auditLogs: state.auditLogs ?? [],
     trashItems: (state.trashItems ?? []).filter((item) => new Date(item.expiresAt).getTime() > Date.now()),
     backupMeta: state.backupMeta ?? {},
+    financialAccounts: state.financialAccounts ?? [],
+    moneyFlowEdges: state.moneyFlowEdges ?? [],
+    healthIssues: state.healthIssues ?? [],
+    reconciliationSessions: state.reconciliationSessions ?? [],
+    adjustmentTransactions: state.adjustmentTransactions ?? [],
+    corporateActions: state.corporateActions ?? [],
+    allocationStrategies: state.allocationStrategies ?? [],
+    allocationPlans: state.allocationPlans ?? [],
     market: {
       ...state.market,
       btcUsdt: state.market?.btcUsdt ?? 0,
@@ -2018,6 +2150,37 @@ function normalizeState(state: AppState): AppState {
       usdVnd: state.market?.usdVnd ?? state.market?.usdtVnd ?? 0,
     },
   };
+
+  return normalizeFinancialMetadata(normalized);
+}
+
+function assetTotalForMigrationCheck(state: AppState) {
+  const total = assetPnlRows(state).find((row) => row.id === "total")?.current ?? 0;
+  return Number.isFinite(total) ? Math.round(total) : 0;
+}
+
+function normalizeStateWithMigrationSafety(input: AppState, options: { backupBeforeMigration?: boolean } = {}) {
+  const incomingSchema = Number(input.schemaVersion ?? 1);
+  const needsMigration = incomingSchema < FINANCIAL_SCHEMA_VERSION;
+  const beforeTotal = needsMigration ? assetTotalForMigrationCheck(input) : 0;
+
+  if (needsMigration && options.backupBeforeMigration) {
+    localStorage.setItem(AUTO_MIGRATION_BACKUP_KEY, JSON.stringify(backupPayload(input)));
+  }
+
+  const normalized = normalizeState(input);
+  if (needsMigration) {
+    const afterTotal = assetTotalForMigrationCheck(normalized);
+    if (Math.abs(afterTotal - beforeTotal) > 1) {
+      throw new Error(`Migration bị chặn vì tổng tài sản đổi từ ${formatVnd(beforeTotal)} sang ${formatVnd(afterTotal)}.`);
+    }
+    return {
+      ...normalized,
+      healthIssues: runHealthChecks(normalized, buildFinancialIndex(normalized)),
+    };
+  }
+
+  return normalized;
 }
 
 function calculateAllocationAmounts(totalSaving: number, allocation: Allocation): AllocationAmounts {
@@ -2042,6 +2205,7 @@ function calculateAllocationAmounts(totalSaving: number, allocation: Allocation)
 }
 
 const initialState: AppState = {
+  schemaVersion: FINANCIAL_SCHEMA_VERSION,
   incomeCategories: [
     { id: "pt-valley", name: "PT Valley", kind: "fixed" },
     { id: "fishing", name: "Fishing", kind: "variable" },
@@ -2093,6 +2257,14 @@ const initialState: AppState = {
   auditLogs: [],
   trashItems: [],
   backupMeta: {},
+  financialAccounts: DEFAULT_FINANCIAL_ACCOUNTS,
+  moneyFlowEdges: [],
+  healthIssues: [],
+  reconciliationSessions: [],
+  adjustmentTransactions: [],
+  corporateActions: [],
+  allocationStrategies: DEFAULT_ALLOCATION_STRATEGIES,
+  allocationPlans: [],
 };
 
 function useStoredState() {
@@ -2100,7 +2272,7 @@ function useStoredState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return initialState;
     try {
-      return normalizeState({ ...initialState, ...JSON.parse(raw) });
+      return normalizeStateWithMigrationSafety({ ...initialState, ...JSON.parse(raw) }, { backupBeforeMigration: true });
     } catch {
       return initialState;
     }
@@ -2372,230 +2544,6 @@ const depositCreatedField = (fund: TransferDepositFund) =>
 const depositRequestedField = (fund: TransferDepositFund) =>
   fund === "saving" ? "savingDepositRequestedAt" : "emergencyDepositRequestedAt";
 
-function AppNav({
-  page,
-  setPage,
-}: {
-  page: Page;
-  setPage: (page: Page) => void;
-}) {
-  const items: Array<{ id: Page; label: string; icon: JSX.Element }> = [
-    { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} /> },
-    { id: "reports", label: "Báo cáo", icon: <BarChart3 size={18} /> },
-    { id: "investment", label: "Tài sản", icon: <LineChart size={18} /> },
-    { id: "accumulation", label: "Tích lũy", icon: <PiggyBank size={18} /> },
-    { id: "settings", label: "Cài đặt", icon: <Settings size={18} /> },
-  ];
-
-  return (
-    <nav className="app-nav">
-      <div className="brand">
-        <img className="brand-mark" src="/logo.png" alt="Quản Lí" />
-        <div>
-          <strong>Quản Lí</strong>
-          <small>Chi tiêu cá nhân</small>
-        </div>
-      </div>
-      <div className="nav-list">
-        {items.map((item) => (
-          <button
-            className={page === item.id ? "active" : ""}
-            key={item.id}
-            onClick={() => setPage(item.id)}
-            title={item.label}
-          >
-            {item.icon}
-            <span>{item.label}</span>
-          </button>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
-function PinKeypad({
-  disabled,
-  onDigit,
-  onBackspace,
-  onClear,
-}: {
-  disabled: boolean;
-  onDigit: (digit: string) => void;
-  onBackspace: () => void;
-  onClear: () => void;
-}) {
-  const digits = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
-  return (
-    <div className="pin-keypad" aria-label="Bàn phím PIN">
-      {digits.map((digit) => (
-        <button key={digit} type="button" disabled={disabled} onClick={() => onDigit(digit)}>
-          {digit}
-        </button>
-      ))}
-      <button className="pin-keypad-action" type="button" disabled={disabled} onClick={onClear} aria-label="Xóa toàn bộ PIN">
-        <X size={18} />
-      </button>
-      <button type="button" disabled={disabled} onClick={() => onDigit("0")}>
-        0
-      </button>
-      <button className="pin-keypad-action" type="button" disabled={disabled} onClick={onBackspace} aria-label="Xóa một số">
-        <ChevronLeft size={20} />
-      </button>
-    </div>
-  );
-}
-
-function PinGate({
-  state,
-  setState,
-  cloudConfigured,
-  onUnlock,
-}: {
-  state: AppState;
-  setState: React.Dispatch<React.SetStateAction<AppState>>;
-  cloudConfigured: boolean;
-  onUnlock: (pin: string) => Promise<string | null>;
-}) {
-  const [pin, setPin] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const isSetup = !state.settings.hasPin;
-  const addDigit = (digit: string) => {
-    setError("");
-    setPin((current) => `${current}${digit}`.slice(0, 12));
-  };
-
-  const submit = async () => {
-    if (pin.length < 4) {
-      setError("PIN cần tối thiểu 4 số.");
-      return;
-    }
-    if (cloudConfigured) {
-      setLoading(true);
-      setError("");
-      const loginError = await onUnlock(pin);
-      setLoading(false);
-      if (loginError) setError(loginError);
-      return;
-    }
-    if (isSetup) {
-      setState((prev) => ({ ...prev, settings: { ...prev.settings, pin, hasPin: true } }));
-      await onUnlock(pin);
-      return;
-    }
-    if (pin === state.settings.pin) await onUnlock(pin);
-    else setError("PIN chưa đúng.");
-  };
-
-  return (
-    <main className="pin-screen">
-      <section className="pin-card">
-        <div className="pin-icon">
-          <Lock size={26} />
-        </div>
-        <h1>Nhập mã PIN</h1>
-        <p>Mở dữ liệu tài khoản của bạn. Tạo hoặc đổi PIN tại /admin.</p>
-        <input
-          className="pin-display"
-          type="text"
-          value={pin ? "•".repeat(pin.length) : ""}
-          placeholder="Nhập PIN"
-          readOnly
-          aria-label="PIN đã nhập"
-        />
-        <PinKeypad
-          disabled={loading}
-          onDigit={addDigit}
-          onBackspace={() => setPin((current) => current.slice(0, -1))}
-          onClear={() => setPin("")}
-        />
-        {error && <span className="form-error">{error}</span>}
-        <button className="primary full" disabled={loading} onClick={submit}>
-          {loading ? "Đang mở..." : "Mở app"}
-        </button>
-        <a className="admin-link" href="/admin">Tạo hoặc đổi PIN</a>
-      </section>
-    </main>
-  );
-}
-
-function MonthPicker({ month, setMonth }: { month: string; setMonth: (month: string) => void }) {
-  return (
-    <div className="month-picker">
-      <button title="Tháng trước" onClick={() => setMonth(shiftMonth(month, -1))}>
-        <ChevronLeft size={18} />
-      </button>
-      <input
-        className="month-picker-input"
-        type="month"
-        value={month}
-        onChange={(event) => {
-          if (event.target.value) setMonth(event.target.value);
-        }}
-        aria-label="Chọn tháng"
-      />
-      <strong>Tháng {formatMonth(month)}</strong>
-      <button title="Tháng sau" onClick={() => setMonth(shiftMonth(month, 1))}>
-        <ChevronRight size={18} />
-      </button>
-    </div>
-  );
-}
-
-function MetricCard({
-  label,
-  value,
-  subValue,
-  subTone,
-  icon,
-  tone,
-  percent,
-  onClick,
-}: {
-  label: string;
-  value: string;
-  subValue?: string;
-  subTone?: "success" | "danger";
-  icon: JSX.Element;
-  tone?: string;
-  percent?: number;
-  onClick?: () => void;
-}) {
-  return (
-    <article className={`metric ${tone ?? ""} ${onClick ? "clickable" : ""}`} onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined} onKeyDown={(event) => {
-      if (!onClick) return;
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        onClick();
-      }
-    }}>
-      <span>{icon}</span>
-      <div>
-        <small>{label} {typeof percent === "number" && <b>{percent}%</b>}</small>
-        <strong>{value}</strong>
-        {subValue && <em className={subTone ? `metric-sub ${subTone}` : undefined}>{subValue}</em>}
-      </div>
-    </article>
-  );
-}
-
-function BreakdownPie({ data }: { data: Array<{ name: string; value: number }> }) {
-  const rows = data.filter((item) => item.value > 0);
-  if (rows.length === 0) return <div className="empty-chart">Chưa có dữ liệu</div>;
-  return (
-    <ResponsiveContainer width="100%" height={210}>
-      <PieChart>
-        <Pie data={rows} dataKey="value" nameKey="name" innerRadius={52} outerRadius={82} paddingAngle={3}>
-          {rows.map((_, index) => (
-            <Cell key={index} fill={COLORS[index % COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip formatter={(value) => formatVnd(Number(value))} />
-      </PieChart>
-    </ResponsiveContainer>
-  );
-}
-
 function DashboardPage({
   state,
   month,
@@ -2614,6 +2562,7 @@ function DashboardPage({
     [...rows].filter((row) => row.value > 0).sort((a, b) => b.value - a.value)[0]?.id ?? rows[0]?.id ?? null;
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(() => preferredMoneyRowId(summary.incomeRows));
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(() => preferredMoneyRowId(summary.expenseRows));
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const dueSoon = state.bankDeposits
     .filter((item) => item.status === "active")
     .map((item) => ({ ...item, dueDays: daysUntil(item.maturityDate) }))
@@ -2634,6 +2583,9 @@ function DashboardPage({
 
   const selectedIncome = summary.incomeRows.find((row) => row.id === selectedIncomeId) ?? null;
   const selectedExpense = summary.expenseRows.find((row) => row.id === selectedExpenseId) ?? null;
+  const openMoneyTrace = (entityType: "income" | "expense", item: { id: string; meta?: TransactionMeta }) => {
+    setTraceEventIds([item.meta?.eventId ?? stableEventId(entityType, item.id)]);
+  };
 
   return (
     <div className="page">
@@ -2663,6 +2615,7 @@ function DashboardPage({
             rows={selectedIncome?.transactions ?? []}
             emptyText="Chưa có khoản thu nào trong tháng này."
             itemTone="income"
+            onTrace={(item) => openMoneyTrace("income", item)}
           />
         </article>
         <article className="panel">
@@ -2677,6 +2630,7 @@ function DashboardPage({
             rows={selectedExpense?.transactions ?? []}
             emptyText="Chưa có khoản phát sinh nào trong tháng này."
             itemTone="expense"
+            onTrace={(item) => openMoneyTrace("expense", item)}
           />
         </article>
       </section>
@@ -2788,6 +2742,7 @@ function UnifiedDashboardPage({
   const [moneyDetail, setMoneyDetail] = useState<"income" | "expense" | null>(null);
   const [allocationAmountInputs, setAllocationAmountInputs] = useState<Partial<Record<AllocationAmountKey, string>>>({});
   const [editingFixed, setEditingFixed] = useState<{ categoryId: string; amount: string } | null>(null);
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<
     | { kind: "income"; id: string; categoryId: string; amount: string; date: string; note: string }
     | { kind: "expense"; id: string; categoryId: string; amount: string; date: string; note: string }
@@ -2830,6 +2785,9 @@ function UnifiedDashboardPage({
   const fixedCategories = state.expenseCategories.filter((category) => isFixedCategoryVisibleInMonth(state, category, month));
   const selectedFixedExpenseCategory = fixedCategories.find((category) => category.id === selectedExpense?.id) ?? null;
   const selectedFixedExpenseRecord = selectedFixedExpenseCategory ? getMonthlyExpense(state, selectedFixedExpenseCategory, month) : null;
+  const openMoneyTrace = (entityType: "income" | "expense", item: { id: string; meta?: TransactionMeta }) => {
+    setTraceEventIds([item.meta?.eventId ?? stableEventId(entityType, item.id)]);
+  };
   const selectedFixedExpenseCanDelete = selectedFixedExpenseCategory ? !accumulationGoalForCategory(state, selectedFixedExpenseCategory.id) : false;
   const percentTotal =
     summary.allocation.btcPercent +
@@ -3282,6 +3240,7 @@ function UnifiedDashboardPage({
                 itemTone={moneyDetail}
                 onEdit={(item) => moneyDetail === "income" ? openIncomeEdit(item as IncomeTransaction) : openExpenseEdit(item as ExpenseEntry)}
                 onDelete={(item) => moneyDetail === "income" ? deleteIncomeTransaction(item) : deleteExpenseTransaction(item)}
+                onTrace={(item) => openMoneyTrace(moneyDetail, item)}
                 fixedItem={
                   moneyDetail === "expense" && selectedFixedExpenseCategory && selectedFixedExpenseRecord?.checked
                     ? {
@@ -3291,6 +3250,7 @@ function UnifiedDashboardPage({
                         canDelete: selectedFixedExpenseCanDelete,
                         onEdit: () => setEditingFixed({ categoryId: selectedFixedExpenseCategory.id, amount: selectedFixedExpenseRecord.amount.toLocaleString("vi-VN") }),
                         onDelete: () => deleteExpenseCategory(selectedFixedExpenseCategory),
+                        onTrace: () => setTraceEventIds([selectedFixedExpenseRecord.meta?.eventId ?? stableEventId("monthly-expense", selectedFixedExpenseRecord.id)]),
                       }
                     : undefined
                 }
@@ -3414,6 +3374,14 @@ function UnifiedDashboardPage({
           </section>
         </div>
       )}
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền Dashboard"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3522,15 +3490,17 @@ function CategoryHistoryPanel({
   itemTone,
   onEdit,
   onDelete,
+  onTrace,
   fixedItem,
 }: {
   title: string;
-  rows: Array<{ id: string; categoryId?: string; amount: number; date: string; note: string }>;
+  rows: Array<{ id: string; categoryId?: string; amount: number; date: string; note: string; meta?: TransactionMeta }>;
   emptyText: string;
   itemTone: "income" | "expense";
-  onEdit?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string }) => void;
-  onDelete?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string }) => void;
-  fixedItem?: { amount: number; dateLabel: string; note: string; canDelete: boolean; onEdit: () => void; onDelete: () => void };
+  onEdit?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string; meta?: TransactionMeta }) => void;
+  onDelete?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string; meta?: TransactionMeta }) => void;
+  onTrace?: (item: { id: string; categoryId?: string; amount: number; date: string; note: string; meta?: TransactionMeta }) => void;
+  fixedItem?: { amount: number; dateLabel: string; note: string; canDelete: boolean; onEdit: () => void; onDelete: () => void; onTrace?: () => void };
 }) {
   const totalRows = rows.length + (fixedItem ? 1 : 0);
   return (
@@ -3651,6 +3621,7 @@ function AccumulationPage({
   const [showHistory, setShowHistory] = useState(false);
   const [formError, setFormError] = useState("");
   const [planBasis, setPlanBasis] = useState<"months" | "monthlyAmount">("months");
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const editingGoal = editingId ? state.accumulationGoals.find((goal) => goal.id === editingId) ?? null : null;
 
   useEffect(() => {
@@ -3894,6 +3865,9 @@ function AccumulationPage({
 
   const goals = state.accumulationGoals.filter((goal) => goal.status === "active");
   const historyGoals = state.accumulationGoals.filter((goal) => goal.status === "ended");
+  const openSourceTrace = (goal: AccumulationGoal) => {
+    setTraceEventIds([goal.meta?.eventId ?? stableEventId("accumulation", goal.id)]);
+  };
 
   return (
     <div className="page">
@@ -3974,6 +3948,9 @@ function AccumulationPage({
               return (
                 <article className="accumulation-card accumulation-goal-card ended" key={goal.id}>
                   <PiggyBank className="accumulation-card-bg-icon" size={86} />
+                  <button className="accumulation-trace-button" onClick={() => openSourceTrace(goal)} title={`Xem nguồn tiền ${goal.name}`} type="button" aria-label={`Xem nguồn tiền ${goal.name}`}>
+                    <History size={16} />
+                  </button>
                   <div className="accumulation-goal-head">
                     <div className="accumulation-goal-title">
                       <span className="accumulation-goal-icon"><PiggyBank size={25} /></span>
@@ -4022,6 +3999,9 @@ function AccumulationPage({
             return (
               <article className={`accumulation-card accumulation-goal-card ${goal.status}`} key={goal.id}>
                 <PiggyBank className="accumulation-card-bg-icon" size={86} />
+                <button className="accumulation-trace-button" onClick={() => openSourceTrace(goal)} title={`Xem nguồn tiền ${goal.name}`} type="button" aria-label={`Xem nguồn tiền ${goal.name}`}>
+                  <History size={16} />
+                </button>
                 <button className="accumulation-delete-button" onClick={() => deleteGoal(goal)} title={`Xóa ${goal.name}`} type="button" aria-label={`Xóa ${goal.name}`}>
                   <X size={16} />
                 </button>
@@ -4065,6 +4045,14 @@ function AccumulationPage({
         )}
         </section>
       )}
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền tích lũy"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </div>
   );
 }
@@ -4083,6 +4071,7 @@ function MoneyPage({
   const summary = monthlySummary(state, month);
   const [historyIncomeId, setHistoryIncomeId] = useState<string | null>(null);
   const [historyExpenseId, setHistoryExpenseId] = useState<string | null>(null);
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<
     | {
         kind: "income";
@@ -4580,6 +4569,7 @@ function MoneyPage({
             itemTone="income"
             onEdit={(item) => openIncomeEdit(item as IncomeTransaction)}
             onDelete={deleteIncomeTransaction}
+            onTrace={(item) => setTraceEventIds([item.meta?.eventId ?? stableEventId("income", item.id)])}
           />
         </article>
 
@@ -4596,6 +4586,7 @@ function MoneyPage({
             itemTone="expense"
             onEdit={(item) => openExpenseEdit(item as ExpenseEntry)}
             onDelete={deleteExpenseTransaction}
+            onTrace={(item) => setTraceEventIds([item.meta?.eventId ?? stableEventId("expense", item.id)])}
           />
         </article>
       </section>
@@ -4749,6 +4740,14 @@ function MoneyPage({
           </section>
         </div>
       )}
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền thu chi"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </div>
   );
 }
@@ -4837,6 +4836,7 @@ function BtcPage({
   embedded?: boolean;
 }) {
   const stats = btcPortfolioStats(state);
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const [topupForm, setTopupForm] = useState({ vnd: "", usdt: "", date: today(), note: "" });
   const [planForm, setPlanForm] = useState({
     amountUsdt: "2",
@@ -5607,11 +5607,27 @@ function BtcPage({
                 <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteBtcHistoryRow(row)} title="Xóa lịch sử" type="button">
                   <X size={15} />
                 </button>
+                <button
+                  className="row-icon-button timeline-delete-button"
+                  onClick={() => setTraceEventIds([row.item.meta?.eventId ?? stableEventId(row.kind === "topup" ? "btc-topup" : row.kind === "trade" ? "btc-trade" : "btc-transfer", row.item.id)])}
+                  title="Xem nguồn tiền"
+                  type="button"
+                >
+                  <History size={15} />
+                </button>
               </div>
             </div>
           ))}
         </div>
       </section>
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền BTC"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </>
   );
 
@@ -5630,6 +5646,7 @@ function FundPage({
   fund: FundKey;
   embedded?: boolean;
 }) {
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const label = fund === "btc" ? "BTC" : "CK";
@@ -5680,8 +5697,16 @@ function FundPage({
             <ArrowDownCircle size={17} /> Rút khỏi quỹ
           </button>
         </article>
-        <HistoryPanel rows={rows} />
+        <HistoryPanel rows={rows} onTrace={(item) => setTraceEventIds([item.meta?.eventId ?? stableEventId("fund-transaction", item.id)])} />
       </section>
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title={`Nguồn tiền quỹ ${label}`}
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </>
   );
 
@@ -5721,10 +5746,27 @@ function StockPage({
   const [activeSuggestionRow, setActiveSuggestionRow] = useState<string | null>(null);
   const [stockError, setStockError] = useState("");
   const [refreshStatus, setRefreshStatus] = useState("");
+  const [activePlanLink, setActivePlanLink] = useState<PlanActionLink | null>(null);
+  const [corporateFormOpen, setCorporateFormOpen] = useState(false);
+  const [corporateForm, setCorporateForm] = useState({
+    symbol: "",
+    newSymbol: "",
+    type: "cash_dividend" as CorporateAction["type"],
+    exDate: today(),
+    recordDate: today(),
+    receiveDate: today(),
+    ratioFrom: "10",
+    ratioTo: "1",
+    cashDividendPercent: "10",
+    cashPerShare: "",
+    subscriptionPrice: "10",
+    taxRate: "5",
+    fee: "",
+    eligibleShares: "",
+    resultingShares: "",
+    cashReceived: "",
+  });
 
-  const stockAllocatedCapital = state.allocations
-    .filter((allocation) => allocation.confirmedAt)
-    .reduce((sum, allocation) => sum + (allocation.stockAmount ?? 0), 0);
   const plannedValue = buyRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: parseDecimal(row.buyPrice) }), 0);
   const plannedPercent = stats.cash ? Math.round((plannedValue / stats.cash) * 100) : 0;
   const saleVndAmount = Math.round((Number(saleForm.shares) || 0) * parseDecimal(saleForm.price) * STOCK_PRICE_UNIT);
@@ -5737,10 +5779,40 @@ function StockPage({
         transaction.note === "Chia quỹ cuối tháng" &&
         !state.settings.dismissedStockAllocationIds.includes(transaction.id)
     );
+  const corporateActionLabels: Partial<Record<CorporateAction["type"], string>> = {
+    cash_dividend: "Cổ tức tiền mặt",
+    stock_dividend: "Cổ tức cổ phiếu",
+    rights_issue: "Quyền mua",
+  };
+  const corporateActionLabel = (type: CorporateAction["type"]) => corporateActionLabels[type] ?? "Sự kiện cũ";
+  const corporateActionOptions: Array<{ id: CorporateAction["type"]; label: string }> = [
+    { id: "cash_dividend", label: "Cổ tức tiền mặt" },
+    { id: "stock_dividend", label: "Cổ tức cổ phiếu" },
+    { id: "rights_issue", label: "Quyền mua" },
+  ];
+  const appliedCorporateActions = [...state.corporateActions]
+    .filter((action) => action.status === "applied")
+    .sort((left, right) => (right.appliedAt ?? right.receiveDate ?? "").localeCompare(left.appliedAt ?? left.receiveDate ?? ""))
+    .slice(0, 8);
+  const selectedCorporateHolding = stats.holdings.find((item) => item.symbol === corporateForm.symbol.trim().toUpperCase());
+  const corporateEligibleShares = Number(corporateForm.eligibleShares) || selectedCorporateHolding?.shares || 0;
+  const corporateRatioFrom = parseDecimal(corporateForm.ratioFrom) || 1;
+  const corporateRatioTo = parseDecimal(corporateForm.ratioTo) || 1;
+  const computedCorporateShares = Math.floor((corporateEligibleShares * corporateRatioTo) / corporateRatioFrom);
+  const effectiveCorporateShares = Number(corporateForm.resultingShares) || computedCorporateShares;
+  const cashDividendPercent = parseDecimal(corporateForm.cashDividendPercent) || 10;
+  const effectiveCashPerShare = parseMoney(corporateForm.cashPerShare) || Math.round((cashDividendPercent / 100) * STOCK_PAR_VALUE);
+  const cashDividendGross = Math.round(corporateEligibleShares * effectiveCashPerShare);
+  const cashDividendTaxRate = parseDecimal(corporateForm.taxRate);
+  const cashDividendNet = Math.max(Math.round(cashDividendGross * (1 - cashDividendTaxRate / 100)), 0);
+  const effectiveCashDividendResult = parseMoney(corporateForm.cashReceived) || cashDividendNet;
+  const rightsIssuePrice = parseDecimal(corporateForm.subscriptionPrice);
+  const rightsIssueAmount = Math.round(effectiveCorporateShares * rightsIssuePrice * STOCK_PRICE_UNIT);
 
   useEffect(() => {
     if (actionIntent?.tab !== "stock" || actionIntent.action !== "stock-purchase") return;
     setPurchaseFormOpen(true);
+    if (actionIntent.planLink) setActivePlanLink(actionIntent.planLink);
     onActionHandled?.();
   }, [actionIntent?.id]);
 
@@ -6020,13 +6092,21 @@ function StockPage({
       setStockError("Tổng giá trị mua đang vượt quá tiền dư CK.");
       return;
     }
-    commitWithUndo("Đã mua cổ phiếu.", (prev) => ({
+    const purchaseId = uid();
+    const purchase: StockPurchase = {
+      id: purchaseId,
+      date: purchaseDate,
+      month: monthFromDate(purchaseDate),
+      note: activePlanLink ? `Từ kế hoạch phân bổ ${activePlanLink.planItemId}` : "",
+      lines,
+      createdAt: new Date().toISOString(),
+      meta: metaForPlannedTransaction("stock-purchase", purchaseId, activePlanLink),
+    };
+    commitWithUndo("Đã mua cổ phiếu.", (prev) => withCompletedAllocationPlanItem({
       ...prev,
-      stockPurchases: [
-        ...prev.stockPurchases,
-        { id: uid(), date: purchaseDate, month: monthFromDate(purchaseDate), note: "", lines, createdAt: new Date().toISOString() },
-      ],
-    }));
+      stockPurchases: [...prev.stockPurchases, purchase],
+    }, activePlanLink, stableEventId("stock-purchase", purchase.id)));
+    setActivePlanLink(null);
     resetPurchaseForm();
     setPurchaseFormOpen(false);
   };
@@ -6133,6 +6213,139 @@ function StockPage({
     );
   };
 
+  const resetCorporateForm = () => {
+    setCorporateForm({
+      symbol: "",
+      newSymbol: "",
+      type: "cash_dividend",
+      exDate: today(),
+      recordDate: today(),
+      receiveDate: today(),
+      ratioFrom: "10",
+      ratioTo: "1",
+      cashDividendPercent: "10",
+      cashPerShare: "",
+      subscriptionPrice: "10",
+      taxRate: "5",
+      fee: "",
+      eligibleShares: "",
+      resultingShares: "",
+      cashReceived: "",
+    });
+    setStockError("");
+  };
+
+  const rightsIssueCost = (action: CorporateAction) => {
+    if (action.type !== "rights_issue") return 0;
+    const ratioFrom = action.ratioFrom || 1;
+    const ratioTo = action.ratioTo || 1;
+    const addedShares = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+    return Math.round(addedShares * (action.subscriptionPrice ?? 0) * STOCK_PRICE_UNIT);
+  };
+
+  const corporateActionFromForm = (): CorporateAction | null => {
+    const symbol = corporateForm.symbol.trim().toUpperCase();
+    if (!symbol || !corporateEligibleShares) return null;
+    return {
+      id: uid(),
+      symbol,
+      type: corporateForm.type,
+      exDate: corporateForm.receiveDate,
+      recordDate: corporateForm.receiveDate,
+      receiveDate: corporateForm.receiveDate,
+      paymentDate: corporateForm.receiveDate,
+      ratioFrom: corporateRatioFrom,
+      ratioTo: corporateRatioTo,
+      cashPerShare: corporateForm.type === "cash_dividend" ? effectiveCashPerShare : undefined,
+      subscriptionPrice: corporateForm.type === "rights_issue" ? rightsIssuePrice : undefined,
+      taxRate: corporateForm.type === "cash_dividend" ? cashDividendTaxRate : undefined,
+      eligibleShares: corporateEligibleShares,
+      resultingShares: corporateForm.type === "cash_dividend" ? undefined : effectiveCorporateShares,
+      cashReceived: corporateForm.type === "cash_dividend" ? effectiveCashDividendResult : undefined,
+      status: "applied",
+      linkedEventIds: [],
+      appliedAt: new Date().toISOString(),
+    };
+  };
+
+  const corporatePreview = (action: CorporateAction | null) => {
+    if (!action) return "Chọn mã cổ phiếu đang giữ để app tự tính theo số cổ hiện có.";
+    const holding = stats.holdings.find((item) => item.symbol === action.symbol.toUpperCase());
+    const beforeShares = holding?.shares ?? action.eligibleShares;
+    const ratioFrom = action.ratioFrom || 1;
+    const ratioTo = action.ratioTo || 1;
+    if (action.type === "cash_dividend") {
+      const cash = action.cashReceived ?? action.eligibleShares * (action.cashPerShare ?? 0) * (1 - (action.taxRate ?? 0) / 100) - (action.fee ?? 0);
+      return `Tiền dư CK +${formatVnd(Math.max(cash, 0))}`;
+    }
+    if (action.type === "rights_issue") {
+      const added = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+      return `${beforeShares.toLocaleString("vi-VN")} -> ${(beforeShares + added).toLocaleString("vi-VN")} cp`;
+    }
+    if (action.type === "stock_dividend" || action.type === "bonus_issue") {
+      const added = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+      return `${beforeShares.toLocaleString("vi-VN")} -> ${(beforeShares + added).toLocaleString("vi-VN")} cp`;
+    }
+    if (action.type === "stock_split" || action.type === "reverse_split") {
+      return `${beforeShares.toLocaleString("vi-VN")} -> ${Math.floor((beforeShares * ratioTo) / ratioFrom).toLocaleString("vi-VN")} cp`;
+    }
+    return "Chờ áp dụng";
+  };
+  const corporatePreviewAction = corporateActionFromForm();
+
+  const applyManualCorporateAction = () => {
+    const action = corporateActionFromForm();
+    if (!action) {
+      setStockError("Chọn mã cổ phiếu đang giữ và số cổ đủ quyền hợp lệ.");
+      return;
+    }
+    if (action.type === "cash_dividend" && !action.cashPerShare && !action.cashReceived) {
+      setStockError("Nhập % cổ tức tiền mặt hoặc tiền/cp.");
+      return;
+    }
+    if (action.type === "rights_issue") {
+      const cost = rightsIssueCost(action);
+      if (!action.subscriptionPrice || !action.resultingShares) {
+        setStockError("Nhập số cổ được mua và giá quyền mua hợp lệ.");
+        return;
+      }
+      if (cost > stats.cash) {
+        setStockError(`Quyền mua cần ${formatVnd(cost)}, vượt tiền dư CK ${formatVnd(stats.cash)}.`);
+        return;
+      }
+    }
+    if (action.type === "stock_dividend" && !action.resultingShares) {
+      setStockError("Nhập tỷ lệ hoặc số cổ nhận hợp lệ.");
+      return;
+    }
+    commitWithUndo(
+      "Đã áp dụng sự kiện cổ phiếu.",
+      (prev) => normalizeFinancialMetadata({
+        ...prev,
+        corporateActions: [action, ...prev.corporateActions],
+      }),
+      { action: "create", entityType: "corporate-action", entityId: action.id }
+    );
+    resetCorporateForm();
+    setCorporateFormOpen(false);
+  };
+
+  const undoCorporateAction = (action: CorporateAction) => {
+    if (action.status !== "applied") return;
+    commitWithUndo(
+      "Đã hoàn tác sự kiện cổ phiếu.",
+      (prev) => normalizeFinancialMetadata({
+        ...prev,
+        corporateActions: prev.corporateActions.map((item) =>
+          item.id === action.id
+            ? { ...item, status: "pending", appliedAt: undefined, linkedEventIds: [] }
+            : item
+        ),
+      }),
+      { action: "undo", entityType: "corporate-action", entityId: action.id }
+    );
+  };
+
   const refreshPrices = async (silent = false) => {
     const symbols = stats.holdings.map((item) => item.symbol);
     if (!symbols.length) return;
@@ -6168,7 +6381,7 @@ function StockPage({
         </button>
       )}
       <section className="metrics-grid stock-metrics-grid">
-        <MetricCard label="Tổng vốn" value={formatVnd(stockAllocatedCapital)} icon={<BadgeDollarSign size={20} />} />
+        <MetricCard label="Tổng vốn" value={formatVnd(stats.fundCash)} icon={<BadgeDollarSign size={20} />} />
         <MetricCard label="Tổng tài sản CK" value={formatVnd(stats.totalValue)} icon={<LineChart size={20} />} tone="highlight" />
         <MetricCard label="Lãi/lỗ" value={`${formatVnd(stats.pnl)} · ${stats.pnlPercent.toFixed(1)}%`} icon={<BarChart3 size={20} />} tone={stats.pnl < 0 ? "loss" : undefined} />
         <div className="stock-cash-mobile">
@@ -6311,9 +6524,11 @@ function StockPage({
             {stats.holdings.map((holding) => (
               <article className="stock-holding-card" key={holding.symbol}>
                 {sellingSymbol !== holding.symbol && (
-                  <button className="stock-card-withdraw-button" onClick={() => openSaleForm(holding)} type="button">
-                    <ArrowDownCircle size={16} /> Rút
-                  </button>
+                  <div className="stock-card-actions">
+                    <button className="stock-card-withdraw-button" onClick={() => openSaleForm(holding)} type="button">
+                      <ArrowDownCircle size={16} /> Rút
+                    </button>
+                  </div>
                 )}
                 <div>
                   <h3>{holding.symbol}</h3>
@@ -6380,6 +6595,87 @@ function StockPage({
       </section>
       <section className="panel">
         <div className="panel-title">
+          <h2>Sự kiện cổ phiếu</h2>
+          {corporateFormOpen ? (
+            <button className="ghost" onClick={() => { resetCorporateForm(); setCorporateFormOpen(false); }} type="button">Hủy</button>
+          ) : (
+            <button className="primary action-button-sm" onClick={() => setCorporateFormOpen(true)} type="button">
+              <Plus size={16} /> Áp dụng
+            </button>
+          )}
+        </div>
+        {corporateFormOpen && (
+          <div className="form-grid btc-form-grid">
+            <label>Mã cổ phiếu<select value={corporateForm.symbol} onChange={(event) => {
+              const symbol = event.target.value;
+              const holding = stats.holdings.find((item) => item.symbol === symbol);
+              setCorporateForm({ ...corporateForm, symbol, eligibleShares: holding ? String(holding.shares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
+            }}><option value="">Chọn mã</option>{stats.holdings.map((holding) => <option key={holding.symbol} value={holding.symbol}>{holding.symbol} · {holding.shares.toLocaleString("vi-VN")} cp</option>)}</select></label>
+            <label>Loại sự kiện<select value={corporateForm.type} onChange={(event) => {
+              const type = event.target.value as CorporateAction["type"];
+              setCorporateForm({
+                ...corporateForm,
+                type,
+                ratioFrom: "10",
+                ratioTo: "1",
+                cashDividendPercent: type === "cash_dividend" ? corporateForm.cashDividendPercent || "10" : corporateForm.cashDividendPercent,
+                taxRate: type === "cash_dividend" ? corporateForm.taxRate || "5" : "",
+                subscriptionPrice: type === "rights_issue" ? corporateForm.subscriptionPrice || "10" : corporateForm.subscriptionPrice,
+                resultingShares: "",
+                cashReceived: "",
+              });
+            }}>{corporateActionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+            <label>Ngày nhận<input type="date" value={corporateForm.receiveDate} onChange={(event) => setCorporateForm({ ...corporateForm, receiveDate: event.target.value })} /></label>
+            <label>Số cổ đủ quyền<input value={corporateForm.eligibleShares} onChange={(event) => setCorporateForm({ ...corporateForm, eligibleShares: event.target.value.replace(/\D/g, "") })} placeholder="1000" /></label>
+            {corporateForm.type !== "cash_dividend" && (
+              <>
+                <label>Tỷ lệ từ<input value={corporateForm.ratioFrom} onChange={(event) => setCorporateForm({ ...corporateForm, ratioFrom: formatDecimalChange(event) })} placeholder="10" /></label>
+                <label>Tỷ lệ đến<input value={corporateForm.ratioTo} onChange={(event) => setCorporateForm({ ...corporateForm, ratioTo: formatDecimalChange(event) })} placeholder="1" /></label>
+              </>
+            )}
+            {corporateForm.type === "cash_dividend" && (
+              <>
+                <label>Cổ tức %<input value={corporateForm.cashDividendPercent} onChange={(event) => setCorporateForm({ ...corporateForm, cashDividendPercent: formatDecimalChange(event), cashPerShare: "", cashReceived: "" })} placeholder="10" /></label>
+                <label>Tiền/cp<input value={corporateForm.cashPerShare || effectiveCashPerShare.toLocaleString("vi-VN")} onChange={(event) => setCorporateForm({ ...corporateForm, cashPerShare: formatMoneyChange(event), cashReceived: "" })} placeholder="1.000" /></label>
+                <label>Tiền nhận<input value={cashDividendGross ? cashDividendGross.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
+                <label>Thuế %<input value={corporateForm.taxRate} onChange={(event) => setCorporateForm({ ...corporateForm, taxRate: formatDecimalChange(event), cashReceived: "" })} placeholder="5" /></label>
+                <label>Kết quả dự kiến<input value={corporateForm.cashReceived || (effectiveCashDividendResult ? effectiveCashDividendResult.toLocaleString("vi-VN") : "")} onChange={(event) => setCorporateForm({ ...corporateForm, cashReceived: formatMoneyChange(event) })} placeholder="Tự tính" /></label>
+                <button className="primary corporate-confirm-button" onClick={applyManualCorporateAction} type="button">Xác nhận</button>
+              </>
+            )}
+            {corporateForm.type === "stock_dividend" && (
+              <>
+                <label>Số cổ nhận<input value={corporateForm.resultingShares || (computedCorporateShares ? String(computedCorporateShares) : "")} onChange={(event) => setCorporateForm({ ...corporateForm, resultingShares: event.target.value.replace(/\D/g, "") })} placeholder="Tự tính" /></label>
+                <button className="primary corporate-confirm-button" onClick={applyManualCorporateAction} type="button">Xác nhận</button>
+              </>
+            )}
+            {corporateForm.type === "rights_issue" && (
+              <>
+                <label>Giá quyền mua<input value={corporateForm.subscriptionPrice} onChange={(event) => setCorporateForm({ ...corporateForm, subscriptionPrice: formatDecimalChange(event) })} placeholder="10,0" /></label>
+                <label>Số cổ được mua<input value={corporateForm.resultingShares || (computedCorporateShares ? String(computedCorporateShares) : "")} onChange={(event) => setCorporateForm({ ...corporateForm, resultingShares: event.target.value.replace(/\D/g, "") })} placeholder="Tự tính" /></label>
+                <label>Số tiền mua<input value={rightsIssueAmount ? rightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
+                <button className="primary corporate-confirm-button" onClick={applyManualCorporateAction} type="button">Xác nhận</button>
+              </>
+            )}
+          </div>
+        )}
+        {stockError && <span className="form-error">{stockError}</span>}
+        <div className="settings-list">
+          {appliedCorporateActions.length === 0 ? <p className="muted">Chưa áp dụng cổ tức/quyền mua nào.</p> : appliedCorporateActions.map((action) => (
+            <div className="settings-list-row" key={action.id}>
+              <div>
+                <strong>{action.symbol} · {corporateActionLabel(action.type)}</strong>
+                <small>{action.appliedAt ? formatDateTime(action.appliedAt) : action.receiveDate ? formatDate(action.receiveDate) : "Đã áp dụng"} · {corporatePreview(action)}</small>
+              </div>
+              <div className="settings-list-actions">
+                <button className="ghost action-button-sm" onClick={() => undoCorporateAction(action)} type="button"><RotateCcw size={16} /> Hoàn tác</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-title">
           <h2>Lịch sử mua</h2>
           <small>{state.stockPurchases.length} lệnh</small>
         </div>
@@ -6407,6 +6703,539 @@ function StockPage({
 
   if (embedded) return content;
   return <div className="page">{content}</div>;
+}
+
+function reconciliationBalanceKey(balance: ReconciliationSession["expectedBalances"][number]) {
+  return `${balance.asset}:${balance.stockSymbol ?? ""}`;
+}
+
+function corporateActionCashAmount(action: CorporateAction) {
+  const netCash = action.cashReceived ?? action.eligibleShares * (action.cashPerShare ?? 0) * (1 - (action.taxRate ?? 0) / 100) - (action.fee ?? 0);
+  return Math.max(Math.round(netCash), 0);
+}
+
+function corporateActionRightsIssueCost(action: CorporateAction) {
+  if (action.type !== "rights_issue") return 0;
+  const ratioFrom = action.ratioFrom || 1;
+  const ratioTo = action.ratioTo || 1;
+  const addedShares = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+  return Math.round(addedShares * (action.subscriptionPrice ?? 0) * STOCK_PRICE_UNIT + (action.fee ?? 0));
+}
+
+function expectedReconciliationBalances(
+  state: AppState,
+  accountId: string,
+  financialIndex = buildFinancialIndex(state)
+): ReconciliationSession["expectedBalances"] {
+  const accountEventIds = new Set((financialIndex.eventsByAccountId.get(accountId) ?? []).map((event) => event.id));
+  const hasIndexedEvent = (entityType: string, entityId: string) =>
+    accountEventIds.has(financialIndex.eventsById.get(stableEventId(entityType, entityId))?.id ?? "");
+  const matchingAdjustments = state.adjustmentTransactions.filter((item) => item.accountId === accountId && hasIndexedEvent("adjustment", item.id));
+
+  if (accountId === "binance") {
+    const dcaTradesByPlan = new Map<string, BtcTrade[]>();
+    state.btcTrades.forEach((trade) => {
+      if (trade.type === "dca" && trade.planId) {
+        dcaTradesByPlan.set(trade.planId, [...(dcaTradesByPlan.get(trade.planId) ?? []), trade]);
+      }
+    });
+    const topupUsdt = state.btcUsdtTopups
+      .filter((item) => hasIndexedEvent("btc-topup", item.id))
+      .reduce((sum, item) => sum + item.usdtAmount, 0);
+    const tradeSpentUsdt = state.btcTrades
+      .filter((item) => hasIndexedEvent("btc-trade", item.id))
+      .reduce((sum, item) => sum + (item.costVnd ? 0 : item.usdtAmount), 0);
+    const convertedToUsdt = state.btcTransfers
+      .filter((item) => hasIndexedEvent("btc-transfer", item.id) && item.asset === "btc" && item.destination === "usdt")
+      .reduce((sum, item) => sum + item.usdtAmount, 0);
+    const transferredUsdt = state.btcTransfers
+      .filter((item) => hasIndexedEvent("btc-transfer", item.id) && item.asset === "usdt")
+      .reduce((sum, item) => sum + item.usdtAmount, 0);
+    const directBtc = state.btcTrades
+      .filter((item) => hasIndexedEvent("btc-trade", item.id) && item.type !== "dca")
+      .reduce((sum, item) => sum + item.btcAmount, 0);
+    const dcaBtc = state.btcDcaPlans
+      .filter((plan) => hasIndexedEvent("btc-dca", plan.id))
+      .reduce((sum, plan) => {
+        const planTrades = dcaTradesByPlan.get(plan.id) ?? [];
+        const tradeBtcAmount = planTrades.reduce((tradeSum, trade) => tradeSum + trade.btcAmount, 0);
+        return sum + (plan.btcAmountOverride && plan.btcAmountOverride > 0 ? plan.btcAmountOverride : tradeBtcAmount);
+      }, 0);
+    const transferredBtc = state.btcTransfers
+      .filter((item) => hasIndexedEvent("btc-transfer", item.id) && item.asset === "btc")
+      .reduce((sum, item) => sum + item.btcAmount, 0);
+    const solBalance = state.solTransactions
+      .filter((item) => hasIndexedEvent("sol", item.id))
+      .reduce((sum, item) => sum + (isSolWithdrawal(item) ? -item.solAmount : item.solAmount), 0);
+    const quantityAdjustment = (asset: string) =>
+      matchingAdjustments.filter((item) => item.asset === asset).reduce((sum, item) => sum + (item.quantity ?? 0), 0);
+    return [
+      { asset: "USDT", quantity: Math.max(topupUsdt + convertedToUsdt - tradeSpentUsdt - transferredUsdt + quantityAdjustment("USDT"), 0) },
+      { asset: "BTC", quantity: Math.max(directBtc + dcaBtc - transferredBtc + quantityAdjustment("BTC"), 0) },
+      { asset: "SOL", quantity: Math.max(solBalance + quantityAdjustment("SOL"), 0) },
+    ];
+  }
+  if (accountId === "vps") {
+    const stockStats = stockPortfolioStats(state);
+    const fundCash = state.fundTransactions
+      .filter((item) => item.fund === "stock" && hasIndexedEvent("fund-transaction", item.id) && !item.note.startsWith("Rút từ CK"))
+      .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
+    const invested = state.stockPurchases
+      .filter((purchase) => hasIndexedEvent("stock-purchase", purchase.id))
+      .reduce((sum, purchase) => sum + purchase.lines.reduce((lineSum, line) => lineSum + stockLineValue(line), 0), 0);
+    const soldToCashBalance = state.stockSales
+      .filter((sale) => hasIndexedEvent("stock-sale", sale.id) && sale.destination === "stock")
+      .reduce((sum, sale) => sum + sale.vndAmount, 0);
+    const appliedCorporateActions = state.corporateActions.filter((action) => hasIndexedEvent("corporate-action", action.id) && action.status === "applied");
+    const corporateCashBalance = appliedCorporateActions
+      .filter((action) => action.type === "cash_dividend")
+      .reduce((sum, action) => sum + corporateActionCashAmount(action), 0);
+    const corporateCost = appliedCorporateActions.reduce((sum, action) => sum + corporateActionRightsIssueCost(action), 0);
+    const cashAdjustment = matchingAdjustments.filter((item) => item.asset === "VND").reduce((sum, item) => sum + (item.amountVnd ?? 0), 0);
+    const stockQuantityAdjustment = (symbol: string) =>
+      matchingAdjustments
+        .filter((item) => item.asset === "STOCK" && item.stockSymbol === symbol)
+        .reduce((sum, item) => sum + (item.quantity ?? 0), 0);
+    return [
+      { asset: "VND", amountVnd: Math.max(fundCash - invested + soldToCashBalance + corporateCashBalance - corporateCost + cashAdjustment, 0) },
+      ...stockStats.holdings.map((holding) => ({
+        asset: "STOCK",
+        stockSymbol: holding.symbol,
+        quantity: Math.max(holding.shares + stockQuantityAdjustment(holding.symbol), 0),
+      })),
+    ];
+  }
+  if (accountId === "mbb-books") {
+    const amountAdjustment = (code: string) =>
+      matchingAdjustments
+        .filter((item) => item.asset === "VND" && item.stockSymbol === code)
+        .reduce((sum, item) => sum + (item.amountVnd ?? 0), 0);
+    return state.bankDeposits
+      .filter((deposit) => deposit.status === "active" && hasIndexedEvent("deposit", deposit.id))
+      .map((deposit) => ({ asset: "VND", stockSymbol: deposit.code, amountVnd: deposit.principal + amountAdjustment(deposit.code) }));
+  }
+  const vndAdjustment = matchingAdjustments.filter((item) => item.asset === "VND").reduce((sum, item) => sum + (item.amountVnd ?? 0), 0);
+  return [{ asset: "VND", amountVnd: vndAdjustment }];
+}
+
+function reconciliationDifferences(
+  expectedBalances: ReconciliationSession["expectedBalances"],
+  actualBalances: ReconciliationSession["actualBalances"]
+): ReconciliationSession["differences"] {
+  return expectedBalances.map((expected) => {
+    const actual = actualBalances.find((item) => reconciliationBalanceKey(item) === reconciliationBalanceKey(expected));
+    return {
+      asset: expected.asset,
+      stockSymbol: expected.stockSymbol,
+      expectedAmount: expected.amountVnd,
+      actualAmount: actual?.amountVnd,
+      differenceAmount: expected.amountVnd === undefined || actual?.amountVnd === undefined ? undefined : actual.amountVnd - expected.amountVnd,
+      expectedQuantity: expected.quantity,
+      actualQuantity: actual?.quantity,
+      differenceQuantity: expected.quantity === undefined || actual?.quantity === undefined ? undefined : actual.quantity - expected.quantity,
+      reason: "unknown" as const,
+      resolutionStatus: "unresolved" as const,
+    };
+  });
+}
+
+function allocationSnapshotForState(state: AppState): AllocationPlan["currentSnapshot"] {
+  const btcStats = btcPortfolioStats(state);
+  const sol = solPosition(state.solTransactions);
+  const stockStats = stockPortfolioStats(state);
+  const activeDepositTotal = (fund: TransferDepositFund) =>
+    state.bankDeposits
+      .filter((deposit) => deposit.fund === fund && deposit.status === "active")
+      .reduce((sum, deposit) => sum + deposit.principal, 0);
+  const saving = activeDepositTotal("saving");
+  const emergency = activeDepositTotal("emergency");
+  const crypto = btcStats.totalValueVnd + sol.balance * state.market.solUsd * state.market.usdVnd;
+  return {
+    totalAssets: crypto + stockStats.totalValue + saving + emergency,
+    crypto,
+    stock: stockStats.totalValue,
+    saving,
+    emergency,
+  };
+}
+
+function buildAllocationPlanFromStrategy(state: AppState, availableAmount: number, strategyId: string): AllocationPlan {
+  const strategy = state.allocationStrategies.find((item) => item.id === strategyId) ?? DEFAULT_ALLOCATION_STRATEGIES[1];
+  const createdAt = new Date().toISOString();
+  const currentSnapshot = allocationSnapshotForState(state);
+  const rawItems = [
+    { actionType: "buy_usdt" as const, targetFund: "crypto", amountVnd: (availableAmount * strategy.targetWeights.crypto) / 100, reason: `Theo chiến lược ${strategy.name}: Crypto ${strategy.targetWeights.crypto}%` },
+    { actionType: "buy_stock" as const, targetFund: "stock", amountVnd: (availableAmount * strategy.targetWeights.stock) / 100, reason: `Theo chiến lược ${strategy.name}: CK ${strategy.targetWeights.stock}%` },
+    { actionType: "create_mbb_book" as const, targetFund: "saving", amountVnd: (availableAmount * strategy.targetWeights.saving) / 100, reason: `Theo chiến lược ${strategy.name}: Tiết kiệm ${strategy.targetWeights.saving}%` },
+    { actionType: "create_mbb_book" as const, targetFund: "emergency", amountVnd: (availableAmount * strategy.targetWeights.emergency) / 100, reason: `Theo chiến lược ${strategy.name}: Dự phòng ${strategy.targetWeights.emergency}%` },
+  ];
+  const items = rawItems
+    .filter((item) => item.amountVnd > 0)
+    .map((item, index) => ({
+      id: uid(),
+      ...item,
+      amountVnd: Math.round(item.amountVnd),
+      priority: index + 1,
+      status: "ready" as const,
+      executedEventIds: [],
+    }));
+  const projectedSnapshot = {
+    ...currentSnapshot,
+    totalAssets: currentSnapshot.totalAssets + availableAmount,
+    crypto: currentSnapshot.crypto + (items.find((item) => item.targetFund === "crypto")?.amountVnd ?? 0),
+    stock: currentSnapshot.stock + (items.find((item) => item.targetFund === "stock")?.amountVnd ?? 0),
+    saving: currentSnapshot.saving + (items.find((item) => item.targetFund === "saving")?.amountVnd ?? 0),
+    emergency: currentSnapshot.emergency + (items.find((item) => item.targetFund === "emergency")?.amountVnd ?? 0),
+  };
+  return {
+    id: uid(),
+    availableAmount,
+    strategyId: strategy.id,
+    status: "draft",
+    currentSnapshot,
+    projectedSnapshot,
+    items,
+    createdAt,
+  };
+}
+
+function metaForPlannedTransaction(entityType: string, entityId: string, planLink?: PlanActionLink | null): TransactionMeta | undefined {
+  if (!planLink) return undefined;
+  const now = new Date().toISOString();
+  return {
+    eventId: stableEventId(entityType, entityId),
+    allocationPlanId: planLink.allocationPlanId,
+    planItemId: planLink.planItemId,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: "user",
+    schemaVersion: FINANCIAL_SCHEMA_VERSION,
+  };
+}
+
+function withCompletedAllocationPlanItem(state: AppState, planLink: PlanActionLink | null, executedEventId: string): AppState {
+  if (!planLink) return state;
+  const nextState = {
+    ...state,
+    allocationPlans: state.allocationPlans.map((plan) => {
+      if (plan.id !== planLink.allocationPlanId) return plan;
+      const items = plan.items.map((item) =>
+        item.id === planLink.planItemId
+          ? { ...item, status: "completed" as const, executedEventIds: [...new Set([...item.executedEventIds, executedEventId])] }
+          : item
+      );
+      const isCompleted = items.every((item) => item.status === "completed" || item.status === "skipped");
+      return {
+        ...plan,
+        status: isCompleted ? "completed" as const : "in_progress" as const,
+        items,
+      };
+    }),
+  };
+  const projectedSnapshot = allocationSnapshotForState(nextState);
+  return {
+    ...nextState,
+    allocationPlans: nextState.allocationPlans.map((plan) =>
+      plan.id === planLink.allocationPlanId ? { ...plan, projectedSnapshot } : plan
+    ),
+  };
+}
+
+function ReconciliationPage({ state, commitWithUndo }: { state: AppState; commitWithUndo: CommitWithUndo }) {
+  const activeAccounts = state.financialAccounts.filter((account) => account.isActive);
+  const [accountId, setAccountId] = useState(activeAccounts[0]?.id ?? "binance");
+  const [actualValues, setActualValues] = useState<Record<string, string>>({});
+  const [reopenedActualValues, setReopenedActualValues] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState("");
+  const selectedAccount = state.financialAccounts.find((account) => account.id === accountId);
+  const reconciliationFinancialIndex = useMemo(() => buildFinancialIndex(state), [state]);
+  const expectedBalances = useMemo(() => expectedReconciliationBalances(state, accountId, reconciliationFinancialIndex), [state, accountId, reconciliationFinancialIndex]);
+  const activeSessions = [...state.reconciliationSessions].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 20);
+  const hasReconciliationDifference = (difference: ReconciliationSession["differences"][number]) =>
+    Math.abs(difference.differenceAmount ?? 0) > 1 || Math.abs(difference.differenceQuantity ?? 0) > 0.000001;
+  const reasonLabels: Record<NonNullable<ReconciliationSession["differences"][number]["reason"]>, string> = {
+    missing_transaction: "Thiếu giao dịch",
+    fee: "Phí",
+    interest: "Lãi",
+    dividend: "Cổ tức",
+    rounding: "Làm tròn",
+    wrong_price: "Sai giá",
+    manual_adjustment: "Điều chỉnh tay",
+    unknown: "Chưa rõ",
+  };
+  const resolutionLabels: Record<ReconciliationSession["differences"][number]["resolutionStatus"], string> = {
+    unresolved: "Chưa xử lý",
+    transaction_created: "Đã tạo giao dịch",
+    adjusted: "Đã adjustment",
+    accepted: "Chấp nhận lệch",
+  };
+
+  const saveSession = () => {
+    const actualBalances = expectedBalances.map((expected) => {
+      const rawValue = parseDecimal(actualValues[reconciliationBalanceKey(expected)] ?? "");
+      return expected.amountVnd !== undefined
+        ? { asset: expected.asset, stockSymbol: expected.stockSymbol, amountVnd: rawValue }
+        : { asset: expected.asset, stockSymbol: expected.stockSymbol, quantity: rawValue };
+    });
+    const session: ReconciliationSession = {
+      id: uid(),
+      accountId,
+      reconciliationDate: today(),
+      status: "completed",
+      expectedBalances,
+      actualBalances,
+      differences: reconciliationDifferences(expectedBalances, actualBalances),
+      notes,
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+    commitWithUndo(
+      `Đã lưu đối soát ${selectedAccount?.name ?? accountId}.`,
+      (prev) => ({
+        ...prev,
+        reconciliationSessions: [session, ...prev.reconciliationSessions],
+        healthIssues: runHealthChecks(prev, buildFinancialIndex(prev)),
+      }),
+      { action: "create", entityType: "reconciliation", entityId: session.id }
+    );
+    setActualValues({});
+    setNotes("");
+  };
+
+  const reopenSession = (sessionId: string) => {
+    commitWithUndo(
+      "Đã mở lại phiên đối soát.",
+      (prev) => ({
+        ...prev,
+        reconciliationSessions: prev.reconciliationSessions.map((session) => (session.id === sessionId ? { ...session, status: "reopened" } : session)),
+      }),
+      { action: "update", entityType: "reconciliation", entityId: sessionId }
+    );
+  };
+
+  const updateDifference = (
+    sessionId: string,
+    difference: ReconciliationSession["differences"][number],
+    patch: Partial<ReconciliationSession["differences"][number]>
+  ) => {
+    commitWithUndo(
+      "Đã cập nhật dòng chênh lệch đối soát.",
+      (prev) => ({
+        ...prev,
+        reconciliationSessions: prev.reconciliationSessions.map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                differences: session.differences.map((row) =>
+                  reconciliationBalanceKey(row) === reconciliationBalanceKey(difference)
+                    ? { ...row, ...patch }
+                    : row
+                ),
+              }
+            : session
+        ),
+      }),
+      { action: "update", entityType: "reconciliation", entityId: sessionId }
+    );
+  };
+
+  const saveReopenedSession = (session: ReconciliationSession) => {
+    const actualBalances = session.expectedBalances.map((expected) => {
+      const key = `${session.id}:${reconciliationBalanceKey(expected)}`;
+      const existing = session.actualBalances.find((item) => reconciliationBalanceKey(item) === reconciliationBalanceKey(expected));
+      const rawValue = parseDecimal(reopenedActualValues[key] ?? String(existing?.amountVnd ?? existing?.quantity ?? 0));
+      return expected.amountVnd !== undefined
+        ? { asset: expected.asset, stockSymbol: expected.stockSymbol, amountVnd: rawValue }
+        : { asset: expected.asset, stockSymbol: expected.stockSymbol, quantity: rawValue };
+    });
+    const nextDifferences = reconciliationDifferences(session.expectedBalances, actualBalances).map((difference) => {
+      const previous = session.differences.find((item) => reconciliationBalanceKey(item) === reconciliationBalanceKey(difference));
+      const changed =
+        previous?.differenceAmount !== difference.differenceAmount ||
+        previous?.differenceQuantity !== difference.differenceQuantity;
+      return {
+        ...difference,
+        reason: previous?.reason ?? difference.reason,
+        resolutionStatus: changed ? "unresolved" as const : previous?.resolutionStatus ?? difference.resolutionStatus,
+      };
+    });
+    commitWithUndo(
+      "Đã lưu lại phiên đối soát.",
+      (prev) => ({
+        ...prev,
+        reconciliationSessions: prev.reconciliationSessions.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                status: "completed",
+                actualBalances,
+                differences: nextDifferences,
+                completedAt: new Date().toISOString(),
+              }
+            : item
+        ),
+        healthIssues: runHealthChecks(prev, buildFinancialIndex(prev)),
+      }),
+      { action: "update", entityType: "reconciliation", entityId: session.id }
+    );
+    setReopenedActualValues((prev) => {
+      const next = { ...prev };
+      session.expectedBalances.forEach((balance) => delete next[`${session.id}:${reconciliationBalanceKey(balance)}`]);
+      return next;
+    });
+  };
+
+  const createAdjustment = (session: ReconciliationSession, difference: ReconciliationSession["differences"][number]) => {
+    if (!hasReconciliationDifference(difference)) return;
+    const adjustment: AdjustmentTransaction = {
+      id: uid(),
+      reconciliationSessionId: session.id,
+      accountId: session.accountId,
+      asset: difference.asset,
+      stockSymbol: difference.stockSymbol,
+      amountVnd: difference.differenceAmount,
+      quantity: difference.differenceQuantity,
+      reason: difference.reason ?? "unknown",
+      date: today(),
+      note: `Điều chỉnh từ đối soát ${formatDate(session.reconciliationDate)}`,
+      createdAt: new Date().toISOString(),
+    };
+    commitWithUndo(
+      "Đã tạo adjustment từ đối soát.",
+      (prev) => normalizeFinancialMetadata({
+        ...prev,
+        adjustmentTransactions: [adjustment, ...prev.adjustmentTransactions],
+        reconciliationSessions: prev.reconciliationSessions.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                differences: item.differences.map((row) =>
+                  row.asset === difference.asset && row.stockSymbol === difference.stockSymbol
+                    ? { ...row, resolutionStatus: "adjusted" }
+                    : row
+                ),
+              }
+            : item
+        ),
+      }),
+      { action: "create", entityType: "adjustment", entityId: adjustment.id }
+    );
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-title">
+        <h2>Đối soát</h2>
+        <small>{state.reconciliationSessions.length} phiên</small>
+      </div>
+      <div className="form-grid">
+        <label>
+          Tài khoản
+          <select value={accountId} onChange={(event) => setAccountId(event.target.value)}>
+            {activeAccounts.map((account) => (
+              <option key={account.id} value={account.id}>{account.name}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Ghi chú
+          <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Lý do/chứng từ đối soát" />
+        </label>
+      </div>
+      <div className="settings-list">
+        {expectedBalances.map((balance) => {
+          const key = reconciliationBalanceKey(balance);
+          const expectedText = balance.amountVnd !== undefined ? formatVnd(balance.amountVnd) : String(balance.quantity ?? 0);
+          return (
+            <div className="settings-list-row" key={key}>
+              <div>
+                <strong>{balance.stockSymbol ? `${balance.asset} · ${balance.stockSymbol}` : balance.asset}</strong>
+                <small>Expected: {expectedText}</small>
+              </div>
+              <input
+                value={actualValues[key] ?? ""}
+                onChange={(event) => setActualValues((prev) => ({ ...prev, [key]: event.target.value }))}
+                placeholder="Actual"
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="form-actions">
+        <button className="primary" onClick={saveSession} type="button">
+          <Save size={16} /> Lưu phiên đối soát
+        </button>
+      </div>
+      <div className="settings-list">
+        {activeSessions.map((session) => (
+          <div className="settings-list-row" key={session.id}>
+            <div>
+              <strong>{state.financialAccounts.find((account) => account.id === session.accountId)?.name ?? session.accountId}</strong>
+              <small>{formatDate(session.reconciliationDate)} · {session.status} · {session.differences.length} dòng</small>
+              {session.status === "reopened" && (
+                <div className="reconciliation-reopen-grid">
+                  {session.expectedBalances.map((balance) => {
+                    const key = reconciliationBalanceKey(balance);
+                    const existing = session.actualBalances.find((item) => reconciliationBalanceKey(item) === key);
+                    const inputKey = `${session.id}:${key}`;
+                    return (
+                      <label key={key}>
+                        {balance.stockSymbol ? `${balance.asset} ${balance.stockSymbol}` : balance.asset}
+                        <input
+                          value={reopenedActualValues[inputKey] ?? String(existing?.amountVnd ?? existing?.quantity ?? 0)}
+                          onChange={(event) => setReopenedActualValues((prev) => ({ ...prev, [inputKey]: event.target.value }))}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {session.differences.filter(hasReconciliationDifference).map((difference) => (
+                <div className="reconciliation-difference-row" key={`${difference.asset}-${difference.stockSymbol ?? ""}`}>
+                  <small>
+                    {difference.stockSymbol ? `${difference.asset} ${difference.stockSymbol}` : difference.asset}: {typeof difference.differenceAmount === "number" ? formatVnd(difference.differenceAmount) : difference.differenceQuantity}
+                  </small>
+                  <select
+                    value={difference.reason ?? "unknown"}
+                    onChange={(event) => updateDifference(session.id, difference, { reason: event.target.value as NonNullable<typeof difference.reason> })}
+                  >
+                    {Object.entries(reasonLabels).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={difference.resolutionStatus}
+                    onChange={(event) => updateDifference(session.id, difference, { resolutionStatus: event.target.value as typeof difference.resolutionStatus })}
+                  >
+                    {Object.entries(resolutionLabels).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                  {difference.resolutionStatus === "unresolved" && (
+                    <button className="primary action-button-sm" onClick={() => createAdjustment(session, difference)} type="button">
+                      <Plus size={16} /> Adjustment
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="settings-list-actions">
+              {session.status === "completed" && (
+                <button className="ghost action-button-sm" onClick={() => reopenSession(session.id)} type="button">
+                  <RotateCcw size={16} /> Mở lại
+                </button>
+              )}
+              {session.status === "reopened" && (
+                <button className="primary action-button-sm" onClick={() => saveReopenedSession(session)} type="button">
+                  <Save size={16} /> Lưu lại
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function InvestmentPage({
@@ -6503,7 +7332,7 @@ function InvestmentPage({
   );
 }
 
-function HistoryPanel({ rows }: { rows: FundTransaction[] }) {
+function HistoryPanel({ rows, onTrace }: { rows: FundTransaction[]; onTrace?: (item: FundTransaction) => void }) {
   return (
     <article className="panel">
       <div className="panel-title">
@@ -6514,9 +7343,11 @@ function HistoryPanel({ rows }: { rows: FundTransaction[] }) {
         {[...rows].reverse().map((item) => (
           <div key={item.id}>
             <span className={item.type}>{item.type === "deposit" ? "+" : "-"}</span>
-            <div>
-              <strong>{formatVnd(item.amount)}</strong>
-              <small>{formatDate(item.date)} · {item.note || "Không ghi chú"}</small>
+            <div className="timeline-row-content">
+              <div>
+                <strong>{formatVnd(item.amount)}</strong>
+                <small>{formatDate(item.date)} · {item.note || "Không ghi chú"}</small>
+              </div>
             </div>
           </div>
         ))}
@@ -6580,6 +7411,8 @@ function BankDepositPage({
   const [depositFormError, setDepositFormError] = useState("");
   const [pendingSource, setPendingSource] = useState<BankDeposit | null>(null);
   const [earlySettlementDates, setEarlySettlementDates] = useState<Record<string, string>>({});
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
+  const [activePlanLink, setActivePlanLink] = useState<PlanActionLink | null>(null);
   const fundLabel = (fund: DepositFund) => {
     const labels: Record<DepositFund, string> = {
       saving: "Tiết kiệm",
@@ -6766,7 +7599,16 @@ function BankDepositPage({
 
   useEffect(() => {
     if (actionIntent?.tab !== "mbb" || actionIntent.action !== "mbb-deposit") return;
-    openManualDepositForm();
+    const targetFund: DepositFund = actionIntent.targetFund === "emergency" ? "emergency" : "saving";
+    setActivePlanLink(actionIntent.planLink ?? null);
+    openDepositForm({
+      fund: targetFund,
+      amount: actionIntent.amountVnd ? actionIntent.amountVnd.toLocaleString("vi-VN") : form.amount,
+      note: actionIntent.planLink ? `Từ kế hoạch phân bổ ${actionIntent.planLink.planItemId}` : form.note,
+      allocationSource: false,
+      sourceMonth: "",
+      sourceSolWithdrawalId: "",
+    });
     onActionHandled?.();
   }, [actionIntent?.id]);
 
@@ -6804,9 +7646,9 @@ function BankDepositPage({
       setDepositFormError("Chọn mục tích lũy cho sổ này.");
       return;
     }
-    setState((prev) => {
+    commitWithUndo("Đã thêm sổ MBB.", (prev) => {
       const sourceMonth = form.sourceMonth || monthFromDate(form.date);
-      const nextDeposit = makeDeposit(
+      const nextDepositRaw = makeDeposit(
         prev.bankDeposits,
         form.fund,
         form.product,
@@ -6823,6 +7665,10 @@ function BankDepositPage({
         form.sourceSolWithdrawalId || undefined,
         form.fund === "accumulation" ? form.accumulationGoalId : pendingSource?.accumulationGoalId
       );
+      const nextDeposit: BankDeposit = {
+        ...nextDepositRaw,
+        meta: metaForPlannedTransaction("deposit", nextDepositRaw.id, activePlanLink),
+      };
 
       const bankDeposits = pendingSource
         ? prev.bankDeposits.map((item) =>
@@ -6838,7 +7684,7 @@ function BankDepositPage({
           )
         : prev.bankDeposits;
 
-      return {
+      return withCompletedAllocationPlanItem({
         ...prev,
         bankDeposits: [...bankDeposits, nextDeposit],
         allocations: form.allocationSource
@@ -6848,9 +7694,10 @@ function BankDepositPage({
                 : allocation
             )
           : prev.allocations,
-      };
+      }, activePlanLink, stableEventId("deposit", nextDeposit.id));
     });
     setForm(defaultDepositForm());
+    setActivePlanLink(null);
     setFormOpen(false);
     setPendingSource(null);
   };
@@ -7198,6 +8045,9 @@ function BankDepositPage({
               <button className="deposit-delete-button" onClick={() => deleteDeposit(item)} title={`Xóa sổ ${item.code}`} type="button" aria-label={`Xóa sổ ${item.code}`}>
                 <X size={16} />
               </button>
+              <button className="deposit-trace-button" onClick={() => setTraceEventIds([item.meta?.eventId ?? stableEventId("deposit", item.id)])} title={`Xem nguồn tiền sổ ${item.code}`} type="button" aria-label={`Xem nguồn tiền sổ ${item.code}`}>
+                <History size={15} />
+              </button>
               <div className="deposit-head">
                 <div>
                   <div className="deposit-code-row">
@@ -7285,6 +8135,14 @@ function BankDepositPage({
           );
         })}
       </section>
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền Sổ MBB"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </>
   );
 
@@ -7324,6 +8182,7 @@ function SolPage({
 
   const [form, setForm] = useState({ sol: "", price: "", date: today(), note: "" });
   const [formMode, setFormMode] = useState<SolFormMode>("buy");
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const [withdrawForm, setWithdrawForm] = useState({
     sol: "",
     price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "",
@@ -7791,11 +8650,22 @@ function SolPage({
                 <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteSolHistoryItem(item)} title="Xóa lịch sử" type="button">
                   <X size={15} />
                 </button>
+                <button className="row-icon-button timeline-delete-button" onClick={() => setTraceEventIds([item.meta?.eventId ?? stableEventId("sol", item.id)])} title="Xem nguồn tiền" type="button">
+                  <History size={15} />
+                </button>
               </div>
             </div>
           ))}
         </div>
       </section>
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền SOL"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </>
   );
 
@@ -7864,6 +8734,9 @@ function CryptoPage({
   const [editingDcaAssetPlanId, setEditingDcaAssetPlanId] = useState<string | null>(null);
   const [dcaAssetForm, setDcaAssetForm] = useState({ btcAmount: "", averagePriceUsdt: "" });
   const [cryptoError, setCryptoError] = useState("");
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
+  const [activePlanLink, setActivePlanLink] = useState<PlanActionLink | null>(null);
+  const cryptoFinancialIndex = useMemo(() => buildFinancialIndex(state), [state]);
   const solValueUsd = solStats.balance * state.market.solUsd;
   const solValueVnd = solValueUsd * state.market.usdVnd;
   const solPnlUsd = solValueUsd - solStats.cost;
@@ -7938,6 +8811,14 @@ function CryptoPage({
   useEffect(() => {
     if (actionIntent?.tab !== "crypto" || actionIntent.action !== "btc-topup") return;
     setActiveAction("topup");
+    if (actionIntent.planLink) {
+      setActivePlanLink(actionIntent.planLink);
+      setTopupForm((prev) => ({
+        ...prev,
+        vnd: actionIntent.amountVnd ? actionIntent.amountVnd.toLocaleString("vi-VN") : prev.vnd,
+        note: `Từ kế hoạch phân bổ ${actionIntent.planLink?.planItemId}`,
+      }));
+    }
     onActionHandled?.();
   }, [actionIntent?.id]);
 
@@ -8016,10 +8897,19 @@ function CryptoPage({
     const usdtAmount = parseDecimal(topupForm.usdt);
     if (!vndAmount || !usdtAmount) return setCryptoError("Nhập VND và USDT thực nhận hợp lệ.");
     if (vndAmount > btcStats.pendingVnd) return setCryptoError("Số VND mua USDT đang lớn hơn vốn crypto chưa đổi.");
-    const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: topupForm.date, note: topupForm.note.trim() };
-    commitWithUndo("Đã thêm mua USDT.", (prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
+    const topupId = uid();
+    const topup: BtcUsdtTopup = {
+      id: topupId,
+      vndAmount,
+      usdtAmount,
+      date: topupForm.date,
+      note: topupForm.note.trim(),
+      meta: metaForPlannedTransaction("btc-topup", topupId, activePlanLink),
+    };
+    commitWithUndo("Đã thêm mua USDT.", (prev) => withCompletedAllocationPlanItem({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }, activePlanLink, stableEventId("btc-topup", topup.id)));
     syncBtcRow("btc_usdt_topups", topup.id, topup);
     setTopupForm({ vnd: "", usdt: "", date: today(), note: "" });
+    setActivePlanLink(null);
     setActiveAction(null);
     setCryptoError("");
   };
@@ -8493,6 +9383,9 @@ function CryptoPage({
                 <strong>{asset.amount}</strong>
                 <small>≈ {formatVnd(asset.value)}</small>
               </div>
+              <button className="ghost icon-only" onClick={() => setTraceEventIds((cryptoFinancialIndex.eventsByAsset.get(asset.symbol) ?? []).map((event) => event.id))} title="Xem nguồn tiền" type="button">
+                <History size={15} />
+              </button>
             </article>
           ))}
         </div>
@@ -8606,11 +9499,20 @@ function CryptoPage({
                   {row.kind === "sol" && !isSolWithdrawal(row.item) && <><strong>{formatSolAmount(row.item.solAmount)} · {formatUsd(row.item.solAmount * row.item.buyPrice)}</strong><small>{formatDate(row.item.date)} · Thêm SOL @ {formatUsd(row.item.buyPrice)} · {row.item.note || "Không ghi chú"}</small></>}
                 </div>
                 <button className="row-icon-button history-delete-button danger-text timeline-delete-button" onClick={() => deleteHistoryRow(row)} title="Xóa lịch sử" type="button"><X size={15} /></button>
+                <button className="row-icon-button timeline-delete-button" onClick={() => setTraceEventIds([row.item.meta?.eventId ?? stableEventId(row.kind, row.item.id)])} title="Xem nguồn tiền" type="button"><History size={15} /></button>
               </div>
             </div>
           ))}
         </div>
       </section>
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền Crypto"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </div>
   );
 
@@ -8632,7 +9534,9 @@ function ReportsPage({
   const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
   const [reportRefreshSuccess, setReportRefreshSuccess] = useState(false);
   const [expandedPnlRowId, setExpandedPnlRowId] = useState<string | null>(null);
+  const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const reportRefreshTimer = useRef<number | null>(null);
+  const reportFinancialIndex = useMemo(() => buildFinancialIndex(state), [state]);
   const months = useMemo(() => {
     const allMonths = new Set<string>();
     state.incomeTransactions.forEach((item) => allMonths.add(item.month));
@@ -8759,6 +9663,45 @@ function ReportsPage({
         detail("Tiền chờ tạo sổ", formatVnd(pending)),
         detail("Lãi/lỗ", `${formatVnd(row.pnl)} · ${row.pnlPercent.toFixed(1)}%`),
       ];
+    }
+    return [];
+  };
+  const pnlTraceEventIds = (rowId: AssetPnlRow["id"]) => {
+    const events = reportFinancialIndex.events;
+    if (rowId === "total") return events.map((event) => event.id);
+    if (rowId === "btc") {
+      return events
+        .filter((event) =>
+          event.asset === "BTC" ||
+          event.asset === "USDT" ||
+          event.asset === "SOL" ||
+          event.entityType.startsWith("btc") ||
+          event.entityType === "sol" ||
+          event.accountFromId === "binance" ||
+          event.accountToId === "binance"
+        )
+        .map((event) => event.id);
+    }
+    if (rowId === "stock") {
+      return events
+        .filter((event) =>
+          event.asset === "STOCK" ||
+          event.entityType === "stock-purchase" ||
+          event.entityType === "stock-sale" ||
+          event.entityType === "corporate-action" ||
+          event.accountFromId === "vps" ||
+          event.accountToId === "vps"
+        )
+        .map((event) => event.id);
+    }
+    if (rowId === "saving" || rowId === "emergency") {
+      const depositIds = new Set(state.bankDeposits.filter((deposit) => deposit.fund === rowId).map((deposit) => deposit.id));
+      return events
+        .filter((event) =>
+          (event.entityType === "deposit" && depositIds.has(event.entityId)) ||
+          (event.entityType === "deposit-interest" && depositIds.has(event.entityId))
+        )
+        .map((event) => event.id);
     }
     return [];
   };
@@ -9074,6 +10017,9 @@ function ReportsPage({
                         <strong>{item.value}</strong>
                       </div>
                     ))}
+                    <button className="ghost action-button-sm asset-pnl-trace-button" onClick={() => setTraceEventIds(pnlTraceEventIds(row.id))} type="button">
+                      <History size={15} /> Xem nguồn tiền
+                    </button>
                   </div>
                 )}
               </div>
@@ -9081,6 +10027,14 @@ function ReportsPage({
           })}
         </div>
       </section>
+      {traceEventIds && (
+        <SourceTraceModal
+          state={state}
+          eventIds={traceEventIds}
+          title="Nguồn tiền báo cáo"
+          onClose={() => setTraceEventIds(null)}
+        />
+      )}
     </div>
   );
 }
@@ -9162,210 +10116,6 @@ function GrowthTooltip({
   );
 }
 
-function AdminPage() {
-  const cloudConfigured = isCloudSyncConfigured();
-  const [adminPassword, setAdminPassword] = useState("");
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [newPin, setNewPin] = useState("");
-  const [oldPin, setOldPin] = useState("");
-  const [replacementPin, setReplacementPin] = useState("");
-  const [status, setStatus] = useState(cloudConfigured ? "Nhập mật khẩu admin để tiếp tục." : "Thiếu cấu hình Supabase.");
-  const [loading, setLoading] = useState(false);
-
-  const unlockAdmin = async () => {
-    if (!adminPassword) {
-      setStatus("Nhập mật khẩu admin.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setStatus("Đang kiểm tra mật khẩu admin...");
-      const expectedHash = await loadAdminPasswordHash(DEFAULT_ADMIN_PASSWORD_HASH);
-      const passwordHash = await sha256Hex(adminPassword);
-      if (passwordHash !== expectedHash) {
-        setStatus("Mật khẩu admin chưa đúng.");
-        return;
-      }
-
-      setAdminUnlocked(true);
-      setAdminPassword("");
-      setStatus("Sẵn sàng quản lý tài khoản PIN.");
-    } catch {
-      setStatus("Không kiểm tra được mật khẩu admin.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const createAccount = async () => {
-    if (!cloudConfigured) {
-      setStatus("Thiếu VITE_SUPABASE_URL hoặc VITE_SUPABASE_ANON_KEY.");
-      return;
-    }
-    if (newPin.length < 4) {
-      setStatus("PIN mới cần tối thiểu 4 số.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setStatus("Đang kiểm tra tài khoản...");
-      const accountKey = cloudAccountKeyForPin(newPin);
-      const existing = await loadCloudState<AppState>(accountKey);
-      if (existing) {
-        setStatus("PIN này đã có tài khoản. Hãy chọn PIN khác hoặc đổi PIN.");
-        return;
-      }
-
-      await saveCloudState(accountKey, stateForAccountPin(initialState, newPin));
-      setNewPin("");
-      setStatus("Đã tạo tài khoản mới. Bạn có thể quay lại app và đăng nhập bằng PIN này.");
-    } catch {
-      setStatus("Không tạo được tài khoản. Kiểm tra Supabase hoặc kết nối mạng.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const changeAccountPin = async () => {
-    if (!cloudConfigured) {
-      setStatus("Thiếu VITE_SUPABASE_URL hoặc VITE_SUPABASE_ANON_KEY.");
-      return;
-    }
-    if (oldPin.length < 4 || replacementPin.length < 4) {
-      setStatus("PIN cũ và PIN mới cần tối thiểu 4 số.");
-      return;
-    }
-    if (oldPin === replacementPin) {
-      setStatus("PIN mới phải khác PIN cũ.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setStatus("Đang tải dữ liệu tài khoản cũ...");
-      const oldKey = cloudAccountKeyForPin(oldPin);
-      const oldState = await loadCloudState<AppState>(oldKey);
-      if (!oldState) {
-        setStatus("Không tìm thấy tài khoản với PIN cũ.");
-        return;
-      }
-
-      const nextKey = cloudAccountKeyForPin(replacementPin);
-      const existingNext = await loadCloudState<AppState>(nextKey);
-      if (existingNext) {
-        setStatus("PIN mới đã có tài khoản khác. Hãy chọn PIN khác.");
-        return;
-      }
-
-      const nextState = normalizeState({
-        ...initialState,
-        ...oldState,
-        settings: { ...initialState.settings, ...oldState.settings, hasPin: true, pin: replacementPin },
-      });
-      await saveCloudState(nextKey, nextState);
-      await deleteCloudState(oldKey);
-      setOldPin("");
-      setReplacementPin("");
-      setStatus("Đã đổi PIN. Từ giờ hãy đăng nhập bằng PIN mới.");
-    } catch {
-      setStatus("Không đổi được PIN. Nếu bạn đã tạo bảng trước đó, hãy chạy lại supabase-schema.sql rồi thử lại.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <main className="pin-screen">
-      <section className="pin-card admin-card">
-        <div className="pin-icon">
-          <Settings size={26} />
-        </div>
-        <h1>Admin tài khoản</h1>
-        <p>{adminUnlocked ? "Tạo tài khoản PIN mới hoặc đổi PIN cho tài khoản hiện có." : "Đăng nhập admin để quản lý tài khoản PIN."}</p>
-
-        {!adminUnlocked ? (
-          <div className="admin-stack">
-            <article>
-              <h2>Đăng nhập admin</h2>
-              <label>
-                Mật khẩu admin
-                <input
-                  type="password"
-                  value={adminPassword}
-                  onChange={(event) => setAdminPassword(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") unlockAdmin();
-                  }}
-                />
-              </label>
-              <button className="primary full" disabled={loading} onClick={unlockAdmin}>
-                {loading ? "Đang kiểm tra..." : "Đăng nhập admin"}
-              </button>
-            </article>
-          </div>
-        ) : (
-          <div className="admin-stack">
-            <article>
-              <h2>Tạo tài khoản</h2>
-            <label>
-              PIN mới
-              <input
-                className="pin-input"
-                type="tel"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="one-time-code"
-                value={newPin}
-                onChange={(event) => setNewPin(event.target.value.replace(/\D/g, ""))}
-              />
-            </label>
-            <button className="primary full" disabled={loading || !cloudConfigured} onClick={createAccount}>
-              Tạo tài khoản
-            </button>
-            </article>
-
-            <article>
-              <h2>Đổi PIN</h2>
-            <label>
-              PIN cũ
-              <input
-                className="pin-input"
-                type="tel"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="one-time-code"
-                value={oldPin}
-                onChange={(event) => setOldPin(event.target.value.replace(/\D/g, ""))}
-              />
-            </label>
-            <label>
-              PIN mới
-              <input
-                className="pin-input"
-                type="tel"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="one-time-code"
-                value={replacementPin}
-                onChange={(event) => setReplacementPin(event.target.value.replace(/\D/g, ""))}
-              />
-            </label>
-            <button className="primary full" disabled={loading || !cloudConfigured} onClick={changeAccountPin}>
-              Đổi PIN
-            </button>
-            </article>
-          </div>
-        )}
-
-        <small className={cloudConfigured ? "ok" : "form-error"}>{status}</small>
-        <a className="admin-link" href="/">Về app</a>
-      </section>
-    </main>
-  );
-}
-
 function SettingsPage({
   state,
   setState,
@@ -9444,6 +10194,7 @@ function SettingsPage({
           />
         </div>
         <small className={restoreStatus.includes("thành công") ? "ok" : restoreStatus ? "form-error" : "muted"}>
+          {restoreStatus || (cloudSync.configured ? cloudSync.status : "Cloud sync chưa cấu hình; PIN và dữ liệu vẫn lưu local/PWA.")}
         </small>
       </section>
 
@@ -10768,7 +11519,8 @@ export function App() {
         btcTrades: mergeById(prev.btcTrades, ledger.trades),
         btcTransfers: mergeById(prev.btcTransfers, ledger.transfers),
       };
-      return JSON.stringify(btcCloudLedgerFromState(next)) === JSON.stringify(btcCloudLedgerFromState(prev)) ? prev : next;
+      const normalized = normalizeFinancialMetadata(next);
+      return JSON.stringify(btcCloudLedgerFromState(normalized)) === JSON.stringify(btcCloudLedgerFromState(prev)) ? prev : normalized;
     });
   };
 
@@ -10871,13 +11623,13 @@ export function App() {
     } catch {
       throw new Error("File backup không phải JSON hợp lệ.");
     }
-    if (!parsed || parsed.version !== BACKUP_VERSION || !parsed.state || typeof parsed.state !== "object") {
+    if (!parsed || ![1, BACKUP_VERSION].includes(Number(parsed.version)) || !parsed.state || typeof parsed.state !== "object") {
       throw new Error("File backup không đúng cấu trúc của app.");
     }
 
     localStorage.setItem(AUTO_RESTORE_BACKUP_KEY, JSON.stringify(backupPayload(current)));
     const restoredAt = new Date().toISOString();
-    const normalized = normalizeState({
+    const normalized = normalizeStateWithMigrationSafety({
       ...initialState,
       ...parsed.state,
       settings: {
@@ -10890,7 +11642,7 @@ export function App() {
         ...(parsed.state.backupMeta ?? {}),
         lastRestoreAt: restoredAt,
       },
-    });
+    }, { backupBeforeMigration: true });
     const next = withAuditLog(
       normalized,
       makeAuditLog("Đã restore backup JSON.", current, normalized, { action: "restore", entityType: "restore" })
@@ -10935,6 +11687,184 @@ export function App() {
     setState(next);
   };
 
+  const runFullHealthCheck = () => {
+    commitWithUndo(
+      "Đã kiểm tra sức khỏe dữ liệu.",
+      (prev) => ({
+        ...prev,
+        healthIssues: runHealthChecks(prev, buildFinancialIndex(prev)),
+      }),
+      { action: "update", entityType: "health" }
+    );
+  };
+
+  const setHealthIssueStatus = (fingerprint: string, status: HealthIssue["status"]) => {
+    commitWithUndo(
+      status === "ignored" ? "Đã bỏ qua vấn đề dữ liệu." : "Đã đánh dấu vấn đề dữ liệu đã xử lý.",
+      (prev) => {
+        const issues = prev.healthIssues.length ? prev.healthIssues : runHealthChecks(prev, buildFinancialIndex(prev));
+        return {
+          ...prev,
+          healthIssues: issues.map((issue) => (issue.fingerprint === fingerprint ? { ...issue, status } : issue)),
+        };
+      },
+      { action: "update", entityType: "health", entityId: fingerprint }
+    );
+  };
+
+  const cleanBrokenFinancialLinks = (target: AppState) => {
+    const validEventIds = new Set(buildFinancialIndex(target).events.map((event) => event.id));
+    const cleanRows = <T extends { meta?: TransactionMeta }>(rows: T[]): T[] =>
+      rows.map((row) => {
+        if (!row.meta) return row;
+        const parentEventIds = (row.meta.parentEventIds ?? []).filter((id) => validEventIds.has(id));
+        const childEventIds = (row.meta.childEventIds ?? []).filter((id) => validEventIds.has(id));
+        if (parentEventIds.length === (row.meta.parentEventIds ?? []).length && childEventIds.length === (row.meta.childEventIds ?? []).length) return row;
+        return {
+          ...row,
+          meta: {
+            ...row.meta,
+            parentEventIds,
+            childEventIds,
+            updatedAt: new Date().toISOString(),
+          },
+        };
+      });
+
+    return normalizeFinancialMetadata({
+      ...target,
+      incomeTransactions: cleanRows(target.incomeTransactions),
+      monthlyExpenses: cleanRows(target.monthlyExpenses),
+      accumulationGoals: cleanRows(target.accumulationGoals),
+      expenseEntries: cleanRows(target.expenseEntries),
+      allocations: cleanRows(target.allocations),
+      fundTransactions: cleanRows(target.fundTransactions),
+      stockPurchases: cleanRows(target.stockPurchases),
+      stockSales: cleanRows(target.stockSales),
+      btcUsdtTopups: cleanRows(target.btcUsdtTopups),
+      btcDcaPlans: cleanRows(target.btcDcaPlans),
+      btcTrades: cleanRows(target.btcTrades),
+      btcTransfers: cleanRows(target.btcTransfers),
+      bankDeposits: cleanRows(target.bankDeposits),
+      solTransactions: cleanRows(target.solTransactions),
+      adjustmentTransactions: cleanRows(target.adjustmentTransactions),
+      corporateActions: cleanRows(target.corporateActions),
+    });
+  };
+
+  const autoFixHealthIssue = (fingerprint: string) => {
+    commitWithUndo(
+      "Đã tự sửa liên kết nguồn tiền hỏng.",
+      (prev) => {
+        const issues = prev.healthIssues.length ? prev.healthIssues : runHealthChecks(prev, buildFinancialIndex(prev));
+        const issue = issues.find((item) => item.fingerprint === fingerprint);
+        if (!issue?.canAutoFix) return prev;
+        const fixed = cleanBrokenFinancialLinks(prev);
+        return {
+          ...fixed,
+          healthIssues: runHealthChecks(fixed, buildFinancialIndex(fixed)),
+        };
+      },
+      { action: "update", entityType: "health", entityId: fingerprint }
+    );
+  };
+
+  const createAllocationPlan = (amount: number, strategyId: string) => {
+    commitWithUndo(
+      "Đã tạo kế hoạch phân bổ tiền.",
+      (prev) => {
+        const issues = runHealthChecks(prev, buildFinancialIndex(prev));
+        if (issues.some((issue) => issue.status === "open" && issue.severity === "critical")) {
+          return { ...prev, healthIssues: issues };
+        }
+        const plan = buildAllocationPlanFromStrategy(prev, amount, strategyId);
+        return {
+          ...prev,
+          allocationPlans: [plan, ...prev.allocationPlans],
+          healthIssues: issues,
+        };
+      },
+      { action: "create", entityType: "allocation-plan" }
+    );
+  };
+
+  const cancelAllocationPlan = (planId: string) => {
+    commitWithUndo(
+      "Đã hủy kế hoạch phân bổ tiền.",
+      (prev) => ({
+        ...prev,
+        allocationPlans: prev.allocationPlans.map((plan) => (plan.id === planId ? { ...plan, status: "cancelled" } : plan)),
+      }),
+      { action: "update", entityType: "allocation-plan", entityId: planId }
+    );
+  };
+
+  const openAllocationPlanItem = (planId: string, itemId: string) => {
+    const plan = stateRef.current.allocationPlans.find((item) => item.id === planId);
+    const item = plan?.items.find((row) => row.id === itemId);
+    if (!item) return;
+    const intentByAction: Partial<Record<AllocationPlan["items"][number]["actionType"], { tab: InvestmentTab; action: InvestmentActionKind }>> = {
+      buy_usdt: { tab: "crypto", action: "btc-topup" },
+      buy_stock: { tab: "stock", action: "stock-purchase" },
+      create_mbb_book: { tab: "mbb", action: "mbb-deposit" },
+    };
+    const intent = intentByAction[item.actionType];
+    if (!intent) return;
+    setPage("investment");
+    setAssetTab(intent.tab);
+    setInvestmentAction({
+      id: uid(),
+      tab: intent.tab,
+      action: intent.action,
+      planLink: { allocationPlanId: planId, planItemId: itemId },
+      amountVnd: item.amountVnd,
+      targetFund: item.targetFund,
+    });
+  };
+
+  const unlockAdminAccount = async (password: string): Promise<AdminActionResult> => {
+    const expectedHash = await loadAdminPasswordHash(DEFAULT_ADMIN_PASSWORD_HASH);
+    const passwordHash = await sha256Hex(password);
+    if (passwordHash !== expectedHash) {
+      return { ok: false, status: "Mật khẩu admin chưa đúng." };
+    }
+    return { ok: true, status: "Sẵn sàng quản lý tài khoản PIN." };
+  };
+
+  const createAdminAccount = async (pin: string): Promise<AdminActionResult> => {
+    const accountKey = cloudAccountKeyForPin(pin);
+    const existing = await loadCloudState<AppState>(accountKey);
+    if (existing) {
+      return { ok: false, status: "PIN này đã có tài khoản. Hãy chọn PIN khác hoặc đổi PIN." };
+    }
+
+    await saveCloudState(accountKey, stateForAccountPin(initialState, pin));
+    return { ok: true, status: "Đã tạo tài khoản mới. Bạn có thể quay lại app và đăng nhập bằng PIN này." };
+  };
+
+  const changeAdminAccountPin = async (oldPin: string, replacementPin: string): Promise<AdminActionResult> => {
+    const oldKey = cloudAccountKeyForPin(oldPin);
+    const oldState = await loadCloudState<AppState>(oldKey);
+    if (!oldState) {
+      return { ok: false, status: "Không tìm thấy tài khoản với PIN cũ." };
+    }
+
+    const nextKey = cloudAccountKeyForPin(replacementPin);
+    const existingNext = await loadCloudState<AppState>(nextKey);
+    if (existingNext) {
+      return { ok: false, status: "PIN mới đã có tài khoản khác. Hãy chọn PIN khác." };
+    }
+
+    const nextState = normalizeStateWithMigrationSafety({
+      ...initialState,
+      ...oldState,
+      settings: { ...initialState.settings, ...oldState.settings, hasPin: true, pin: replacementPin },
+    });
+    await saveCloudState(nextKey, nextState);
+    await deleteCloudState(oldKey);
+    return { ok: true, status: "Đã đổi PIN. Từ giờ hãy đăng nhập bằng PIN mới." };
+  };
+
   const unlockWithPin = async (pin: string) => {
     if (!cloudConfigured) {
       if (!state.settings.hasPin) {
@@ -10955,7 +11885,7 @@ export function App() {
       const cloudState = await loadCloudState<AppState>(accountKey);
       if (!cloudState) return "Tài khoản chưa tồn tại. Vào /admin để tạo PIN.";
 
-      const nextState = normalizeState({
+      const nextState = normalizeStateWithMigrationSafety({
         ...initialState,
         ...cloudState,
         settings: { ...initialState.settings, ...cloudState.settings, hasPin: true, pin },
@@ -11124,9 +12054,18 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [cloudConfigured, cloudAccountKey, state]);
 
-  if (window.location.pathname === "/admin") return <AdminPage />;
+  if (window.location.pathname === "/admin") {
+    return (
+      <AdminPage
+        cloudConfigured={cloudConfigured}
+        onUnlockAdmin={unlockAdminAccount}
+        onCreateAccount={createAdminAccount}
+        onChangeAccountPin={changeAdminAccountPin}
+      />
+    );
+  }
 
-  if (!unlocked) return <PinGate state={state} setState={setState} cloudConfigured={cloudConfigured} onUnlock={unlockWithPin} />;
+  if (!unlocked) return <PinGate hasPin={state.settings.hasPin} cloudConfigured={cloudConfigured} onUnlock={unlockWithPin} />;
 
   return (
     <div className="app-shell">

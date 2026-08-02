@@ -154,13 +154,48 @@ export async function upsertCloudPayloadRow(
     body: JSON.stringify({
       id,
       account_id: accountId,
-      payload,
+      payload: withBtcPayloadMeta(table, id, payload),
       updated_at: new Date().toISOString(),
       ...columns,
     }),
   });
 
   if (!response.ok) throw new Error("Khong luu duoc du lieu cloud.");
+}
+
+function withBtcPayloadMeta(table: string, id: string, payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const entityTypeByTable: Record<string, string | undefined> = {
+    btc_usdt_topups: "btc-topup",
+    btc_dca_plans: "btc-dca",
+    btc_trades: "btc-trade",
+    btc_transfers: "btc-transfer",
+  };
+  const entityType = entityTypeByTable[table];
+  if (!entityType) return payload;
+  const row = payload as Record<string, unknown>;
+  if ((row.meta as { eventId?: string } | undefined)?.eventId) return payload;
+  const now = new Date().toISOString();
+  const occurredAt =
+    typeof row.createdAt === "string" ? row.createdAt :
+      typeof row.executedAt === "string" ? row.executedAt :
+        typeof row.date === "string" ? row.date :
+          typeof row.startDate === "string" ? row.startDate :
+            now;
+  return {
+    ...row,
+    meta: {
+      eventId: `evt:${entityType}:${id}`,
+      parentEventIds: [],
+      childEventIds: [],
+      accountFromId: "binance",
+      accountToId: "binance",
+      createdAt: occurredAt,
+      updatedAt: now,
+      createdBy: "system",
+      schemaVersion: 2,
+    },
+  };
 }
 
 export async function deleteCloudPayloadRow(table: string, accountId: string, id: string) {

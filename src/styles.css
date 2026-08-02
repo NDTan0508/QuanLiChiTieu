@@ -646,6 +646,11 @@ label strong {
   min-width: 0;
 }
 
+.asset-pnl-trace-button {
+  justify-self: start;
+  grid-column: 1 / -1;
+}
+
 .asset-pnl-table span,
 .asset-pnl-table strong {
   font-size: 0.82rem;
@@ -1828,6 +1833,12 @@ label strong {
   white-space: nowrap;
 }
 
+.corporate-confirm-button {
+  align-self: end;
+  min-height: 42px;
+  padding-inline: 18px;
+}
+
 .stock-sale-actions {
   display: flex;
   gap: 8px;
@@ -2067,6 +2078,26 @@ label strong {
   border-color: rgba(251, 113, 133, 0.45);
   background: rgba(127, 29, 29, 0.28);
   color: #fff1f2;
+}
+
+.deposit-trace-button {
+  position: absolute;
+  top: 10px;
+  right: 48px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(18, 15, 13, 0.8);
+  color: #d6d3d1;
+  padding: 0;
+}
+
+.deposit-trace-button:hover {
+  border-color: rgba(249, 115, 22, 0.45);
+  color: #fff7ed;
 }
 
 .compact-date-input {
@@ -2676,8 +2707,121 @@ input.pin-input {
   gap: 10px;
 }
 
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.summary-card {
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  background: rgba(14, 11, 9, 0.72);
+  padding: 10px 12px;
+}
+
+.summary-card span,
+.summary-card strong {
+  display: block;
+}
+
+.summary-card span {
+  color: #a59b91;
+  font-size: 0.78rem;
+}
+
+.summary-card strong {
+  margin-top: 4px;
+  font-size: 1.2rem;
+}
+
+.summary-card.danger strong {
+  color: #f87171;
+}
+
+.summary-card.warning strong {
+  color: #fbbf24;
+}
+
+.summary-card.neutral strong {
+  color: #93c5fd;
+}
+
+.source-trace-modal {
+  max-width: 760px;
+}
+
+.source-trace-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.source-trace-grid article {
+  border: 1px solid #2b251f;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.source-trace-grid h3 {
+  margin: 0 0 8px;
+  font-size: 0.92rem;
+}
+
+.source-trace-grid small {
+  display: block;
+  color: #a59b91;
+  margin-top: 4px;
+}
+
+.source-trace-list {
+  max-height: 360px;
+}
+
+.source-trace-selected {
+  border-color: rgba(249, 115, 22, 0.7);
+}
+
+.reconciliation-reopen-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.reconciliation-difference-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.reconciliation-difference-row small {
+  min-width: 150px;
+}
+
+.reconciliation-difference-row select {
+  width: auto;
+  min-width: 132px;
+}
+
+.stock-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .hidden-file-input {
   display: none;
+}
+
+button[title^="Xem nguồn tiền"],
+.accumulation-trace-button,
+.deposit-trace-button,
+.asset-pnl-trace-button {
+  display: none !important;
 }
 
 .settings-data-grid {
@@ -4903,6 +5047,27 @@ label strong {
   border-radius: 10px;
   background: rgba(15, 17, 21, 0.54);
   opacity: 0.58;
+}
+
+.accumulation-goal-card .accumulation-trace-button {
+  position: absolute;
+  top: 14px;
+  right: 48px;
+  z-index: 3;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(15, 17, 21, 0.54);
+  color: var(--text);
+  opacity: 0.72;
+}
+
+.accumulation-goal-card.ended .accumulation-trace-button {
+  right: 14px;
 }
 
 .accumulation-goal-card .accumulation-delete-button:hover {
