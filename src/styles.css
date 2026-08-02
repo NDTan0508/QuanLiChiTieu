@@ -1936,14 +1936,19 @@ label strong {
 
 .deposit-head h3 {
   margin: 4px 0 0;
-  font-size: 1.35rem;
+  font-size: 1.52rem;
+  line-height: 1.12;
+  color: #ffffff;
+  font-weight: 900;
+  letter-spacing: 0;
 }
 
 .deposit-code-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .fund-badge {
@@ -1960,12 +1965,28 @@ label strong {
   color: #bfdbfe;
 }
 
+.fund-badge.accumulation {
+  border: 1px solid rgba(196, 181, 253, 0.24);
+  background: rgba(139, 92, 246, 0.16);
+  color: #ddd6fe;
+}
+
 .deposit-last4-inline {
-  width: 88px;
+  width: 74px;
+  flex: 0 0 74px;
   min-height: 30px;
   padding: 0 8px;
   border-radius: 7px;
   font-size: 0.8rem;
+}
+
+.deposit-product-inline {
+  width: 88px;
+  flex: 0 0 88px;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 0.78rem;
 }
 
 .status {
@@ -5406,5 +5427,405 @@ label strong {
   .report-allocation-legend span,
   .report-allocation-legend strong {
     font-size: 0.76rem;
+  }
+}
+
+:root {
+  --metric-compact-text-size: 0.86rem;
+  --metric-compact-icon-size: 15px;
+  --metric-compact-icon-shell-size: 28px;
+}
+
+body,
+button,
+input,
+select,
+textarea,
+option,
+:where(.app-shell, .pin-screen, .modal-backdrop) :where(h1, h2, h3, h4, p, span, strong, small, em, b, label, button, input, select, textarea, option, a, li, td, th),
+.crypto-hero::after {
+  font-size: var(--metric-compact-text-size) !important;
+}
+
+:where(.app-shell, .pin-screen, .modal-backdrop) svg:not(.recharts-surface) {
+  width: var(--metric-compact-icon-size) !important;
+  height: var(--metric-compact-icon-size) !important;
+}
+
+.metric {
+  min-height: 78px !important;
+  gap: 7px !important;
+  padding: 10px !important;
+}
+
+.metrics-grid {
+  gap: 8px !important;
+  margin-bottom: 12px !important;
+}
+
+.metric > span {
+  width: var(--metric-compact-icon-shell-size) !important;
+  height: var(--metric-compact-icon-shell-size) !important;
+  border-radius: 8px !important;
+}
+
+.metric > span svg {
+  width: var(--metric-compact-icon-size) !important;
+  height: var(--metric-compact-icon-size) !important;
+}
+
+.metric strong {
+  margin-top: 3px !important;
+  color: #fff7ed !important;
+  font-size: var(--metric-compact-text-size) !important;
+  font-weight: 900 !important;
+  line-height: 1.12 !important;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.deposit-card .deposit-head h3 {
+  font-size: 1.28rem !important;
+  line-height: 1.08 !important;
+  color: #fff7ed !important;
+  font-weight: 950 !important;
+  text-shadow: 0 0 14px rgba(255, 166, 77, 0.16);
+}
+
+.metric small,
+.metric em {
+  font-size: var(--metric-compact-text-size) !important;
+  line-height: 1.14 !important;
+}
+
+.metric em {
+  margin-top: 3px !important;
+  font-weight: 850 !important;
+}
+
+.crypto-portfolio-card {
+  min-height: 128px !important;
+  gap: 8px !important;
+  padding: 14px 16px !important;
+  border-radius: 18px !important;
+}
+
+.crypto-portfolio-card > strong,
+.crypto-portfolio-card > div b {
+  color: #fff7ed !important;
+  font-size: var(--metric-compact-text-size) !important;
+  font-weight: 900 !important;
+  line-height: 1.12 !important;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.crypto-portfolio-card > div {
+  gap: 10px !important;
+  margin-top: 4px !important;
+}
+
+@media (max-width: 680px) {
+  :root {
+    --metric-compact-text-size: 0.68rem;
+    --metric-compact-icon-size: 13px;
+    --metric-compact-icon-shell-size: 24px;
+  }
+
+  .metric {
+    min-height: 62px !important;
+    gap: 6px !important;
+    padding: 7px !important;
+  }
+
+  .metrics-grid {
+    gap: 7px !important;
+    margin-bottom: 10px !important;
+  }
+
+  .metric > span {
+    width: var(--metric-compact-icon-shell-size) !important;
+    height: var(--metric-compact-icon-shell-size) !important;
+  }
+
+  .metric > span svg {
+    width: var(--metric-compact-icon-size) !important;
+    height: var(--metric-compact-icon-size) !important;
+  }
+
+  .crypto-portfolio-card {
+    min-height: 112px !important;
+    padding: 12px !important;
+  }
+}
+
+.quick-action-fab {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  min-height: 40px !important;
+  right: 14px;
+  bottom: 18px;
+  left: auto;
+  z-index: 70 !important;
+  border-radius: 7px !important;
+  padding: 0 !important;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+  transform: none !important;
+}
+
+.quick-action-fab:active {
+  cursor: grabbing;
+}
+
+.quick-action-fab svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+.crypto-action-grid button svg {
+  width: var(--metric-compact-icon-shell-size) !important;
+  height: var(--metric-compact-icon-shell-size) !important;
+  padding: 6px !important;
+  flex-shrink: 0;
+}
+
+.crypto-action-grid {
+  gap: 8px !important;
+}
+
+.crypto-action-grid button {
+  min-height: 70px !important;
+  gap: 5px !important;
+  padding: 8px !important;
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    padding-bottom: calc(58px + env(safe-area-inset-bottom)) !important;
+  }
+
+  .app-nav {
+    position: fixed !important;
+    inset: auto 0 0 0 !important;
+    z-index: 60 !important;
+    width: 100vw !important;
+    height: calc(54px + env(safe-area-inset-bottom)) !important;
+    margin: 0 !important;
+    border-top: 1px solid var(--stroke) !important;
+    border-right: 0 !important;
+    border-bottom: 0 !important;
+    border-radius: 0 !important;
+    padding: 5px 8px calc(5px + env(safe-area-inset-bottom)) !important;
+    overflow-x: auto;
+  }
+
+  .nav-list {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 100%;
+    gap: 4px !important;
+  }
+
+  .nav-list button {
+    min-width: 0 !important;
+    min-height: 42px !important;
+    border-radius: 12px !important;
+    padding: 3px 4px !important;
+  }
+
+  .quick-action-fab {
+    bottom: calc(64px + env(safe-area-inset-bottom));
+    left: auto;
+    right: 14px;
+  }
+
+  .crypto-action-grid button svg {
+    padding: 5px !important;
+  }
+
+  .crypto-action-grid {
+    gap: 7px !important;
+  }
+
+  .crypto-action-grid button {
+    min-height: 58px !important;
+    gap: 4px !important;
+    padding: 6px !important;
+  }
+}
+
+.accumulation-grid {
+  gap: 12px !important;
+}
+
+.accumulation-goal-card {
+  min-height: 0 !important;
+  gap: 9px !important;
+  padding: 12px !important;
+  border-radius: 12px !important;
+}
+
+.accumulation-card-bg-icon {
+  width: 44px !important;
+  height: 44px !important;
+}
+
+.accumulation-goal-head {
+  gap: 8px !important;
+  padding-right: 26px !important;
+}
+
+.accumulation-goal-title {
+  gap: 8px !important;
+}
+
+.accumulation-goal-icon {
+  width: var(--metric-compact-icon-shell-size) !important;
+  height: var(--metric-compact-icon-shell-size) !important;
+  border-radius: 9px !important;
+}
+
+.accumulation-goal-icon svg {
+  width: var(--metric-compact-icon-size) !important;
+  height: var(--metric-compact-icon-size) !important;
+}
+
+.accumulation-percent-badge {
+  border-radius: 8px !important;
+  padding: 4px 7px !important;
+}
+
+.accumulation-progress-block {
+  gap: 6px !important;
+}
+
+.accumulation-progress-block > div:first-child {
+  gap: 8px !important;
+}
+
+.accumulation-goal-card .progress-track {
+  height: 6px !important;
+  border-radius: 999px !important;
+}
+
+.accumulation-goal-card .progress-track span {
+  border-radius: inherit;
+}
+
+.accumulation-stat-grid {
+  gap: 8px !important;
+  padding: 8px 0 5px !important;
+}
+
+.accumulation-stat-grid div {
+  gap: 3px !important;
+}
+
+.accumulation-goal-card .accumulation-actions {
+  grid-template-columns: minmax(0, 1fr) minmax(72px, auto) 36px !important;
+  gap: 8px !important;
+}
+
+.accumulation-end-button,
+.accumulation-edit-button {
+  min-height: 36px !important;
+  border-radius: 10px !important;
+}
+
+.accumulation-edit-button {
+  width: 36px !important;
+}
+
+.accumulation-view-deposits-button {
+  min-height: 36px !important;
+  border-radius: 10px !important;
+  padding: 0 10px !important;
+}
+
+.accumulation-goal-card .accumulation-delete-button {
+  top: 8px !important;
+  right: 8px !important;
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 8px !important;
+}
+
+.accumulation-goal-card .accumulation-delete-button svg,
+.accumulation-edit-button svg {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+@media (max-width: 680px) {
+  .accumulation-grid {
+    gap: 10px !important;
+  }
+
+  .accumulation-goal-card {
+    gap: 8px !important;
+    padding: 10px !important;
+  }
+
+  .accumulation-goal-card .accumulation-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(58px, auto) 32px !important;
+    gap: 7px !important;
+  }
+
+  .accumulation-end-button,
+  .accumulation-edit-button {
+    min-height: 32px !important;
+  }
+
+  .accumulation-edit-button {
+    width: 32px !important;
+  }
+
+  .accumulation-view-deposits-button {
+    min-height: 32px !important;
+    padding: 0 7px !important;
+  }
+}
+
+.deposit-progress-summary span {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px !important;
+  padding: 8px 10px !important;
+  white-space: nowrap;
+}
+
+.deposit-progress-summary strong {
+  flex: 0 0 auto;
+  font-size: var(--metric-compact-text-size) !important;
+  text-align: right;
+}
+
+@media (max-width: 680px) {
+  .deposit-code-row {
+    gap: 5px;
+  }
+
+  .deposit-product-inline {
+    width: 78px;
+    flex-basis: 78px;
+  }
+
+  .deposit-last4-inline {
+    width: 68px;
+    flex-basis: 68px;
+  }
+
+  .deposit-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 6px 10px !important;
+  }
+
+  .deposit-meta span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 }

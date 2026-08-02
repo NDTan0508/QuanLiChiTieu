@@ -142,8 +142,11 @@ type Allocation = {
 
 type FundKey = "btc" | "stock";
 type InvestmentTab = "crypto" | "stock" | "mbb";
-type SolDestination = FundKey | DepositFund | "cash" | "btc-direct";
-type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | DepositFund;
+type TransferDepositFund = "saving" | "emergency";
+type DepositFund = TransferDepositFund | "accumulation";
+type DepositFilter = "all" | DepositFund;
+type SolDestination = FundKey | TransferDepositFund | "cash" | "btc-direct";
+type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | TransferDepositFund;
 
 type StockPurchaseLine = {
   symbol: string;
@@ -207,8 +210,6 @@ type FundTransaction = {
   note: string;
 };
 
-type DepositFund = "saving" | "emergency";
-type DepositFilter = "all" | DepositFund;
 type DepositStatus =
   | "active"
   | "rolled-principal"
@@ -216,12 +217,18 @@ type DepositStatus =
   | "settled"
   | "early-settled";
 
+type DepositProduct = "term-deposit" | "certificate";
+
 type BankDeposit = {
   id: string;
   code: string;
   fund: DepositFund;
+  product?: DepositProduct;
+  accumulationGoalId?: string;
   mbLast4: string;
   principal: number;
+  certificatePurchaseAmount?: number;
+  certificateMaturityValue?: number;
   rate: number;
   termMonths: number;
   startDate: string;
@@ -326,7 +333,7 @@ type BtcTrade = {
   note: string;
 };
 
-type BtcTransferDestination = "stock" | DepositFund | "cash";
+type BtcTransferDestination = "stock" | TransferDepositFund | "cash";
 type BtcTransferTarget = BtcTransferDestination | "btc" | "usdt";
 
 type BtcTransfer = {
@@ -364,6 +371,7 @@ type Market = {
 type SettingsState = {
   pin: string;
   hasPin: boolean;
+  dismissedCryptoAllocationIds: string[];
   dismissedStockAllocationIds: string[];
 };
 
@@ -461,6 +469,12 @@ type InvestmentActionIntent = {
   action: InvestmentActionKind;
 };
 
+type MbbDepositIntent = {
+  id: string;
+  fund: DepositFund;
+  accumulationGoalId?: string;
+};
+
 const STORAGE_KEY = "quan-li-chi-tieu-state-v3-account-pin-reset";
 const CLOUD_ACCOUNT_NAMESPACE = "quan-li-chi-tieu-account-pin-reset-v1";
 const BACKUP_VERSION = 1;
@@ -468,6 +482,7 @@ const AUTO_RESTORE_BACKUP_KEY = `${STORAGE_KEY}-pre-restore-backup`;
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
 const DEFAULT_START_MONTH = "2026-06";
 const FINANCIAL_RULE_START_MONTH = "2026-07";
+const FINANCIAL_RULE_MIN_MONTHLY_EXPENSE = 10_000_000;
 const CERTIFICATE_LOT = 100_000;
 const STOCK_PRICE_UNIT = 1_000;
 const STOCK_LOT = 100;
@@ -521,16 +536,23 @@ const addMonths = (dateValue: string, months: number) => {
   return dateValueFromDate(date);
 };
 
+const DAY_IN_MS = 86_400_000;
+
 const daysUntil = (dateValue: string) => {
   const now = new Date(`${today()}T00:00:00`).getTime();
   const target = new Date(`${dateValue}T00:00:00`).getTime();
-  return Math.ceil((target - now) / 86_400_000);
+  if (!Number.isFinite(now) || !Number.isFinite(target)) return 0;
+  return Math.ceil((target - now) / DAY_IN_MS);
 };
 
 const dateOnlyTime = (dateValue: string) => new Date(`${dateValue}T00:00:00`).getTime();
 
-const daysBetween = (startDate: string, endDate: string) =>
-  Math.max(Math.ceil((dateOnlyTime(endDate) - dateOnlyTime(startDate)) / 86_400_000), 0);
+const daysBetween = (startDate: string, endDate: string) => {
+  const start = dateOnlyTime(startDate);
+  const end = dateOnlyTime(endDate);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  return Math.max(Math.ceil((end - start) / DAY_IN_MS), 0);
+};
 
 const addDays = (dateValue: string, days: number) => {
   const date = new Date(`${dateValue}T00:00:00`);
@@ -756,20 +778,66 @@ const sha256Hex = async (value: string) => {
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 };
 
-const interestFor = (deposit: Pick<BankDeposit, "principal" | "rate" | "termMonths">) =>
-  Math.round((deposit.principal * deposit.rate * deposit.termMonths) / 100 / 12);
+type DepositInterestInput = Pick<BankDeposit, "principal" | "certificatePurchaseAmount" | "certificateMaturityValue" | "rate" | "termMonths" | "startDate" | "maturityDate" | "product">;
+
+const interestDaysFor = (deposit: DepositInterestInput) => {
+  const actualDays = daysBetween(deposit.startDate, deposit.maturityDate);
+  if (actualDays > 0) return actualDays;
+  const termMonths = Number.isFinite(deposit.termMonths) ? deposit.termMonths : 0;
+  return Math.max(Math.round((termMonths * 365) / 12), 0);
+};
+
+const interestForDays = (deposit: DepositInterestInput, dayCount: number) => {
+  const principal = Number.isFinite(deposit.principal) ? deposit.principal : 0;
+  const rate = Number.isFinite(deposit.rate) ? deposit.rate : 0;
+  const days = Number.isFinite(dayCount) ? Math.max(dayCount, 0) : 0;
+  return Math.round((principal * rate * days) / 100 / 365);
+};
+
+const certificatePurchaseAmountFor = (deposit: DepositInterestInput) =>
+  Number.isFinite(deposit.certificatePurchaseAmount) && (deposit.certificatePurchaseAmount ?? 0) > 0
+    ? deposit.certificatePurchaseAmount ?? 0
+    : deposit.principal;
+
+const certificateMaturityValueFor = (deposit: DepositInterestInput) =>
+  Number.isFinite(deposit.certificateMaturityValue) && (deposit.certificateMaturityValue ?? 0) > 0
+    ? deposit.certificateMaturityValue ?? 0
+    : deposit.principal + interestForDays(deposit, interestDaysFor(deposit));
+
+const certificateProfitFor = (deposit: DepositInterestInput) => {
+  const purchaseAmount = certificatePurchaseAmountFor(deposit);
+  const maturityValue = certificateMaturityValueFor(deposit);
+  return Math.round(maturityValue - purchaseAmount);
+};
+
+const interestFor = (deposit: DepositInterestInput) =>
+  deposit.product === "certificate" ? certificateProfitFor(deposit) : interestForDays(deposit, interestDaysFor(deposit));
+
+const elapsedInterestDaysFor = (deposit: BankDeposit, totalDays: number) => {
+  if (deposit.status !== "active") return totalDays;
+  const start = dateOnlyTime(deposit.startDate);
+  const current = dateOnlyTime(today());
+  const maturity = dateOnlyTime(deposit.maturityDate);
+  if (!Number.isFinite(start) || !Number.isFinite(current) || !Number.isFinite(maturity)) return 0;
+  if (current < start) return 0;
+  if (current >= maturity) return totalDays;
+  if (deposit.product === "certificate") return Math.min(daysBetween(deposit.startDate, today()), totalDays);
+  return Math.min(daysBetween(deposit.startDate, today()) + 1, totalDays);
+};
 
 function depositProgress(deposit: BankDeposit) {
-  const totalDays = daysBetween(deposit.startDate, deposit.maturityDate);
+  const totalDays = interestDaysFor(deposit);
   const remainingDays = deposit.status === "active" ? Math.max(daysUntil(deposit.maturityDate), 0) : 0;
-  const elapsedDays = totalDays - remainingDays;
+  const elapsedDays = elapsedInterestDaysFor(deposit, totalDays);
   const progressPercent = totalDays > 0 ? Math.min(Math.max((elapsedDays / totalDays) * 100, 0), 100) : 100;
   const finalInterest = interestFor(deposit);
   return {
     totalDays,
     remainingDays,
     progressPercent,
-    accruedInterest: Math.round((finalInterest * progressPercent) / 100),
+    accruedInterest: deposit.product === "certificate"
+      ? Math.round((finalInterest * progressPercent) / 100)
+      : interestForDays(deposit, elapsedDays),
   };
 }
 
@@ -1221,7 +1289,7 @@ async function refreshStockMarketPrices(
   return { updated: updates.length, total: uniqueSymbols.length };
 }
 
-function pendingSolDepositTotal(state: AppState, fund: DepositFund) {
+function pendingSolDepositTotal(state: AppState, fund: TransferDepositFund) {
   return state.solTransactions
     .filter(
       (transaction) =>
@@ -1236,7 +1304,7 @@ const stockSaleDepositMarker = (saleId: string) => `[stock-sale:${saleId}]`;
 const btcTransferDepositMarker = (transferId: string) => `[btc-transfer:${transferId}]`;
 const solBtcTradeMarker = (withdrawalId: string) => `[sol-btc:${withdrawalId}]`;
 
-function pendingStockSaleDepositTotal(state: AppState, fund: DepositFund) {
+function pendingStockSaleDepositTotal(state: AppState, fund: TransferDepositFund) {
   return state.stockSales
     .filter(
       (sale) =>
@@ -1246,7 +1314,7 @@ function pendingStockSaleDepositTotal(state: AppState, fund: DepositFund) {
     .reduce((sum, sale) => sum + sale.vndAmount, 0);
 }
 
-function pendingBtcTransferDepositTotal(state: AppState, fund: DepositFund) {
+function pendingBtcTransferDepositTotal(state: AppState, fund: TransferDepositFund) {
   return state.btcTransfers
     .filter(
       (transfer) =>
@@ -1527,7 +1595,14 @@ function exportCsvBundle(state: AppState) {
   const usdtPair = (value: number) => [Number(value.toFixed(6)), formatUsdt(value)];
   const btcPair = (value: number) => [Number(value.toFixed(8)), formatBtc(value)];
   const solPair = (value: number) => [Number(value.toFixed(8)), formatSolAmount(value)];
-  const depositFundLabel = (fund: DepositFund) => (fund === "saving" ? "Tiết kiệm" : "Dự phòng");
+  const depositFundLabel = (fund: DepositFund) => {
+    const labels: Record<DepositFund, string> = {
+      saving: "Tiết kiệm",
+      emergency: "Dự phòng",
+      accumulation: "Tích lũy",
+    };
+    return labels[fund];
+  };
   const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
   const dcaStatusLabel: Record<BtcDcaStatus, string> = {
     active: "Đang chạy",
@@ -1803,12 +1878,16 @@ function exportCsvBundle(state: AppState) {
     ];
   }));
 
-  section("Sổ MBB", ["ID", "Mã sổ", "Quỹ", "4 số MB", "Gốc", "Gốc hiển thị", "Lãi suất %/năm", "Kỳ hạn tháng", "Ngày gửi", "Ngày đáo hạn", "Trạng thái", "Lãi dự kiến", "Lãi dự kiến hiển thị", "Ngày tất toán", "Số tiền tất toán", "Tất toán hiển thị", "Sổ cha", "Sổ con", "Từ tháng chia quỹ", "Từ lệnh SOL", "Ghi chú"], state.bankDeposits.map((item) => [
+  section("Sổ MBB", ["ID", "Mã sổ", "Quỹ", "Sản phẩm", "Mục tích lũy", "4 số MB", "Gốc", "Gốc hiển thị", "CCTG đã thanh toán", "CCTG đã thanh toán hiển thị", "CCTG giá trị cuối kỳ", "CCTG giá trị cuối kỳ hiển thị", "Lãi suất %/năm", "Kỳ hạn tháng", "Ngày gửi", "Ngày đáo hạn", "Trạng thái", "Lãi dự kiến", "Lãi dự kiến hiển thị", "Ngày tất toán", "Số tiền tất toán", "Tất toán hiển thị", "Sổ cha", "Sổ con", "Từ tháng chia quỹ", "Từ lệnh SOL", "Ghi chú"], state.bankDeposits.map((item) => [
     item.id,
     item.code,
     depositFundLabel(item.fund),
+    item.product === "certificate" ? "CCTG" : "Tiền gửi",
+    item.accumulationGoalId ? state.accumulationGoals.find((goal) => goal.id === item.accumulationGoalId)?.name ?? item.accumulationGoalId : "",
     item.mbLast4,
     ...moneyPair(item.principal),
+    ...moneyPair(item.certificatePurchaseAmount ?? 0),
+    ...moneyPair(item.certificateMaturityValue ?? 0),
     item.rate,
     item.termMonths,
     safeDate(item.startDate),
@@ -1880,10 +1959,21 @@ function normalizeState(state: AppState): AppState {
     return { ...category, kind: migratedKind, defaultAmount: category.defaultAmount ?? 0 };
   });
 
-  const bankDeposits = state.bankDeposits.map((deposit) => ({
-    ...deposit,
-    mbLast4: deposit.mbLast4 ?? "",
-  }));
+  const bankDeposits = state.bankDeposits.map((deposit: BankDeposit & { fund?: string; product?: string }) => {
+    const fund: DepositFund = deposit.fund === "emergency" || deposit.fund === "accumulation" ? deposit.fund : "saving";
+    const product: DepositProduct = deposit.product === "certificate" ? "certificate" : "term-deposit";
+    return {
+      ...deposit,
+      fund,
+      product,
+      accumulationGoalId: deposit.accumulationGoalId ?? undefined,
+      certificatePurchaseAmount: Number.isFinite(deposit.certificatePurchaseAmount) ? deposit.certificatePurchaseAmount : undefined,
+      certificateMaturityValue: Number.isFinite(deposit.certificateMaturityValue) ? deposit.certificateMaturityValue : undefined,
+      rate: Number.isFinite(deposit.rate) ? deposit.rate : parseDecimal(String(deposit.rate ?? "")),
+      termMonths: Number.isFinite(deposit.termMonths) ? deposit.termMonths : Number(deposit.termMonths) || 0,
+      mbLast4: deposit.mbLast4 ?? "",
+    };
+  });
 
   const solTransactions = state.solTransactions.map((transaction) =>
     isSolWithdrawal(transaction)
@@ -1904,6 +1994,7 @@ function normalizeState(state: AppState): AppState {
     ...state,
     settings: {
       ...state.settings,
+      dismissedCryptoAllocationIds: state.settings?.dismissedCryptoAllocationIds ?? [],
       dismissedStockAllocationIds: state.settings?.dismissedStockAllocationIds ?? [],
     },
     expenseCategories,
@@ -1996,6 +2087,7 @@ const initialState: AppState = {
   settings: {
     pin: "",
     hasPin: false,
+    dismissedCryptoAllocationIds: [],
     dismissedStockAllocationIds: [],
   },
   auditLogs: [],
@@ -2096,7 +2188,8 @@ function averageMonthlyExpenseSince(state: AppState, startMonth = FINANCIAL_RULE
     .map((month) => monthlySummary(state, month).expense)
     .filter((expense) => expense > 0);
 
-  return expenses.length ? expenses.reduce((sum, expense) => sum + expense, 0) / expenses.length : 0;
+  const averageExpense = expenses.length ? expenses.reduce((sum, expense) => sum + expense, 0) / expenses.length : 0;
+  return Math.max(averageExpense, FINANCIAL_RULE_MIN_MONTHLY_EXPENSE);
 }
 
 function activePrincipal(deposit: BankDeposit) {
@@ -2125,7 +2218,7 @@ function originalDepositPrincipal(deposit: BankDeposit, deposits: BankDeposit[])
   return cursor.principal;
 }
 
-function depositFundPnl(state: AppState, fund?: DepositFund) {
+function depositFundPnl(state: AppState, fund?: TransferDepositFund) {
   const activeDeposits = state.bankDeposits.filter((item) => item.status === "active" && (!fund || item.fund === fund));
   const pending =
     fund
@@ -2192,7 +2285,7 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   const pendingAllocationDeposits = state.allocations
     .filter((allocation) => allocation.confirmedAt)
     .flatMap((allocation) =>
-      (["saving", "emergency"] as DepositFund[]).map((fund) => ({
+      (["saving", "emergency"] as TransferDepositFund[]).map((fund) => ({
         fund,
         month: allocation.month,
         amount: fund === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
@@ -2274,9 +2367,9 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   return tasks.slice(0, 12);
 }
 
-const depositCreatedField = (fund: DepositFund) =>
+const depositCreatedField = (fund: TransferDepositFund) =>
   fund === "saving" ? "savingDepositCreatedAt" : "emergencyDepositCreatedAt";
-const depositRequestedField = (fund: DepositFund) =>
+const depositRequestedField = (fund: TransferDepositFund) =>
   fund === "saving" ? "savingDepositRequestedAt" : "emergencyDepositRequestedAt";
 
 function AppNav({
@@ -3537,10 +3630,12 @@ function AccumulationPage({
   state,
   setState,
   commitWithUndo,
+  onOpenMbbDeposits,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   commitWithUndo: CommitWithUndo;
+  onOpenMbbDeposits: (accumulationGoalId?: string) => void;
 }) {
   const emptyForm = () => ({
     name: "",
@@ -3555,6 +3650,7 @@ function AccumulationPage({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [formError, setFormError] = useState("");
+  const [planBasis, setPlanBasis] = useState<"months" | "monthlyAmount">("months");
   const editingGoal = editingId ? state.accumulationGoals.find((goal) => goal.id === editingId) ?? null : null;
 
   useEffect(() => {
@@ -3595,14 +3691,17 @@ function AccumulationPage({
   const derivePlan = () => {
     const targetAmount = parseMoney(form.target);
     const progress = editingGoal ? accumulationProgress(state, editingGoal) : 0;
+    const paidMonths = editingGoal ? accumulationPaidMonths(state, editingGoal) : 0;
     const remaining = Math.max(targetAmount - progress, 0);
     const startMonth = form.startMonth || currentMonth();
     let months = Number(form.months) || 0;
     let monthlyAmount = parseMoney(form.monthlyAmount);
 
-    if (form.dueDate && !editingGoal) {
-      months = monthsBetweenInclusive(startMonth, monthFromDate(form.dueDate));
+    if (form.dueDate) {
+      months = Math.max(monthsBetweenInclusive(startMonth, monthFromDate(form.dueDate)) - paidMonths, 0);
       monthlyAmount = months ? Math.ceil(remaining / months) : 0;
+    } else if (planBasis === "monthlyAmount" && monthlyAmount) {
+      months = Math.ceil(remaining / monthlyAmount);
     } else if (months) {
       monthlyAmount = months ? Math.ceil(remaining / months) : 0;
     } else if (monthlyAmount) {
@@ -3623,8 +3722,70 @@ function AccumulationPage({
 
   const plan = derivePlan();
 
+  const remainingForForm = (nextForm: ReturnType<typeof emptyForm>) => {
+    const targetAmount = parseMoney(nextForm.target);
+    const progress = editingGoal ? accumulationProgress(state, editingGoal) : 0;
+    return Math.max(targetAmount - progress, 0);
+  };
+
+  const syncDueDatePlan = (nextForm: ReturnType<typeof emptyForm>) => {
+    if (!nextForm.dueDate) return syncManualPlan(nextForm, planBasis);
+    const totalMonths = monthsBetweenInclusive(nextForm.startMonth || currentMonth(), monthFromDate(nextForm.dueDate));
+    const paidMonths = editingGoal ? accumulationPaidMonths(state, editingGoal) : 0;
+    const months = Math.max(totalMonths - paidMonths, 0);
+    const remaining = remainingForForm(nextForm);
+    return {
+      ...nextForm,
+      months: months ? String(months) : "",
+      monthlyAmount: months && remaining ? Math.ceil(remaining / months).toLocaleString("vi-VN") : "",
+    };
+  };
+
+  const syncManualPlan = (nextForm: ReturnType<typeof emptyForm>, basis: "months" | "monthlyAmount") => {
+    if (nextForm.dueDate) return nextForm;
+    const remaining = remainingForForm(nextForm);
+    const months = Number(nextForm.months) || 0;
+    const monthlyAmount = parseMoney(nextForm.monthlyAmount);
+    if (basis === "months") {
+      return {
+        ...nextForm,
+        monthlyAmount: months && remaining ? Math.ceil(remaining / months).toLocaleString("vi-VN") : "",
+      };
+    }
+    return {
+      ...nextForm,
+      months: monthlyAmount && remaining ? String(Math.ceil(remaining / monthlyAmount)) : "",
+    };
+  };
+
+  const updateAccumulationTarget = (target: string) => {
+    setForm((current) => syncDueDatePlan({ ...current, target }));
+  };
+
+  const updateAccumulationStartMonth = (startMonth: string) => {
+    setForm((current) => syncDueDatePlan({ ...current, startMonth }));
+  };
+
+  const updateAccumulationDueDate = (dueDate: string) => {
+    setForm((current) => {
+      const next = { ...current, dueDate };
+      return dueDate ? syncDueDatePlan(next) : syncManualPlan(next, planBasis);
+    });
+  };
+
+  const updateAccumulationMonths = (months: string) => {
+    setPlanBasis("months");
+    setForm((current) => syncManualPlan({ ...current, months }, "months"));
+  };
+
+  const updateAccumulationMonthlyAmount = (monthlyAmount: string) => {
+    setPlanBasis("monthlyAmount");
+    setForm((current) => syncManualPlan({ ...current, monthlyAmount }, "monthlyAmount"));
+  };
+
   const resetForm = () => {
     setForm(emptyForm());
+    setPlanBasis("months");
     setEditingId(null);
     setFormOpen(false);
     setFormError("");
@@ -3645,6 +3806,7 @@ function AccumulationPage({
       months: String(unpaidMonths || ""),
       monthlyAmount: unpaidMonths && remaining ? Math.ceil(remaining / unpaidMonths).toLocaleString("vi-VN") : "",
     });
+    setPlanBasis("months");
     setFormError("");
   };
 
@@ -3748,6 +3910,9 @@ function AccumulationPage({
           }} type="button">
             <History size={17} /> {showHistory ? "Danh sách" : "Lịch sử"}
           </button>
+          <button className="ghost" onClick={() => onOpenMbbDeposits()} type="button">
+            <Landmark size={17} /> Sổ MBB
+          </button>
           {!formOpen && !showHistory && (
             <button className="primary" onClick={() => setFormOpen(true)}>
               <Plus size={17} /> Thêm
@@ -3769,23 +3934,23 @@ function AccumulationPage({
             </label>
             <label>
               Tổng tiền cần dồn
-              <input value={form.target} onChange={(event) => setForm({ ...form, target: formatMoneyChange(event) })} placeholder="9.000.000" />
+              <input value={form.target} onChange={(event) => updateAccumulationTarget(formatMoneyChange(event))} placeholder="9.000.000" />
             </label>
             <label>
               Tháng bắt đầu
-              <input type="month" value={form.startMonth} onChange={(event) => setForm({ ...form, startMonth: event.target.value })} />
+              <input type="month" value={form.startMonth} onChange={(event) => updateAccumulationStartMonth(event.target.value)} />
             </label>
             <label>
               Ngày cần dùng
-              <input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} />
+              <input type="date" value={form.dueDate} onChange={(event) => updateAccumulationDueDate(event.target.value)} />
             </label>
             <label>
               Số tháng
-              <input value={form.months} onChange={(event) => setForm({ ...form, months: event.target.value, monthlyAmount: form.dueDate ? "" : form.monthlyAmount })} placeholder={plan.months ? String(plan.months) : "6"} />
+              <input value={form.months} onChange={(event) => updateAccumulationMonths(event.target.value.replace(/\D/g, ""))} placeholder={plan.months ? String(plan.months) : "6"} />
             </label>
             <label>
               Tiền mỗi tháng
-              <input value={form.monthlyAmount} onChange={(event) => setForm({ ...form, monthlyAmount: formatMoneyChange(event), months: form.dueDate ? "" : form.months })} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
+              <input value={form.monthlyAmount} onChange={(event) => updateAccumulationMonthlyAmount(formatMoneyChange(event))} placeholder={plan.monthlyAmount ? plan.monthlyAmount.toLocaleString("vi-VN") : "1.500.000"} />
             </label>
             <button className="primary" onClick={saveGoal}>
               <Save size={17} /> {editingGoal ? "Lưu thay đổi" : "Tạo quỹ"}
@@ -3891,6 +4056,7 @@ function AccumulationPage({
                 </div>
                 <div className="card-actions accumulation-actions">
                   {goal.status === "active" && <button className="primary accumulation-end-button" onClick={() => endGoal(goal)}>Kết thúc</button>}
+                  {goal.status === "active" && <button className="ghost accumulation-view-deposits-button" onClick={() => onOpenMbbDeposits(goal.id)} type="button">Xem sổ</button>}
                   {goal.status === "active" && <button className="ghost accumulation-edit-button" onClick={() => openEdit(goal)} title={`Sửa ${goal.name}`} type="button"><Pencil size={17} /></button>}
                 </div>
               </article>
@@ -4588,7 +4754,7 @@ function MoneyPage({
 }
 
 function nextDepositCode(deposits: BankDeposit[], fund: DepositFund) {
-  const prefix = fund === "saving" ? "TK" : "DP";
+  const prefix = fund === "saving" ? "TK" : fund === "emergency" ? "DP" : "TL";
   const max = deposits
     .filter((deposit) => deposit.fund === fund && deposit.code.startsWith(`${prefix}-`))
     .map((deposit) => Number(deposit.code.replace(`${prefix}-`, "")))
@@ -4600,7 +4766,10 @@ function nextDepositCode(deposits: BankDeposit[], fund: DepositFund) {
 function makeDeposit(
   existingDeposits: BankDeposit[],
   fund: DepositFund,
+  product: DepositProduct,
   amount: number,
+  certificatePurchaseAmount: number,
+  certificateMaturityValue: number,
   rate: number,
   termMonths: number,
   startDate: string,
@@ -4608,15 +4777,20 @@ function makeDeposit(
   month: string,
   note: string,
   parentId?: string,
-  createdFromSolWithdrawalId?: string
+  createdFromSolWithdrawalId?: string,
+  accumulationGoalId?: string
 ): BankDeposit {
   const id = uid();
   return {
     id,
     code: nextDepositCode(existingDeposits, fund),
     fund,
+    product,
+    accumulationGoalId,
     mbLast4: "",
     principal: Math.round(amount),
+    certificatePurchaseAmount: product === "certificate" && certificatePurchaseAmount ? Math.round(certificatePurchaseAmount) : undefined,
+    certificateMaturityValue: product === "certificate" && certificateMaturityValue ? Math.round(certificateMaturityValue) : undefined,
     rate,
     termMonths,
     startDate,
@@ -6241,6 +6415,8 @@ function InvestmentPage({
   commitWithUndo,
   activeTab,
   setActiveTab,
+  mbbDepositIntent,
+  onMbbDepositIntentHandled,
   investmentAction,
   onInvestmentActionHandled,
   onRefreshMarket,
@@ -6252,6 +6428,8 @@ function InvestmentPage({
   commitWithUndo: CommitWithUndo;
   activeTab: InvestmentTab;
   setActiveTab: (tab: InvestmentTab) => void;
+  mbbDepositIntent: MbbDepositIntent | null;
+  onMbbDepositIntentHandled: () => void;
   investmentAction: InvestmentActionIntent | null;
   onInvestmentActionHandled: () => void;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
@@ -6320,7 +6498,7 @@ function InvestmentPage({
       </div>
       {activeTab === "crypto" && <CryptoPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} onRefreshMarket={onRefreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} embedded />}
       {activeTab === "stock" && <StockPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} embedded />}
-      {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} embedded fixedFilter="all" />}
+      {activeTab === "mbb" && <BankDepositPage state={state} setState={setState} commitWithUndo={commitWithUndo} actionIntent={investmentAction} onActionHandled={onInvestmentActionHandled} mbbDepositIntent={mbbDepositIntent} onMbbDepositIntentHandled={onMbbDepositIntentHandled} embedded fixedFilter="all" />}
     </div>
   );
 }
@@ -6353,6 +6531,8 @@ function BankDepositPage({
   commitWithUndo,
   actionIntent,
   onActionHandled,
+  mbbDepositIntent,
+  onMbbDepositIntentHandled,
   embedded = false,
   fixedFilter,
 }: {
@@ -6361,12 +6541,14 @@ function BankDepositPage({
   commitWithUndo: CommitWithUndo;
   actionIntent?: InvestmentActionIntent | null;
   onActionHandled?: () => void;
+  mbbDepositIntent?: MbbDepositIntent | null;
+  onMbbDepositIntentHandled?: () => void;
   embedded?: boolean;
   fixedFilter?: DepositFilter;
 }) {
   type PendingDepositRequest = {
     source: "allocation" | "sol" | "stock" | "btc";
-    fund: DepositFund;
+    fund: TransferDepositFund;
     month: string;
     amount: number;
     title: string;
@@ -6376,7 +6558,11 @@ function BankDepositPage({
 
   const defaultDepositForm = (fund: DepositFund = "saving") => ({
     fund,
+    product: "term-deposit" as DepositProduct,
+    accumulationGoalId: "",
     amount: "",
+    certificatePurchaseAmount: "",
+    certificateMaturityValue: "",
     date: today(),
     maturityDate: addMonths(today(), 12),
     term: "12",
@@ -6389,32 +6575,57 @@ function BankDepositPage({
   const [form, setForm] = useState(() => defaultDepositForm());
   const [activeFilter, setActiveFilter] = useState<DepositFilter>(fixedFilter ?? "all");
   const [embeddedFilter, setEmbeddedFilter] = useState<DepositFilter>("all");
+  const [accumulationGoalFilter, setAccumulationGoalFilter] = useState("all");
   const [formOpen, setFormOpen] = useState(false);
+  const [depositFormError, setDepositFormError] = useState("");
   const [pendingSource, setPendingSource] = useState<BankDeposit | null>(null);
   const [earlySettlementDates, setEarlySettlementDates] = useState<Record<string, string>>({});
-  const fundLabel = (fund: DepositFund) => (fund === "saving" ? "Tiết kiệm" : "Dự phòng");
+  const fundLabel = (fund: DepositFund) => {
+    const labels: Record<DepositFund, string> = {
+      saving: "Tiết kiệm",
+      emergency: "Dự phòng",
+      accumulation: "Tích lũy",
+    };
+    return labels[fund];
+  };
   const filterOptions: Array<{ id: DepositFilter; label: string }> = [
     { id: "all", label: "Tổng" },
+    { id: "saving", label: "Tiết kiệm" },
+    { id: "emergency", label: "Dự phòng" },
+    { id: "accumulation", label: "Tích lũy" },
+  ];
+  const transferFundOptions: Array<{ id: TransferDepositFund; label: string }> = [
     { id: "saving", label: "Tiết kiệm" },
     { id: "emergency", label: "Dự phòng" },
   ];
   const fundOptions: Array<{ id: DepositFund; label: string }> = [
     { id: "saving", label: "Tiết kiệm" },
     { id: "emergency", label: "Dự phòng" },
+    { id: "accumulation", label: "Tích lũy" },
+  ];
+  const productOptions: Array<{ id: DepositProduct; label: string }> = [
+    { id: "term-deposit", label: "Tiền gửi" },
+    { id: "certificate", label: "CCTG" },
   ];
   const effectiveFilter = fixedFilter === "all" ? embeddedFilter : fixedFilter ?? activeFilter;
+  const accumulationGoalOptions = state.accumulationGoals
+    .filter((goal) => goal.status !== "deleted" || state.bankDeposits.some((deposit) => deposit.accumulationGoalId === goal.id))
+    .filter((goal) => goal.status === "active" || state.bankDeposits.some((deposit) => deposit.accumulationGoalId === goal.id))
+    .sort((left, right) => left.name.localeCompare(right.name, "vi"));
   const rows = state.bankDeposits
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => effectiveFilter === "all" || item.fund === effectiveFilter)
+    .filter(({ item }) => effectiveFilter !== "accumulation" || accumulationGoalFilter === "all" || item.accumulationGoalId === accumulationGoalFilter)
     .sort((left, right) => right.item.startDate.localeCompare(left.item.startDate) || right.index - left.index)
     .map(({ item }) => item);
   const savingActiveTotal = state.bankDeposits.filter((item) => item.fund === "saving").reduce((sum, item) => sum + activePrincipal(item), 0);
   const emergencyActiveTotal = state.bankDeposits.filter((item) => item.fund === "emergency").reduce((sum, item) => sum + activePrincipal(item), 0);
-  const activeTotal = effectiveFilter === "saving" ? savingActiveTotal : effectiveFilter === "emergency" ? emergencyActiveTotal : savingActiveTotal + emergencyActiveTotal;
+  const accumulationActiveTotal = state.bankDeposits.filter((item) => item.fund === "accumulation").reduce((sum, item) => sum + activePrincipal(item), 0);
+  const activeTotal = effectiveFilter === "saving" ? savingActiveTotal : effectiveFilter === "emergency" ? emergencyActiveTotal : effectiveFilter === "accumulation" ? accumulationActiveTotal : savingActiveTotal + emergencyActiveTotal + accumulationActiveTotal;
   const pendingAllocations = state.allocations
     .filter((allocation) => allocation.confirmedAt)
     .flatMap((allocation) =>
-      fundOptions.map(({ id }) => ({
+      transferFundOptions.map(({ id }) => ({
         source: "allocation" as const,
         fund: id,
         month: allocation.month,
@@ -6442,7 +6653,7 @@ function BankDepositPage({
     )
     .map((transaction) => {
       const withdrawal = transaction as SolWithdrawTransaction;
-      const fund = withdrawal.destination as DepositFund;
+      const fund = withdrawal.destination as TransferDepositFund;
       return {
         source: "sol" as const,
         fund,
@@ -6460,7 +6671,7 @@ function BankDepositPage({
         !state.bankDeposits.some((deposit) => deposit.note.includes(stockSaleDepositMarker(sale.id)))
     )
     .map((sale) => {
-      const fund = sale.destination as DepositFund;
+      const fund = sale.destination as TransferDepositFund;
       return {
         source: "stock" as const,
         fund,
@@ -6477,7 +6688,7 @@ function BankDepositPage({
         !state.bankDeposits.some((deposit) => deposit.note.includes(btcTransferDepositMarker(transfer.id)))
     )
     .map((transfer) => {
-      const fund = transfer.destination as DepositFund;
+      const fund = transfer.destination as TransferDepositFund;
       return {
         source: "btc" as const,
         fund,
@@ -6499,12 +6710,58 @@ function BankDepositPage({
 
   const openDepositForm = (nextForm: Partial<typeof form>) => {
     setForm((prev) => ({ ...prev, ...nextForm }));
+    setDepositFormError("");
     setFormOpen(true);
+  };
+
+  const selectMetricFilter = (fund: DepositFund) => {
+    const nextFilter = effectiveFilter === fund ? "all" : fund;
+    if (fixedFilter === "all") {
+      setEmbeddedFilter(nextFilter);
+    } else {
+      setActiveFilter(nextFilter);
+    }
+    if (nextFilter !== "accumulation") setAccumulationGoalFilter("all");
+  };
+
+  const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
+  const updateDepositFund = (fund: DepositFund) => {
+    setForm((prev) => {
+      const firstGoal = activeAccumulationGoals[0];
+      if (fund !== "accumulation") return { ...prev, fund, accumulationGoalId: "" };
+      return {
+        ...prev,
+        fund,
+        accumulationGoalId: prev.accumulationGoalId || firstGoal?.id || "",
+        amount: prev.accumulationGoalId ? prev.amount : firstGoal ? firstGoal.monthlyAmount.toLocaleString("vi-VN") : prev.amount,
+      };
+    });
+    setDepositFormError("");
+  };
+
+  const updateDepositAccumulationGoal = (accumulationGoalId: string) => {
+    const goal = state.accumulationGoals.find((item) => item.id === accumulationGoalId);
+    setForm((prev) => ({
+      ...prev,
+      accumulationGoalId,
+      amount: goal ? goal.monthlyAmount.toLocaleString("vi-VN") : prev.amount,
+    }));
+    setDepositFormError("");
   };
 
   const openManualDepositForm = () => {
     setPendingSource(null);
-    openDepositForm({ fund: effectiveFilter === "all" ? form.fund : effectiveFilter, allocationSource: false, sourceMonth: "", sourceSolWithdrawalId: "" });
+    const nextFund = effectiveFilter === "all" ? form.fund : effectiveFilter;
+    const nextGoal = nextFund === "accumulation" ? (accumulationGoalFilter !== "all" ? accumulationGoalFilter : activeAccumulationGoals[0]?.id ?? "") : "";
+    const goal = state.accumulationGoals.find((item) => item.id === nextGoal);
+    openDepositForm({
+      fund: nextFund,
+      accumulationGoalId: nextGoal,
+      amount: nextFund === "accumulation" && goal ? goal.monthlyAmount.toLocaleString("vi-VN") : form.amount,
+      allocationSource: false,
+      sourceMonth: "",
+      sourceSolWithdrawalId: "",
+    });
   };
 
   useEffect(() => {
@@ -6513,10 +6770,23 @@ function BankDepositPage({
     onActionHandled?.();
   }, [actionIntent?.id]);
 
+  useEffect(() => {
+    if (!mbbDepositIntent) return;
+    const nextFund = mbbDepositIntent.fund;
+    if (fixedFilter === "all") {
+      setEmbeddedFilter(nextFund);
+    } else {
+      setActiveFilter(nextFund);
+    }
+    setAccumulationGoalFilter(mbbDepositIntent.accumulationGoalId ?? "all");
+    onMbbDepositIntentHandled?.();
+  }, [mbbDepositIntent?.id]);
+
   const prefillPendingDeposit = (allocation: PendingDepositRequest) => {
     setPendingSource(null);
     openDepositForm({
       fund: allocation.fund,
+      accumulationGoalId: "",
       amount: allocation.amount.toLocaleString("vi-VN"),
       date: today(),
       maturityDate: addMonths(today(), Number(form.term) || 0),
@@ -6530,20 +6800,28 @@ function BankDepositPage({
   const addDeposit = () => {
     const amount = parseMoney(form.amount);
     if (!amount) return;
+    if (form.fund === "accumulation" && !form.accumulationGoalId) {
+      setDepositFormError("Chọn mục tích lũy cho sổ này.");
+      return;
+    }
     setState((prev) => {
       const sourceMonth = form.sourceMonth || monthFromDate(form.date);
       const nextDeposit = makeDeposit(
         prev.bankDeposits,
         form.fund,
+        form.product,
         amount,
-        Number(form.rate),
+        parseMoney(form.certificatePurchaseAmount),
+        parseMoney(form.certificateMaturityValue),
+        parseDecimal(form.rate),
         Number(form.term),
         form.date,
         form.maturityDate,
         sourceMonth,
         form.note,
         pendingSource?.id,
-        form.sourceSolWithdrawalId || undefined
+        form.sourceSolWithdrawalId || undefined,
+        form.fund === "accumulation" ? form.accumulationGoalId : pendingSource?.accumulationGoalId
       );
 
       const bankDeposits = pendingSource
@@ -6566,7 +6844,7 @@ function BankDepositPage({
         allocations: form.allocationSource
           ? prev.allocations.map((allocation) =>
               allocation.month === sourceMonth
-                ? { ...allocation, [depositCreatedField(form.fund)]: new Date().toISOString() }
+                ? { ...allocation, [depositCreatedField(form.fund as TransferDepositFund)]: new Date().toISOString() }
                 : allocation
             )
           : prev.allocations,
@@ -6600,10 +6878,15 @@ function BankDepositPage({
 
   const createNewFromMatured = (item: BankDeposit) => {
     const nextPrincipal = item.principal + interestFor(item);
+    const sourceDepositLabel = `${item.code}${item.mbLast4 ? ` ${item.mbLast4}` : ""}`;
     setPendingSource(item);
     openDepositForm({
       fund: item.fund,
+      product: item.product ?? "term-deposit",
+      accumulationGoalId: item.accumulationGoalId ?? "",
       amount: nextPrincipal.toLocaleString("vi-VN"),
+      certificatePurchaseAmount: item.product === "certificate" ? certificateMaturityValueFor(item).toLocaleString("vi-VN") : "",
+      certificateMaturityValue: "",
       date: item.maturityDate,
       maturityDate: addMonths(item.maturityDate, item.termMonths),
       term: String(item.termMonths),
@@ -6611,8 +6894,15 @@ function BankDepositPage({
       sourceMonth: monthFromDate(item.maturityDate),
       allocationSource: false,
       sourceSolWithdrawalId: "",
-      note: `Tạo mới từ ${item.code}`,
+      note: `Quay vòng từ sổ ${sourceDepositLabel}`,
     });
+  };
+
+  const updateDepositProduct = (id: string, product: DepositProduct) => {
+    setState((prev) => ({
+      ...prev,
+      bankDeposits: prev.bankDeposits.map((deposit) => (deposit.id === id ? { ...deposit, product } : deposit)),
+    }));
   };
 
   const settleMatured = (id: string) => {
@@ -6636,7 +6926,7 @@ function BankDepositPage({
 
     commitWithUndo("Đã xóa sổ MBB.", (prev) => {
       const relatedPayloads = {
-        allocations: item.createdFromMonth && !item.createdFromSolWithdrawalId
+        allocations: item.fund !== "accumulation" && item.createdFromMonth && !item.createdFromSolWithdrawalId
           ? prev.allocations.filter((allocation) => allocation.month === item.createdFromMonth)
           : [],
       };
@@ -6660,10 +6950,12 @@ function BankDepositPage({
               }
               return deposit;
             }),
-          allocations: item.createdFromMonth && !item.createdFromSolWithdrawalId
+          allocations: item.fund !== "accumulation" && item.createdFromMonth && !item.createdFromSolWithdrawalId
             ? prev.allocations.map((allocation) =>
                 allocation.month === item.createdFromMonth
-                  ? { ...allocation, [depositCreatedField(item.fund)]: allocation[depositCreatedField(item.fund)] ?? new Date().toISOString() }
+                  ? item.fund === "accumulation"
+                    ? allocation
+                    : { ...allocation, [depositCreatedField(item.fund)]: allocation[depositCreatedField(item.fund)] ?? new Date().toISOString() }
                   : allocation
               )
             : prev.allocations,
@@ -6708,10 +7000,35 @@ function BankDepositPage({
         </div>
       )}
       <section className="metrics-grid">
-        <MetricCard label="Tổng gốc đang gửi" value={formatVnd(savingActiveTotal + emergencyActiveTotal)} icon={<Landmark size={20} />} tone={effectiveFilter === "all" ? "highlight" : undefined} onClick={fixedFilter === "all" ? () => setEmbeddedFilter("all") : undefined} />
-        <MetricCard label="Tổng quỹ tiết kiệm" value={formatVnd(savingActiveTotal)} icon={<PiggyBank size={20} />} tone={effectiveFilter === "saving" ? "highlight" : undefined} onClick={fixedFilter === "all" ? () => setEmbeddedFilter("saving") : undefined} />
-        <MetricCard label="Tổng quỹ dự phòng" value={formatVnd(emergencyActiveTotal)} icon={<Landmark size={20} />} tone={effectiveFilter === "emergency" ? "highlight" : undefined} onClick={fixedFilter === "all" ? () => setEmbeddedFilter("emergency") : undefined} />
+        <MetricCard label="Tiết kiệm" value={formatVnd(savingActiveTotal)} icon={<PiggyBank size={20} />} tone={effectiveFilter === "saving" ? "highlight" : undefined} onClick={() => selectMetricFilter("saving")} />
+        <MetricCard label="Dự phòng" value={formatVnd(emergencyActiveTotal)} icon={<Landmark size={20} />} tone={effectiveFilter === "emergency" ? "highlight" : undefined} onClick={() => selectMetricFilter("emergency")} />
+        <MetricCard label="Tích lũy" value={formatVnd(accumulationActiveTotal)} icon={<PiggyBank size={20} />} tone={effectiveFilter === "accumulation" ? "highlight" : undefined} onClick={() => selectMetricFilter("accumulation")} />
       </section>
+      {effectiveFilter === "accumulation" && (
+        <div className="deposit-tabs accumulation-goal-filter" role="tablist" aria-label="Lọc sổ MBB tích lũy theo mục">
+          <button
+            className={accumulationGoalFilter === "all" ? "active" : ""}
+            onClick={() => setAccumulationGoalFilter("all")}
+            role="tab"
+            type="button"
+            aria-selected={accumulationGoalFilter === "all"}
+          >
+            Tất cả mục
+          </button>
+          {accumulationGoalOptions.map((goal) => (
+            <button
+              className={accumulationGoalFilter === goal.id ? "active" : ""}
+              key={goal.id}
+              onClick={() => setAccumulationGoalFilter(goal.id)}
+              role="tab"
+              type="button"
+              aria-selected={accumulationGoalFilter === goal.id}
+            >
+              {goal.name}
+            </button>
+          ))}
+        </div>
+      )}
       {pendingDepositRequests.length > 0 && (
         <section className="pending-stack">
           {pendingDepositRequests.map((allocation) => (
@@ -6773,7 +7090,7 @@ function BankDepositPage({
                     className={form.fund === option.id ? "active" : ""}
                     disabled={fundSelectionLocked}
                     key={option.id}
-                    onClick={() => setForm({ ...form, fund: option.id })}
+                    onClick={() => updateDepositFund(option.id)}
                     type="button"
                   >
                     {option.label}
@@ -6781,6 +7098,59 @@ function BankDepositPage({
                 ))}
               </div>
             </div>
+            <div className="deposit-fund-field">
+              <span>Sản phẩm</span>
+              <div className="deposit-fund-toggle" role="group" aria-label="Chọn sản phẩm sổ">
+                {productOptions.map((option) => (
+                  <button
+                    className={form.product === option.id ? "active" : ""}
+                    key={option.id}
+                    onClick={() =>
+                      setForm((current) => ({
+                        ...current,
+                        product: option.id,
+                        certificatePurchaseAmount:
+                          option.id === "certificate" && !current.certificatePurchaseAmount ? current.amount : current.certificatePurchaseAmount,
+                      }))
+                    }
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {form.product === "certificate" && (
+              <>
+                <label>
+                  Đã thanh toán
+                  <input
+                    value={form.certificatePurchaseAmount}
+                    onChange={(event) => setForm({ ...form, certificatePurchaseAmount: formatMoneyChange(event) })}
+                    placeholder={form.amount || "2.000.055"}
+                  />
+                </label>
+                <label>
+                  Giá trị cuối kỳ MB
+                  <input
+                    value={form.certificateMaturityValue}
+                    onChange={(event) => setForm({ ...form, certificateMaturityValue: formatMoneyChange(event) })}
+                    placeholder="2.035.288"
+                  />
+                </label>
+              </>
+            )}
+            {form.fund === "accumulation" && (
+              <label>
+                Mục tích lũy
+                <select value={form.accumulationGoalId} onChange={(event) => updateDepositAccumulationGoal(event.target.value)} required>
+                  <option value="">Chọn mục tích lũy</option>
+                  {activeAccumulationGoals.map((goal) => (
+                    <option value={goal.id} key={goal.id}>{goal.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
               Số tiền
               <input value={form.amount} onChange={(event) => setForm({ ...form, amount: formatMoneyChange(event) })} placeholder="6.000.000" />
@@ -6808,6 +7178,7 @@ function BankDepositPage({
             <button className="primary" onClick={addDeposit}>
               <Plus size={17} /> Thêm sổ
             </button>
+            {depositFormError && <span className="form-error">{depositFormError}</span>}
           </div>
         )}
       </section>
@@ -6817,7 +7188,11 @@ function BankDepositPage({
           const due = daysUntil(item.maturityDate);
           const matured = due <= 0 && item.status === "active";
           const interest = interestFor(item);
+          const displayRate = Number.isFinite(item.rate) ? item.rate : 0;
           const progress = depositProgress(item);
+          const parentDeposit = item.parentId ? state.bankDeposits.find((deposit) => deposit.id === item.parentId) : undefined;
+          const parentDepositLabel = parentDeposit ? `${parentDeposit.code}${parentDeposit.mbLast4 ? ` ${parentDeposit.mbLast4}` : ""}` : "";
+          const linkedGoal = item.accumulationGoalId ? state.accumulationGoals.find((goal) => goal.id === item.accumulationGoalId) : undefined;
           return (
             <article className={`deposit-card ${due <= 7 && item.status === "active" ? "danger" : due <= 30 && item.status === "active" ? "warning" : ""}`} key={item.id}>
               <button className="deposit-delete-button" onClick={() => deleteDeposit(item)} title={`Xóa sổ ${item.code}`} type="button" aria-label={`Xóa sổ ${item.code}`}>
@@ -6826,8 +7201,17 @@ function BankDepositPage({
               <div className="deposit-head">
                 <div>
                   <div className="deposit-code-row">
-                    <small>{item.code}</small>
                     <span className={`fund-badge ${item.fund}`}>{fundLabel(item.fund)}</span>
+                    <select
+                      className="deposit-product-inline"
+                      value={item.product ?? "term-deposit"}
+                      onChange={(event) => updateDepositProduct(item.id, event.target.value as DepositProduct)}
+                      aria-label={`Sản phẩm sổ ${item.code}`}
+                    >
+                      {productOptions.map((option) => (
+                        <option value={option.id} key={option.id}>{option.label}</option>
+                      ))}
+                    </select>
                     <input
                       className="deposit-last4-inline"
                       value={item.mbLast4}
@@ -6853,8 +7237,9 @@ function BankDepositPage({
                 <span>Gửi {formatDate(item.startDate)}</span>
                 <span>Đáo hạn {formatDate(item.maturityDate)}</span>
                 <span>Kỳ hạn {item.termMonths} tháng</span>
-                <span>Lãi {item.rate}%/năm</span>
+                <span>Lãi {displayRate.toLocaleString("vi-VN", { maximumFractionDigits: 3 })}%/năm</span>
                 <span>Lãi cuối kỳ {formatVnd(interest)}</span>
+                {linkedGoal && <span>Mục tích lũy {linkedGoal.name}</span>}
                 {item.status === "early-settled" && item.settledAt && <span>Tất toán trước hạn {formatDate(item.settledAt)}</span>}
               </div>
               <div className="progress-track deposit-progress-track" aria-label={`Tiến độ sổ ${item.code}: ${progress.progressPercent.toFixed(0)}%`}>
@@ -6870,7 +7255,7 @@ function BankDepositPage({
                   <strong>{formatVnd(progress.accruedInterest)}</strong>
                 </span>
               </div>
-              {item.parentId && <p className="muted">Tạo mới từ sổ trước.</p>}
+              {item.parentId && <p className="muted">{parentDepositLabel ? `Quay vòng từ sổ ${parentDepositLabel}.` : "Tạo mới từ sổ trước."}</p>}
               {item.childId && <p className="muted">Đã tạo sổ mới từ sổ này.</p>}
               {matured && (
                 <div className="card-actions">
@@ -7492,6 +7877,15 @@ function CryptoPage({
   const usdtValueVnd = btcStats.usdtBalance * usdtVndRate;
   const solAverageCost = solStats.balance ? solStats.cost / solStats.balance : 0;
   const activeDcaPlans = state.btcDcaPlans.filter((plan) => plan.isActive);
+  const latestCryptoAllocationNotice = [...state.fundTransactions]
+    .reverse()
+    .find(
+      (transaction) =>
+        transaction.fund === "btc" &&
+        transaction.type === "deposit" &&
+        transaction.note === "Chia quỹ cuối tháng" &&
+        !state.settings.dismissedCryptoAllocationIds.includes(transaction.id)
+    );
   const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
   const destinationOptions = (asset: CryptoTransferAsset): Array<{ id: BtcTransferTarget | "btc-direct"; label: string }> => {
     if (asset === "btc") return [{ id: "usdt", label: "USDT" }];
@@ -7518,6 +7912,17 @@ function CryptoPage({
     { id: "sol", name: "Solana", symbol: "SOL", amount: formatSolAmount(solStats.balance), value: solValueVnd, icon: <Coins size={18} /> },
     { id: "usdt", name: "Tether", symbol: "USDT", amount: formatUsdt(btcStats.usdtBalance), value: usdtValueVnd, icon: <CircleDollarSign size={18} /> },
   ];
+
+  const dismissCryptoAllocationNotice = () => {
+    if (!latestCryptoAllocationNotice) return;
+    setState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        dismissedCryptoAllocationIds: [...new Set([...(prev.settings.dismissedCryptoAllocationIds ?? []), latestCryptoAllocationNotice.id])],
+      },
+    }));
+  };
 
   useEffect(() => {
     const nextPrice = transferPriceFor(transferForm.asset, transferForm.destination);
@@ -7974,6 +8379,17 @@ function CryptoPage({
 
   const content = (
     <div className="crypto-page">
+      {latestCryptoAllocationNotice && (
+        <button className="pending-banner clickable stock-allocation-notice" onClick={dismissCryptoAllocationNotice} type="button">
+          <div>
+            <strong>
+              Đã chia {formatVnd(latestCryptoAllocationNotice.amount)} vào quỹ Crypto tháng {formatMonth(latestCryptoAllocationNotice.month)}
+            </strong>
+            <small>Bấm dấu tick để ẩn thông báo</small>
+          </div>
+          <CheckCircle2 size={20} />
+        </button>
+      )}
       <section className="crypto-portfolio-card">
         <span className={`crypto-pnl-pill ${cryptoPnl < 0 ? "loss" : "gain"}`}>{cryptoPnlPercent.toFixed(1)}%</span>
         <small>Tổng tài sản Crypto</small>
@@ -8333,7 +8749,7 @@ function ReportsPage({
       ];
     }
     if (row.id === "saving" || row.id === "emergency") {
-      const fund = row.id as DepositFund;
+      const fund = row.id as TransferDepositFund;
       const active = state.bankDeposits.filter((item) => item.fund === fund && item.status === "active");
       const pending = pendingSolDepositTotal(state, fund) + pendingStockSaleDepositTotal(state, fund) + pendingBtcTransferDepositTotal(state, fund);
       return [
@@ -8493,7 +8909,7 @@ function ReportsPage({
           <div>
             <small>Tự do tài chính</small>
             <strong>{formatVnd(retirementTarget)}</strong>
-            <span>Chi tiêu TB: {formatVnd(averageExpense)}</span>
+            <span>Tổng tài sản hiện tại: {formatVnd(totalAssets)}</span>
           </div>
           <b>{retirementProgress.toFixed(0)}%</b>
           <div className="financial-rule-progress"><span style={{ width: `${retirementProgress}%` }} /></div>
@@ -9125,6 +9541,9 @@ function QuickActionButton({
   btcCloudAccountId: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [fabPosition, setFabPosition] = useState<{ x: number; y: number } | null>(null);
+  const fabDragRef = useRef({ pointerId: 0, startX: 0, startY: 0, left: 0, top: 0, moved: false, dragging: false });
+  const suppressFabClickRef = useRef(false);
   const [group, setGroup] = useState<QuickActionGroup>("income");
   const [kind, setKind] = useState<QuickActionKind>("income");
   const [error, setError] = useState("");
@@ -9157,10 +9576,75 @@ function QuickActionButton({
   const [quickStockRows, setQuickStockRows] = useState<StockBuyRow[]>(() => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }]);
   const [quickStockMeta, setQuickStockMeta] = useState({ date: today(), note: "" });
   const [stockTransfer, setStockTransfer] = useState({ symbol: "", shares: "", price: "", destination: "stock" as SolDestination, date: today(), note: "" });
-  const [deposit, setDeposit] = useState({ fund: "saving" as DepositFund, amount: "", rate: "6", term: "12", date: today(), mbLast4: "", note: "" });
+  const [deposit, setDeposit] = useState({
+    fund: "saving" as DepositFund,
+    product: "term-deposit" as DepositProduct,
+    amount: "",
+    certificatePurchaseAmount: "",
+    certificateMaturityValue: "",
+    rate: "6",
+    term: "12",
+    date: today(),
+    mbLast4: "",
+    note: "",
+  });
   const [sol, setSol] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", date: today(), note: "" });
   const [solTransfer, setSolTransfer] = useState({ amount: "", price: state.market.solUsd ? formatDecimalInput(String(state.market.solUsd)) : "", vnd: "", btc: "", destination: "cash" as SolDestination, date: today(), note: "" });
   const [solTransferBtcTouched, setSolTransferBtcTouched] = useState(false);
+  const clampFabPosition = (x: number, y: number, size = 40) => ({
+    x: Math.min(Math.max(x, 6), Math.max(window.innerWidth - size - 6, 6)),
+    y: Math.min(Math.max(y, 6), Math.max(window.innerHeight - size - 6, 6)),
+  });
+  useEffect(() => {
+    if (!fabPosition) return;
+    const keepFabInViewport = () => {
+      setFabPosition((current) => {
+        if (!current) return current;
+        const next = clampFabPosition(current.x, current.y);
+        if (next.x === current.x && next.y === current.y) return current;
+        return next;
+      });
+    };
+    window.addEventListener("resize", keepFabInViewport);
+    return () => window.removeEventListener("resize", keepFabInViewport);
+  }, [fabPosition]);
+  const startFabDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    fabDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+      moved: false,
+      dragging: true,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveFabDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = fabDragRef.current;
+    if (!drag.dragging || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    if (!drag.moved) return;
+    const next = clampFabPosition(drag.left + dx, drag.top + dy, event.currentTarget.offsetWidth || 40);
+    setFabPosition(next);
+  };
+  const endFabDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = fabDragRef.current;
+    if (!drag.dragging || drag.pointerId !== event.pointerId) return;
+    fabDragRef.current = { ...drag, dragging: false };
+    if (drag.moved) {
+      suppressFabClickRef.current = true;
+      const rect = event.currentTarget.getBoundingClientRect();
+      setFabPosition(clampFabPosition(rect.left, rect.top, event.currentTarget.offsetWidth || 40));
+      window.setTimeout(() => {
+        suppressFabClickRef.current = false;
+      }, 0);
+    }
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
   const groups: Array<{ id: QuickActionGroup; label: string; defaultKind: QuickActionKind }> = [
     { id: "income", label: "Thu nhập", defaultKind: "income" },
     { id: "expense", label: "Chi tiêu", defaultKind: "expense" },
@@ -9917,17 +10401,48 @@ function QuickActionButton({
     const term = Number(deposit.term) || 0;
     if (!amount || !term) return setError("Nhập sổ MBB hợp lệ.");
     const next = {
-      ...makeDeposit(state.bankDeposits, deposit.fund, amount, Number(deposit.rate) || 0, term, deposit.date, addMonths(deposit.date, term), monthFromDate(deposit.date), deposit.note.trim()),
+      ...makeDeposit(
+        state.bankDeposits,
+        deposit.fund,
+        deposit.product,
+        amount,
+        parseMoney(deposit.certificatePurchaseAmount),
+        parseMoney(deposit.certificateMaturityValue),
+        parseDecimal(deposit.rate),
+        term,
+        deposit.date,
+        addMonths(deposit.date, term),
+        monthFromDate(deposit.date),
+        deposit.note.trim()
+      ),
       mbLast4: deposit.mbLast4.replace(/\D/g, "").slice(0, 4),
     };
     commitWithUndo("Đã tạo sổ MBB.", (prev) => ({ ...prev, bankDeposits: [...prev.bankDeposits, next] }));
-    setDeposit((prev) => ({ ...prev, amount: "", note: "" }));
+    setDeposit((prev) => ({ ...prev, amount: "", certificatePurchaseAmount: "", certificateMaturityValue: "", note: "" }));
     close();
   };
 
   return (
     <>
-      <button className="quick-action-fab" onClick={() => setOpen(true)} title="Thêm nhanh" type="button"><Plus size={24} /></button>
+      <button
+        className="quick-action-fab"
+        onClick={(event) => {
+          if (suppressFabClickRef.current) {
+            event.preventDefault();
+            return;
+          }
+          setOpen(true);
+        }}
+        onPointerDown={startFabDrag}
+        onPointerMove={moveFabDrag}
+        onPointerUp={endFabDrag}
+        onPointerCancel={endFabDrag}
+        style={fabPosition ? { left: fabPosition.x, top: fabPosition.y, right: "auto", bottom: "auto" } : undefined}
+        title="Thêm nhanh"
+        type="button"
+      >
+        <Plus size={24} />
+      </button>
       {open && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="quick-action-title">
           <section className="modal-card quick-action-modal">
@@ -10108,7 +10623,19 @@ function QuickActionButton({
               </>}
               {kind === "deposit" && <>
                 <label>Quỹ<select value={deposit.fund} onChange={(event) => setDeposit({ ...deposit, fund: event.target.value as DepositFund })}><option value="saving">Tiết kiệm</option><option value="emergency">Dự phòng</option></select></label>
+                <label>Sản phẩm<select value={deposit.product} onChange={(event) => {
+                  const product = event.target.value as DepositProduct;
+                  setDeposit({
+                    ...deposit,
+                    product,
+                    certificatePurchaseAmount: product === "certificate" && !deposit.certificatePurchaseAmount ? deposit.amount : deposit.certificatePurchaseAmount,
+                  });
+                }}><option value="term-deposit">Tiền gửi</option><option value="certificate">CCTG</option></select></label>
                 <label>Số tiền<input value={deposit.amount} onChange={(event) => setDeposit({ ...deposit, amount: formatMoneyChange(event) })} placeholder="6.000.000" /></label>
+                {deposit.product === "certificate" && <>
+                  <label>Đã thanh toán<input value={deposit.certificatePurchaseAmount} onChange={(event) => setDeposit({ ...deposit, certificatePurchaseAmount: formatMoneyChange(event) })} placeholder={deposit.amount || "2.000.055"} /></label>
+                  <label>Giá trị cuối kỳ<input value={deposit.certificateMaturityValue} onChange={(event) => setDeposit({ ...deposit, certificateMaturityValue: formatMoneyChange(event) })} placeholder="2.035.288" /></label>
+                </>}
                 <label>Lãi suất %<input value={deposit.rate} onChange={(event) => setDeposit({ ...deposit, rate: formatDecimalChange(event) })} /></label>
                 <label>Kỳ hạn tháng<input value={deposit.term} onChange={(event) => setDeposit({ ...deposit, term: event.target.value })} /></label>
                 <label>Ngày gửi<input type="date" value={deposit.date} onChange={(event) => setDeposit({ ...deposit, date: event.target.value })} /></label>
@@ -10155,6 +10682,7 @@ export function App() {
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [visibleUndoId, setVisibleUndoId] = useState<string | null>(null);
   const [investmentAction, setInvestmentAction] = useState<InvestmentActionIntent | null>(null);
+  const [mbbDepositIntent, setMbbDepositIntent] = useState<MbbDepositIntent | null>(null);
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
   const stateRef = useRef(state);
@@ -10172,6 +10700,11 @@ export function App() {
     if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("crypto");
     setPage(nextPage);
     if (nextPage === "dashboard") setMonth(currentMonth());
+  };
+  const openAccumulationMbbDeposits = (accumulationGoalId?: string) => {
+    setPage("investment");
+    setAssetTab("mbb");
+    setMbbDepositIntent({ id: uid(), fund: "accumulation", accumulationGoalId });
   };
 
   useEffect(() => {
@@ -10600,8 +11133,8 @@ export function App() {
       <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
         {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} commitWithUndo={commitWithUndo} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} setInvestmentAction={setInvestmentAction} onRefreshMarket={refreshMarket} />}
-        {page === "accumulation" && <AccumulationPage state={state} setState={setState} commitWithUndo={commitWithUndo} />}
-        {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
+        {page === "accumulation" && <AccumulationPage state={state} setState={setState} commitWithUndo={commitWithUndo} onOpenMbbDeposits={openAccumulationMbbDeposits} />}
+        {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} mbbDepositIntent={mbbDepositIntent} onMbbDepositIntentHandled={() => setMbbDepositIntent(null)} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
         {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} onOpenAccumulation={() => navigateToPage("accumulation")} />}
         {page === "settings" && (
           <SettingsPage
