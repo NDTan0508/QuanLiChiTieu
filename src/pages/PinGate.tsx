@@ -80,7 +80,6 @@ export function PinGate({
           <Lock size={26} />
         </div>
         <h1>Nhập mã PIN</h1>
-        <p>Mở dữ liệu tài khoản của bạn. Tạo hoặc đổi PIN tại /admin.</p>
         <input
           className="pin-display"
           type="text"

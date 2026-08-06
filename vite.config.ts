@@ -28,8 +28,10 @@ const marketApiProxy = () => ({
         res.statusCode = upstream.status;
         res.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json; charset=utf-8");
         res.end(body);
-      } catch (error) {
-        next(error);
+      } catch {
+        res.statusCode = 502;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ error: "Market API proxy fetch failed" }));
       }
     });
   },

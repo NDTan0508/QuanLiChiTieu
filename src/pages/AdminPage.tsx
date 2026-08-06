@@ -22,7 +22,7 @@ export function AdminPage({
   const [newPin, setNewPin] = useState("");
   const [oldPin, setOldPin] = useState("");
   const [replacementPin, setReplacementPin] = useState("");
-  const [status, setStatus] = useState(cloudConfigured ? "Nhập mật khẩu admin để tiếp tục." : "Thiếu cấu hình Supabase.");
+  const [status, setStatus] = useState(cloudConfigured ? "" : "Thiếu cấu hình Supabase.");
   const [loading, setLoading] = useState(false);
 
   const unlockAdmin = async () => {
