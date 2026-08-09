@@ -6530,6 +6530,15 @@ label strong {
   box-shadow: 0 0 12px rgba(255, 138, 0, 0.28);
 }
 
+.financial-rule-forecast {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--muted-soft);
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
 .asset-growth-panel {
   padding: 18px 18px 14px;
   border-color: rgba(255, 255, 255, 0.06);
@@ -6613,6 +6622,10 @@ label strong {
 
 .report-financial-rule-stack .financial-rule-progress {
   height: 5px;
+}
+
+.report-financial-rule-stack .financial-rule-forecast {
+  font-size: 0.66rem;
 }
 
 .report-card-title {

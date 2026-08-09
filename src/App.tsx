@@ -10579,6 +10579,22 @@ function ReportsPage({
   const assetMilestoneTarget = nextAssetMilestone(totalAssets);
   const assetMilestoneProgress = assetMilestoneTarget ? Math.min((totalAssets / assetMilestoneTarget) * 100, 100) : 0;
   const assetPercent = (value: number) => totalAssets ? Math.round((value / totalAssets) * 100) : 0;
+  const accumulatedMonthCount = Math.max(months.length, 1);
+  const formatGoalDuration = (monthCount: number) => {
+    const normalized = Math.max(Math.ceil(monthCount), 1);
+    const years = Math.floor(normalized / 12);
+    const remainingMonths = normalized % 12;
+    if (years && remainingMonths) return `${years} năm ${remainingMonths} tháng`;
+    if (years) return `${years} năm`;
+    return `${remainingMonths} tháng`;
+  };
+  const ruleForecast = (current: number, target: number) => {
+    const averageMonthly = Math.round(Math.max(current, 0) / accumulatedMonthCount);
+    if (target <= 0) return `TB ${formatVnd(averageMonthly)}/tháng · Chưa có mục tiêu`;
+    if (current >= target) return `TB ${formatVnd(averageMonthly)}/tháng · Đã đạt mục tiêu`;
+    if (averageMonthly <= 0) return `TB ${formatVnd(0)}/tháng · Chưa đủ dữ liệu dự kiến`;
+    return `TB ${formatVnd(averageMonthly)}/tháng · Dự kiến còn ${formatGoalDuration((target - current) / averageMonthly)}`;
+  };
   const reportChartLabels: Record<ReportChartKey, string> = {
     "current-assets": "Tổng tài sản hiện tại",
     "net-accumulation": "Tổng số tiền tích lũy",
@@ -10596,11 +10612,12 @@ function ReportsPage({
   const pnlRows = assetPnlRows(state);
   const totalPnlRow = pnlRows.find((row) => row.id === "total");
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
-  const reportGoalTimeline = (endMonth: string) => {
-    const remainingMonths = Math.max(monthIndex(endMonth) - monthIndex(currentMonth()) + 1, 0);
-    return remainingMonths > 0
-      ? `Còn ${remainingMonths}mo · end ${formatMonth(endMonth)}`
-      : `Đến hạn · Dự kiến ${formatMonth(endMonth)}`;
+  const reportGoalTimeline = (goal: AccumulationGoal) => {
+    const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
+    const unpaidMonths = accumulationUnpaidMonths(state, goal);
+    return unpaidMonths > 0
+      ? `Còn ${unpaidMonths} tháng · Dự kiến ${formatMonth(endMonth)}`
+      : `Hoàn tất · Dự kiến ${formatMonth(endMonth)}`;
   };
   const pnlRowDetails = (row: AssetPnlRow) => {
     const detail = (label: string, value: string) => ({ label, value });
@@ -10912,8 +10929,37 @@ function ReportsPage({
         ))}
       </section>
       <section className="report-bento-grid">
+        <section className="report-financial-rule-stack" aria-label="Quy tắc tài chính">
+          <article className="financial-rule-card milestone">
+            <div>
+              <small>Mục tiêu</small>
+              <strong>{formatVnd(totalAssets)} / {formatVnd(assetMilestoneTarget)}</strong>
+            </div>
+            <b>{assetMilestoneProgress.toFixed(0)}%</b>
+            <div className="financial-rule-progress"><span style={{ width: `${assetMilestoneProgress}%` }} /></div>
+            <p className="financial-rule-forecast">{ruleForecast(totalAssets, assetMilestoneTarget)}</p>
+          </article>
+          <article className="financial-rule-card emergency">
+            <div>
+              <small>Dự phòng 6 tháng</small>
+              <strong>{formatVnd(emergency)} / {formatVnd(emergencyTarget)}</strong>
+            </div>
+            <b>{emergencyProgress.toFixed(0)}%</b>
+            <div className="financial-rule-progress"><span style={{ width: `${emergencyProgress}%` }} /></div>
+            <p className="financial-rule-forecast">{ruleForecast(emergency, emergencyTarget)}</p>
+          </article>
+          <article className="financial-rule-card">
+            <div>
+              <small>Tự do tài chính</small>
+              <strong>{formatVnd(totalAssets)} / {formatVnd(retirementTarget)}</strong>
+            </div>
+            <b>{retirementProgress.toFixed(0)}%</b>
+            <div className="financial-rule-progress"><span style={{ width: `${retirementProgress}%` }} /></div>
+            <p className="financial-rule-forecast">{ruleForecast(totalAssets, retirementTarget)}</p>
+          </article>
+        </section>
         <article className="panel report-goals-card">
-          <div className="report-card-title">
+          <div className="panel-title report-card-title">
             <h2>Mục tiêu tích lũy</h2>
             <button type="button" onClick={onOpenAccumulation}>Xem tất cả</button>
           </div>
@@ -10924,13 +10970,12 @@ function ReportsPage({
               {activeAccumulationGoals.slice(0, 3).map((goal) => {
                 const progress = accumulationProgress(state, goal);
                 const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
-                const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
                 return (
                   <div className="report-goal-item" key={goal.id}>
                     <div className="report-goal-row">
                       <div>
                         <strong>{goal.name}</strong>
-                        <small>{reportGoalTimeline(endMonth)}</small>
+                        <small>{reportGoalTimeline(goal)}</small>
                       </div>
                       <div>
                         <b>{percent.toFixed(0)}%</b>
@@ -10946,32 +10991,6 @@ function ReportsPage({
             </div>
           )}
         </article>
-        <section className="report-financial-rule-stack" aria-label="Quy tắc tài chính">
-          <article className="financial-rule-card">
-            <div>
-              <small>Tự do tài chính</small>
-              <strong>{formatVnd(totalAssets)} / {formatVnd(retirementTarget)}</strong>
-            </div>
-            <b>{retirementProgress.toFixed(0)}%</b>
-            <div className="financial-rule-progress"><span style={{ width: `${retirementProgress}%` }} /></div>
-          </article>
-          <article className="financial-rule-card emergency">
-            <div>
-              <small>Dự phòng 6 tháng</small>
-              <strong>{formatVnd(emergency)} / {formatVnd(emergencyTarget)}</strong>
-            </div>
-            <b>{emergencyProgress.toFixed(0)}%</b>
-            <div className="financial-rule-progress"><span style={{ width: `${emergencyProgress}%` }} /></div>
-          </article>
-          <article className="financial-rule-card milestone">
-            <div>
-              <small>Mục tiêu</small>
-              <strong>{formatVnd(totalAssets)} / {formatVnd(assetMilestoneTarget)}</strong>
-            </div>
-            <b>{assetMilestoneProgress.toFixed(0)}%</b>
-            <div className="financial-rule-progress"><span style={{ width: `${assetMilestoneProgress}%` }} /></div>
-          </article>
-        </section>
       </section>
       <section className="panel">
         <div className="panel-title">
