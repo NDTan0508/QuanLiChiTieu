@@ -10,6 +10,7 @@ import {
 } from "recharts";
 import {
   ArrowDownCircle,
+  ArrowRight,
   BadgeDollarSign,
   BarChart3,
   Bitcoin,
@@ -24,12 +25,14 @@ import {
   Pencil,
   Landmark,
   LineChart,
+  Lock,
   PiggyBank,
   Plus,
   RefreshCw,
   RotateCcw,
   Save,
   Trash2,
+  Unlock,
   Upload,
   X,
 } from "lucide-react";
@@ -151,6 +154,11 @@ type Allocation = {
   stockAmount?: number;
   savingAmount?: number;
   emergencyAmount?: number;
+  lockedFunds?: AllocationFundKey[];
+  baseBtcPercent?: number;
+  baseStockPercent?: number;
+  baseSavingPercent?: number;
+  baseEmergencyPercent?: number;
   totalSavingAtConfirm?: number;
   savingDepositRequestedAt?: string;
   emergencyDepositRequestedAt?: string;
@@ -275,8 +283,18 @@ type AllocationAmounts = {
   emergencyRemainder: number;
 };
 
+type AllocationFundKey = "btc" | "stock" | "saving" | "emergency";
 type AllocationPercentKey = "btcPercent" | "stockPercent" | "savingPercent" | "emergencyPercent";
 type AllocationAmountKey = "btcAmount" | "stockAmount" | "savingAmount" | "emergencyAmount";
+type AllocationBasePercentKey = "baseBtcPercent" | "baseStockPercent" | "baseSavingPercent" | "baseEmergencyPercent";
+
+const ALLOCATION_FUND_KEYS: AllocationFundKey[] = ["btc", "stock", "saving", "emergency"];
+const ALLOCATION_AMOUNT_KEYS: Record<AllocationFundKey, AllocationAmountKey> = {
+  btc: "btcAmount",
+  stock: "stockAmount",
+  saving: "savingAmount",
+  emergency: "emergencyAmount",
+};
 
 type IncomeSummaryRow = {
   id: string;
@@ -406,6 +424,7 @@ type SettingsState = {
 
 type AuditEntityType =
   | "income"
+  | "income-category"
   | "expense"
   | "expense-category"
   | "allocation"
@@ -658,6 +677,23 @@ const isAllocationReminderDue = (monthValue: string) => today() >= lastDayOfMont
 
 const formatVnd = (value: number) =>
   `${Math.round(value).toLocaleString("vi-VN")}đ`;
+
+const clampPercent = (value: number) => Math.min(Math.max(value, 0), 100);
+
+const formatCompactPercent = (value: number) =>
+  `${value.toLocaleString("vi-VN", { maximumFractionDigits: 1 })}%`;
+
+const formatSignedCompactPercent = (value: number) => {
+  if (Math.abs(value) < 0.05) return "0%";
+  const sign = value > 0 ? "+" : "-";
+  return `${sign}${formatCompactPercent(Math.abs(value))}`;
+};
+
+const monthlyChangePercent = (current: number, previous: number) => {
+  if (previous > 0) return ((current - previous) / previous) * 100;
+  if (current > 0) return 100;
+  return 0;
+};
 
 const depositRateForTerm = (termMonths: number) => {
   if (termMonths < 1) return "4";
@@ -1786,6 +1822,13 @@ function restoreTrashPayload(state: AppState, trashItem: TrashItem): AppState {
   let next = { ...state, trashItems: state.trashItems.filter((item) => item.id !== trashItem.id) };
 
   if (trashItem.entityType === "income") next = { ...next, incomeTransactions: addUnique(next.incomeTransactions, trashItem.payload as IncomeTransaction) };
+  else if (trashItem.entityType === "income-category") {
+    next = {
+      ...next,
+      incomeCategories: addUnique(next.incomeCategories, trashItem.payload as IncomeCategory),
+      incomeTransactions: [...relatedList<IncomeTransaction>("incomeTransactions"), ...next.incomeTransactions.filter((item) => !relatedList<IncomeTransaction>("incomeTransactions").some((row) => row.id === item.id))],
+    };
+  }
   else if (trashItem.entityType === "expense") next = { ...next, expenseEntries: addUnique(next.expenseEntries, trashItem.payload as ExpenseEntry) };
   else if (trashItem.entityType === "expense-category") {
     next = {
@@ -2400,23 +2443,94 @@ function normalizeStateWithMigrationSafety(input: AppState, options: { backupBef
 
 function calculateAllocationAmounts(totalSaving: number, allocation: Allocation): AllocationAmounts {
   const total = Math.max(totalSaving, 0);
-  const rawBtc = (total * allocation.btcPercent) / 100;
-  const rawStock = (total * allocation.stockPercent) / 100;
-  const rawSaving = (total * allocation.savingPercent) / 100;
-  const rawEmergency = (total * allocation.emergencyPercent) / 100;
+  const lockedFunds = new Set(allocation.lockedFunds ?? []);
+  const lockedTotal = ALLOCATION_FUND_KEYS.reduce((sum, fund) => {
+    if (!lockedFunds.has(fund)) return sum;
+    return sum + allocationAmountOrDefault(allocation[ALLOCATION_AMOUNT_KEYS[fund]], 0);
+  }, 0);
+  const unlockedTotal = lockedFunds.size ? Math.max(total - lockedTotal, 0) : total;
+  const allocationTotal = lockedFunds.size ? unlockedTotal : total;
+  const rawBtc = lockedFunds.has("btc") ? 0 : (allocationTotal * allocation.btcPercent) / 100;
+  const rawStock = lockedFunds.has("stock") ? 0 : (allocationTotal * allocation.stockPercent) / 100;
+  const rawSaving = lockedFunds.has("saving") ? 0 : (allocationTotal * allocation.savingPercent) / 100;
+  const rawEmergency = lockedFunds.has("emergency") ? 0 : (allocationTotal * allocation.emergencyPercent) / 100;
   const saving = roundDownToCertificateLot(rawSaving);
   const emergency = roundDownToCertificateLot(rawEmergency);
   const savingRemainder = rawSaving - saving;
   const emergencyRemainder = rawEmergency - emergency;
+  const remainderTarget = lockedFunds.has("btc") ? (lockedFunds.has("stock") ? null : "stock") : "btc";
+  const btcRemainder = remainderTarget === "btc" ? savingRemainder + emergencyRemainder : 0;
+  const stockRemainder = remainderTarget === "stock" ? savingRemainder + emergencyRemainder : 0;
 
   return {
-    btc: allocationAmountOrDefault(allocation.btcAmount, rawBtc + savingRemainder + emergencyRemainder),
-    stock: allocationAmountOrDefault(allocation.stockAmount, rawStock),
+    btc: allocationAmountOrDefault(allocation.btcAmount, rawBtc + btcRemainder),
+    stock: allocationAmountOrDefault(allocation.stockAmount, rawStock + stockRemainder),
     saving: allocationAmountOrDefault(allocation.savingAmount, saving),
     emergency: allocationAmountOrDefault(allocation.emergencyAmount, emergency),
     savingRemainder,
     emergencyRemainder,
   };
+}
+
+function allocationPercents(allocation: Allocation): Record<AllocationFundKey, number> {
+  return {
+    btc: allocation.btcPercent,
+    stock: allocation.stockPercent,
+    saving: allocation.savingPercent,
+    emergency: allocation.emergencyPercent,
+  };
+}
+
+function allocationBasePercents(allocation: Allocation): Record<AllocationFundKey, number> {
+  return {
+    btc: allocation.baseBtcPercent ?? allocation.btcPercent,
+    stock: allocation.baseStockPercent ?? allocation.stockPercent,
+    saving: allocation.baseSavingPercent ?? allocation.savingPercent,
+    emergency: allocation.baseEmergencyPercent ?? allocation.emergencyPercent,
+  };
+}
+
+function allocationPercentPatch(percents: Record<AllocationFundKey, number>): Partial<Allocation> {
+  return {
+    btcPercent: percents.btc,
+    stockPercent: percents.stock,
+    savingPercent: percents.saving,
+    emergencyPercent: percents.emergency,
+  };
+}
+
+function allocationBasePercentPatch(percents: Record<AllocationFundKey, number>): Partial<Allocation> {
+  return {
+    baseBtcPercent: percents.btc,
+    baseStockPercent: percents.stock,
+    baseSavingPercent: percents.saving,
+    baseEmergencyPercent: percents.emergency,
+  };
+}
+
+function clearAllocationBasePercentPatch(): Partial<Allocation> {
+  return {
+    baseBtcPercent: undefined,
+    baseStockPercent: undefined,
+    baseSavingPercent: undefined,
+    baseEmergencyPercent: undefined,
+  };
+}
+
+function redistributeAllocationPercents(base: Record<AllocationFundKey, number>, lockedFunds: AllocationFundKey[]) {
+  const locked = new Set(lockedFunds);
+  const unlocked = ALLOCATION_FUND_KEYS.filter((fund) => !locked.has(fund));
+  if (unlocked.length === 0) return base;
+
+  const lockedPercent = ALLOCATION_FUND_KEYS.reduce((sum, fund) => sum + (locked.has(fund) ? base[fund] : 0), 0);
+  const share = lockedPercent / unlocked.length;
+  const next = ALLOCATION_FUND_KEYS.reduce((result, fund) => {
+    result[fund] = locked.has(fund) ? 0 : Math.round((base[fund] + share) * 100) / 100;
+    return result;
+  }, {} as Record<AllocationFundKey, number>);
+  const assignedExceptLast = unlocked.slice(0, -1).reduce((sum, fund) => sum + next[fund], 0);
+  next[unlocked[unlocked.length - 1]] = Math.round((100 - assignedExceptLast) * 100) / 100;
+  return next;
 }
 
 const initialState: AppState = {
@@ -2948,10 +3062,22 @@ function UnifiedDashboardPage({
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
 }) {
   const summary = monthlySummary(state, month);
-  const minMonthlySaving = summary.income * 0.1;
-  const maxMonthlyExpense = summary.income * 0.6;
-  const savingRuleOk = summary.saving >= minMonthlySaving;
-  const expenseRuleOk = summary.expense <= maxMonthlyExpense;
+  const previousSummary = monthlySummary(state, shiftMonth(month, -1));
+  const metricTrend = (current: number, previous: number, favorable: "up" | "down") => {
+    const change = monthlyChangePercent(current, previous);
+    const tone: "success" | "danger" | "neutral" =
+      Math.abs(change) < 0.05 ? "neutral" : favorable === "up" ? (change > 0 ? "success" : "danger") : change < 0 ? "success" : "danger";
+    return {
+      label: formatSignedCompactPercent(change),
+      tone,
+    };
+  };
+  const incomeSharePercent = (value: number) => (summary.income > 0 ? (value / summary.income) * 100 : 0);
+  const incomeTrend = metricTrend(summary.income, previousSummary.income, "up");
+  const expenseTrend = metricTrend(summary.expense, previousSummary.expense, "down");
+  const savingTrend = metricTrend(summary.saving, previousSummary.saving, "up");
+  const expenseIncomeShare = incomeSharePercent(summary.expense);
+  const savingIncomeShare = incomeSharePercent(summary.saving);
   const preferredMoneyRowId = (rows: Array<{ id: string; value: number }>) =>
     [...rows].filter((row) => row.value > 0).sort((a, b) => b.value - a.value)[0]?.id ?? rows[0]?.id ?? null;
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(() => preferredMoneyRowId(summary.incomeRows));
@@ -3004,7 +3130,17 @@ function UnifiedDashboardPage({
 
   const selectedIncome = summary.incomeRows.find((row) => row.id === selectedIncomeId) ?? null;
   const selectedExpense = summary.expenseRows.find((row) => row.id === selectedExpenseId) ?? null;
-  const fixedCategories = state.expenseCategories.filter((category) => isFixedCategoryVisibleInMonth(state, category, month));
+  const fixedCategories = state.expenseCategories
+    .filter((category) => isFixedCategoryVisibleInMonth(state, category, month))
+    .sort((left, right) => {
+      const leftIsAccumulation = Boolean(accumulationGoalForCategory(state, left.id));
+      const rightIsAccumulation = Boolean(accumulationGoalForCategory(state, right.id));
+      if (leftIsAccumulation !== rightIsAccumulation) return leftIsAccumulation ? 1 : -1;
+      const leftAmount = getMonthlyExpense(state, left, month).amount;
+      const rightAmount = getMonthlyExpense(state, right, month).amount;
+      return rightAmount - leftAmount || left.name.localeCompare(right.name, "vi");
+    });
+  const expenseEntryCategories = state.expenseCategories.filter((category) => !accumulationGoalForCategory(state, category.id));
   const selectedFixedExpenseCategory = fixedCategories.find((category) => category.id === selectedExpense?.id) ?? null;
   const selectedFixedExpenseRecord = selectedFixedExpenseCategory ? getMonthlyExpense(state, selectedFixedExpenseCategory, month) : null;
   const openMoneyTrace = (entityType: "income" | "expense", item: { id: string; meta?: TransactionMeta }) => {
@@ -3016,11 +3152,13 @@ function UnifiedDashboardPage({
     summary.allocation.stockPercent +
     summary.allocation.savingPercent +
     summary.allocation.emergencyPercent;
-  const allocationAmountRows: Array<{ percentKey: AllocationPercentKey; amountKey: AllocationAmountKey; label: string; amount: number }> = [
-    { percentKey: "btcPercent", amountKey: "btcAmount", label: "BTC", amount: summary.allocationAmounts.btc },
-    { percentKey: "stockPercent", amountKey: "stockAmount", label: "CK", amount: summary.allocationAmounts.stock },
-    { percentKey: "savingPercent", amountKey: "savingAmount", label: "Quỹ tiết kiệm", amount: summary.allocationAmounts.saving },
-    { percentKey: "emergencyPercent", amountKey: "emergencyAmount", label: "Dự phòng", amount: summary.allocationAmounts.emergency },
+  const percentTotalOk = Math.abs(percentTotal - 100) <= 0.01;
+  const lockedAllocationFunds = new Set(summary.allocation.lockedFunds ?? []);
+  const allocationAmountRows: Array<{ fund: AllocationFundKey; percentKey: AllocationPercentKey; amountKey: AllocationAmountKey; label: string; amount: number; locked: boolean }> = [
+    { fund: "btc", percentKey: "btcPercent", amountKey: "btcAmount", label: "BTC", amount: summary.allocationAmounts.btc, locked: lockedAllocationFunds.has("btc") },
+    { fund: "stock", percentKey: "stockPercent", amountKey: "stockAmount", label: "CK", amount: summary.allocationAmounts.stock, locked: lockedAllocationFunds.has("stock") },
+    { fund: "saving", percentKey: "savingPercent", amountKey: "savingAmount", label: "Quỹ tiết kiệm", amount: summary.allocationAmounts.saving, locked: lockedAllocationFunds.has("saving") },
+    { fund: "emergency", percentKey: "emergencyPercent", amountKey: "emergencyAmount", label: "Dự phòng", amount: summary.allocationAmounts.emergency, locked: lockedAllocationFunds.has("emergency") },
   ];
   const allocationAmountTotal = allocationAmountRows.reduce((sum, item) => sum + Math.round(item.amount), 0);
   const availableAllocationAmount = Math.round(Math.max(summary.saving, 0));
@@ -3047,7 +3185,10 @@ function UnifiedDashboardPage({
   };
 
   const openExpenseEntry = () => {
-    const categoryId = selectedExpenseId ?? expenseEntry.categoryId;
+    const preferredCategoryId = selectedExpenseId ?? expenseEntry.categoryId;
+    const categoryId = expenseEntryCategories.some((category) => category.id === preferredCategoryId)
+      ? preferredCategoryId
+      : expenseEntryCategories.find((category) => category.id === "phat-sinh")?.id ?? expenseEntryCategories[0]?.id ?? "";
     setExpenseEntry((prev) => ({
       ...prev,
       categoryId,
@@ -3130,13 +3271,18 @@ function UnifiedDashboardPage({
   };
 
   const resetAllocationAmounts = () => {
-    setAllocationAmountInputs({});
-    updateAllocation({
-      btcAmount: undefined,
-      stockAmount: undefined,
-      savingAmount: undefined,
-      emergencyAmount: undefined,
+    const lockedFunds = new Set(summary.allocation.lockedFunds ?? []);
+    setAllocationAmountInputs((prev) => {
+      const next = { ...prev };
+      ALLOCATION_FUND_KEYS.forEach((fund) => {
+        if (!lockedFunds.has(fund)) delete next[ALLOCATION_AMOUNT_KEYS[fund]];
+      });
+      return next;
     });
+    updateAllocation(ALLOCATION_FUND_KEYS.reduce((patch, fund) => {
+      if (!lockedFunds.has(fund)) patch[ALLOCATION_AMOUNT_KEYS[fund]] = undefined;
+      return patch;
+    }, {} as Partial<Record<AllocationAmountKey, undefined>>) as Partial<Allocation>);
   };
 
   const updateAllocationAmount = (key: AllocationAmountKey, value: string) => {
@@ -3154,6 +3300,44 @@ function UnifiedDashboardPage({
       else next[key] = parseMoney(value).toLocaleString("vi-VN");
       return next;
     });
+  };
+
+  const toggleAllocationLock = (fund: AllocationFundKey) => {
+    const allocation = summary.allocation;
+    const amountKey = ALLOCATION_AMOUNT_KEYS[fund];
+    const currentLocked = allocation.lockedFunds ?? [];
+    const nextLocked = currentLocked.includes(fund)
+      ? currentLocked.filter((item) => item !== fund)
+      : [...currentLocked, fund];
+    const isLocking = !currentLocked.includes(fund);
+    const basePercents = currentLocked.length ? allocationBasePercents(allocation) : allocationPercents(allocation);
+    const nextPercents = nextLocked.length ? redistributeAllocationPercents(basePercents, nextLocked) : basePercents;
+    const patch: Partial<Allocation> = {
+      ...allocationPercentPatch(nextPercents),
+      ...(currentLocked.length ? {} : allocationBasePercentPatch(basePercents)),
+      lockedFunds: nextLocked.length ? nextLocked : undefined,
+    };
+    const nextLockedSet = new Set(nextLocked);
+
+    ALLOCATION_FUND_KEYS.forEach((item) => {
+      if (!nextLockedSet.has(item)) patch[ALLOCATION_AMOUNT_KEYS[item]] = undefined;
+    });
+
+    if (isLocking) {
+      patch[amountKey] = parseMoney(allocationAmountInputs[amountKey] ?? Math.round(summary.allocationAmounts[fund]).toLocaleString("vi-VN"));
+    } else {
+      patch[amountKey] = undefined;
+      if (!nextLocked.length) Object.assign(patch, clearAllocationBasePercentPatch());
+    }
+
+    setAllocationAmountInputs((prev) => {
+      const next = { ...prev };
+      ALLOCATION_FUND_KEYS.forEach((item) => {
+        if (!nextLockedSet.has(item)) delete next[ALLOCATION_AMOUNT_KEYS[item]];
+      });
+      return next;
+    });
+    updateAllocation(patch);
   };
 
   const addIncome = () => {
@@ -3238,6 +3422,26 @@ function UnifiedDashboardPage({
     }, { action: "delete", entityType: "income", entityId: transaction.id });
   };
 
+  const deleteIncomeCategory = (category: IncomeCategory) => {
+    if (!window.confirm(`Xóa mục ${category.name}?`)) return;
+    commitWithUndo("Đã xóa mục thu.", (prev) => {
+      const relatedPayloads = {
+        incomeTransactions: prev.incomeTransactions.filter((item) => item.categoryId === category.id),
+      };
+      return withTrashItem(
+        {
+          ...prev,
+          incomeCategories: prev.incomeCategories.filter((item) => item.id !== category.id),
+          incomeTransactions: prev.incomeTransactions.filter((item) => item.categoryId !== category.id),
+        },
+        makeTrashItem("income-category", category.id, `mục thu ${category.name}`, category, relatedPayloads)
+      );
+    }, { action: "delete", entityType: "income-category", entityId: category.id });
+    const nextCategoryId = state.incomeCategories.find((item) => item.id !== category.id)?.id ?? "";
+    setIncomeForm((prev) => ({ ...prev, categoryId: nextCategoryId }));
+    if (selectedIncomeId === category.id) setSelectedIncomeId(nextCategoryId || null);
+  };
+
   const deleteExpenseTransaction = (transaction: { id: string }) => {
     if (!window.confirm("Xóa khoản chi này?")) return;
     commitWithUndo("Đã xóa khoản chi.", (prev) => {
@@ -3268,6 +3472,14 @@ function UnifiedDashboardPage({
       );
     }, { action: "delete", entityType: "expense-category", entityId: category.id });
     if (selectedExpenseId === category.id) setSelectedExpenseId(null);
+  };
+
+  const deleteSelectedExpenseEntryCategory = () => {
+    const category = expenseEntryCategories.find((item) => item.id === expenseEntry.categoryId);
+    if (!category) return;
+    deleteExpenseCategory(category);
+    const nextCategoryId = expenseEntryCategories.find((item) => item.id !== category.id)?.id ?? "";
+    setExpenseEntry((prev) => ({ ...prev, categoryId: nextCategoryId, amount: suggestExpenseAmount(nextCategoryId) }));
   };
 
   const saveFixedAmount = () => {
@@ -3317,7 +3529,7 @@ function UnifiedDashboardPage({
 
   const confirmAllocation = () => {
     const existingAllocation = state.allocations.find((item) => item.month === month);
-    if (existingAllocation?.confirmedAt || percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0) return;
+    if (existingAllocation?.confirmedAt || !percentTotalOk || !amountTotalMatchesSaving || summary.saving <= 0) return;
     const confirmedAllocation: Allocation = {
       ...summary.allocation,
       confirmedAt: new Date().toISOString(),
@@ -3350,10 +3562,31 @@ function UnifiedDashboardPage({
         <MonthPicker month={month} setMonth={setMonth} />
       </header>
 
-      <section className="metrics-grid">
-        <MetricCard label="Thu nhập" value={formatVnd(summary.income)} icon={<BadgeDollarSign size={20} />} />
-        <MetricCard label="Chi tiêu" value={formatVnd(summary.expense)} subValue={`Max: ${formatVnd(maxMonthlyExpense)}`} subTone={expenseRuleOk ? "success" : "danger"} icon={<ArrowDownCircle size={20} />} />
-        <MetricCard label="Tiết kiệm" value={formatVnd(summary.saving)} subValue={`Min: ${formatVnd(minMonthlySaving)}`} subTone={savingRuleOk ? "success" : "danger"} icon={<PiggyBank size={20} />} tone="highlight" />
+      <section className="metrics-grid dashboard-metrics-grid">
+        <MetricCard label="Thu nhập" value={formatVnd(summary.income)} trend={incomeTrend} icon={<BadgeDollarSign size={20} />} />
+        <MetricCard
+          label="Chi tiêu"
+          value={formatVnd(summary.expense)}
+          trend={expenseTrend}
+          progress={{
+            percent: clampPercent(expenseIncomeShare),
+            label: formatCompactPercent(expenseIncomeShare),
+            ariaLabel: `Chi tiêu bằng ${formatCompactPercent(expenseIncomeShare)} thu nhập`,
+          }}
+          icon={<ArrowDownCircle size={20} />}
+        />
+        <MetricCard
+          label="Tiết kiệm"
+          value={formatVnd(summary.saving)}
+          trend={savingTrend}
+          progress={{
+            percent: clampPercent(savingIncomeShare),
+            label: formatCompactPercent(savingIncomeShare),
+            ariaLabel: `Tiết kiệm bằng ${formatCompactPercent(savingIncomeShare)} thu nhập`,
+          }}
+          icon={<PiggyBank size={20} />}
+          tone="highlight"
+        />
       </section>
 
       {taskPanel("dashboard-task-mobile")}
@@ -3404,16 +3637,21 @@ function UnifiedDashboardPage({
             <div className="panel-title compact-title">
               <h3>Chỉnh chia quỹ</h3>
               <div className="allocation-title-meta">
-                <small className={percentTotal === 100 ? "ok" : "bad"}>Tỉ lệ: {percentTotal}%</small>
+                <small className={percentTotalOk ? "ok" : "bad"}>Tỉ lệ: {formatCompactPercent(percentTotal)}</small>
                 <small className={amountTotalMatchesSaving ? "ok" : "bad"}>Tổng tiền: {formatVnd(allocationAmountTotal)} / {formatVnd(availableAllocationAmount)}</small>
               </div>
             </div>
             <div className="allocation-editor">
               {allocationAmountRows.map((item) => (
-                <div className="allocation-field" key={item.percentKey}>
+                <div className={item.locked ? "allocation-field locked" : "allocation-field"} key={item.percentKey}>
                   <span>{item.label}</span>
-                  <input type="number" min="0" max="100" value={summary.allocation[item.percentKey]} onChange={(event) => updateAllocation({ [item.percentKey]: Number(event.target.value) } as Partial<Allocation>)} aria-label={`${item.label} tỉ lệ phần trăm`} placeholder="%" />
-                  <input className="amount-input" inputMode="numeric" value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")} onChange={(event) => updateAllocationAmount(item.amountKey, formatMoneyChange(event))} onBlur={() => commitAllocationAmount(item.amountKey)} aria-label={`${item.label} số tiền`} placeholder="Số tiền" />
+                  <input type="number" min="0" max="100" value={summary.allocation[item.percentKey]} onChange={(event) => updateAllocation({ [item.percentKey]: Number(event.target.value) } as Partial<Allocation>)} aria-label={`${item.label} tỉ lệ phần trăm`} placeholder="%" disabled={item.locked} />
+                  <div className="allocation-amount-lock">
+                    <input className="amount-input" inputMode="numeric" value={allocationAmountInputs[item.amountKey] ?? Math.round(item.amount).toLocaleString("vi-VN")} onChange={(event) => updateAllocationAmount(item.amountKey, formatMoneyChange(event))} onBlur={() => commitAllocationAmount(item.amountKey)} aria-label={`${item.label} số tiền`} placeholder="Số tiền" disabled={item.locked || monthAlreadyConfirmed} />
+                    <button className={item.locked ? "allocation-lock-button active" : "allocation-lock-button"} type="button" title={item.locked ? `Mở khóa ${item.label}` : `Khóa số tiền ${item.label}`} onClick={() => toggleAllocationLock(item.fund)} disabled={monthAlreadyConfirmed}>
+                      {item.locked ? <Lock size={14} /> : <Unlock size={14} />}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -3422,7 +3660,7 @@ function UnifiedDashboardPage({
                 Tháng chia quỹ
                 <input type="month" value={depositForm.month} onChange={(event) => setDepositForm({ ...depositForm, month: event.target.value })} />
               </label>
-              <button className="primary" onClick={() => setConfirmOpen(true)} disabled={percentTotal !== 100 || !amountTotalMatchesSaving || summary.saving <= 0 || monthAlreadyConfirmed}>
+              <button className="primary" onClick={() => setConfirmOpen(true)} disabled={!percentTotalOk || !amountTotalMatchesSaving || summary.saving <= 0 || monthAlreadyConfirmed}>
                 <CheckCircle2 size={17} /> Chia quỹ
               </button>
               {monthAlreadyConfirmed && <small className="ok">Tháng này đã xác nhận chia quỹ.</small>}
@@ -3525,7 +3763,13 @@ function UnifiedDashboardPage({
             </div>
             <button className="primary full" onClick={addIncome}><Plus size={17} /> Thêm thu nhập</button>
             {!showNewIncomeCategory ? (
-              <button className="ghost full" onClick={() => setShowNewIncomeCategory(true)}><Plus size={17} /> Thêm mục mới</button>
+              <div className="modal-category-actions">
+                <button className="ghost" onClick={() => setShowNewIncomeCategory(true)}><Plus size={17} /> Thêm mục mới</button>
+                <button className="ghost danger-action" onClick={() => {
+                  const category = state.incomeCategories.find((item) => item.id === incomeForm.categoryId);
+                  if (category) deleteIncomeCategory(category);
+                }} disabled={!incomeForm.categoryId}><Trash2 size={17} /> Xóa mục</button>
+              </div>
             ) : (
               <div className="inline-add modal-inline-add">
                 <input value={newIncome.name} onChange={(event) => setNewIncome({ ...newIncome, name: event.target.value })} placeholder="Mục thu nhập mới" />
@@ -3548,14 +3792,17 @@ function UnifiedDashboardPage({
               <label>Mục chi<select value={expenseEntry.categoryId} onChange={(event) => {
                 const categoryId = event.target.value;
                 setExpenseEntry({ ...expenseEntry, categoryId, amount: suggestExpenseAmount(categoryId) });
-              }}>{state.expenseCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
+              }}>{expenseEntryCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}</select></label>
               <label>Số tiền<input value={expenseEntry.amount} onChange={(event) => setExpenseEntry({ ...expenseEntry, amount: formatMoneyChange(event) })} placeholder="500.000" /></label>
               <label>Ngày<input type="date" value={expenseEntry.date} onChange={(event) => setExpenseEntry({ ...expenseEntry, date: event.target.value })} /></label>
               <label>Ghi chú<input value={expenseEntry.note} onChange={(event) => setExpenseEntry({ ...expenseEntry, note: event.target.value })} placeholder="Sửa xe, mua được..." /></label>
             </div>
             <button className="primary full" onClick={addExpenseEntry}><Plus size={17} /> Thêm khoản chi</button>
             {!showNewExpenseCategory ? (
-              <button className="ghost full" onClick={() => setShowNewExpenseCategory(true)}><Plus size={17} /> Thêm mục mới</button>
+              <div className="modal-category-actions">
+                <button className="ghost" onClick={() => setShowNewExpenseCategory(true)}><Plus size={17} /> Thêm mục mới</button>
+                <button className="ghost danger-action" onClick={deleteSelectedExpenseEntryCategory} disabled={!expenseEntry.categoryId}><Trash2 size={17} /> Xóa mục</button>
+              </div>
             ) : (
               <div className="inline-add modal-inline-add">
                 <input value={newExpense.name} onChange={(event) => setNewExpense({ ...newExpense, name: event.target.value })} placeholder="Mục chi mới" />
@@ -3820,12 +4067,14 @@ function FundChip({
   percent,
   tone,
   onClick,
+  onOpen,
 }: {
   label: string;
   value: number;
   percent: number;
   tone?: string;
   onClick?: () => void;
+  onOpen?: () => void;
 }) {
   return (
     <div
@@ -3835,16 +4084,33 @@ function FundChip({
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={(event) => {
         if (!onClick) return;
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onClick();
         }
       }}
     >
-      <small>
-        {label} <b>{percent}%</b>
-      </small>
-      <strong>{formatVnd(value)}</strong>
+      <div className="fund-chip-copy">
+        <small>
+          {label} <b>{percent}%</b>
+        </small>
+        <strong>{formatVnd(value)}</strong>
+      </div>
+      {onOpen && (
+        <button
+          className="fund-chip-open"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen();
+          }}
+          type="button"
+          title={`Mở trang ${label}`}
+          aria-label={`Mở trang ${label}`}
+        >
+          <ArrowRight size={16} />
+        </button>
+      )}
     </div>
   );
 }
@@ -3871,7 +4137,6 @@ function AccumulationPage({
   const [form, setForm] = useState(emptyForm);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
   const [formError, setFormError] = useState("");
   const [planBasis, setPlanBasis] = useState<"months" | "monthlyAmount">("months");
   const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
@@ -4021,7 +4286,6 @@ function AccumulationPage({
     const unpaidMonths = accumulationUnpaidMonths(state, goal);
     setEditingId(goal.id);
     setFormOpen(true);
-    setShowHistory(false);
     setForm({
       name: goal.name,
       target: goal.targetAmount.toLocaleString("vi-VN"),
@@ -4117,38 +4381,45 @@ function AccumulationPage({
   };
 
   const goals = state.accumulationGoals.filter((goal) => goal.status === "active");
-  const historyGoals = state.accumulationGoals.filter((goal) => goal.status === "ended");
+  const accumulationMetrics = goals.reduce(
+    (totals, goal) => {
+      const progress = accumulationProgress(state, goal);
+      return {
+        progress: totals.progress + progress,
+        remaining: totals.remaining + Math.max(goal.targetAmount - progress, 0),
+        monthly: totals.monthly + goal.monthlyAmount,
+      };
+    },
+    { progress: 0, remaining: 0, monthly: 0 }
+  );
+  const historyGoals = state.accumulationGoals
+    .filter((goal) => goal.status === "ended")
+    .sort((a, b) => {
+      const aTime = Date.parse(a.endedAt ?? a.updatedAt ?? a.createdAt ?? `${a.startMonth}-01`) || 0;
+      const bTime = Date.parse(b.endedAt ?? b.updatedAt ?? b.createdAt ?? `${b.startMonth}-01`) || 0;
+      return bTime - aTime;
+    });
   const openSourceTrace = (goal: AccumulationGoal) => {
     setTraceEventIds([goal.meta?.eventId ?? stableEventId("accumulation", goal.id)]);
   };
 
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-header accumulation-page-header">
         <div>
           <p className="eyebrow">Kế hoạch chi cố định</p>
           <h1>Tích lũy</h1>
         </div>
-        <div className="page-header-actions">
-          <button className="ghost" onClick={() => {
-            setShowHistory((value) => !value);
-            setFormOpen(false);
-            setEditingId(null);
-          }} type="button">
-            <History size={17} /> {showHistory ? "Danh sách" : "Lịch sử"}
-          </button>
-          <button className="ghost" onClick={() => onOpenMbbDeposits("all")} type="button">
-            <Landmark size={17} /> Sổ MBB
-          </button>
-          {!formOpen && !showHistory && (
-            <button className="primary" onClick={() => setFormOpen(true)}>
+        <div className="page-header-actions accumulation-header-actions">
+          {!formOpen && (
+            <button className="primary accumulation-header-add-button" onClick={() => setFormOpen(true)}>
               <Plus size={17} /> Thêm
             </button>
           )}
         </div>
       </header>
 
-      {formOpen && !showHistory && (
+      {formOpen && (
         <section className="panel">
           <div className="panel-title">
             <h2>{editingGoal ? "Sửa mục tích lũy" : "Tạo mục tích lũy"}</h2>
@@ -4190,56 +4461,26 @@ function AccumulationPage({
         </section>
       )}
 
-      {showHistory ? (
-        <section className="accumulation-grid">
-          {historyGoals.length === 0 ? (
-            <article className="panel empty-state">Chưa có mục tích lũy nào đã kết thúc.</article>
-          ) : (
-            historyGoals.map((goal) => {
-              const progress = accumulationProgress(state, goal);
-              const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
-              return (
-                <article className="accumulation-card accumulation-goal-card ended" key={goal.id}>
-                  <PiggyBank className="accumulation-card-bg-icon" size={86} />
-                  <button className="accumulation-trace-button" onClick={() => openSourceTrace(goal)} title={`Xem nguồn tiền ${goal.name}`} type="button" aria-label={`Xem nguồn tiền ${goal.name}`}>
-                    <History size={16} />
-                  </button>
-                  <div className="accumulation-goal-head">
-                    <div className="accumulation-goal-title">
-                      <span className="accumulation-goal-icon"><PiggyBank size={25} /></span>
-                      <div>
-                        <h2>{goal.name}</h2>
-                        <small>{goal.endedAt ? `Kết thúc ${formatDate(goal.endedAt)}` : "Đã kết thúc"}</small>
-                      </div>
-                    </div>
-                    <span className="accumulation-percent-badge">{percent.toFixed(0)}%</span>
-                  </div>
-                  <div className="accumulation-progress-block">
-                    <div>
-                      <span>Tiền được</span>
-                      <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong>
-                    </div>
-                    <div className="progress-track">
-                      <span style={{ width: `${percent}%` }} />
-                    </div>
-                  </div>
-                  <div className="accumulation-stat-grid">
-                    <div>
-                      <small>Mục tiêu</small>
-                      <strong>{formatVnd(goal.targetAmount)}</strong>
-                    </div>
-                    <div>
-                      <small>Đã tích lũy</small>
-                      <strong>{formatVnd(progress)}</strong>
-                    </div>
-                  </div>
-                </article>
-              );
-            })
-          )}
-        </section>
-      ) : (
-        <section className="accumulation-grid">
+      <section className="accumulation-metrics-grid" aria-label="Tổng quan mục tích lũy">
+        <article>
+          <small>Hoạt động</small>
+          <strong>{goals.length} mục tiêu</strong>
+        </article>
+        <article>
+          <small>Đã tích lũy</small>
+          <strong>{formatVnd(accumulationMetrics.progress)}</strong>
+        </article>
+        <article>
+          <small>Cần thêm</small>
+          <strong>{formatVnd(accumulationMetrics.remaining)}</strong>
+        </article>
+        <article>
+          <small>Mỗi tháng</small>
+          <strong>{formatVnd(accumulationMetrics.monthly)}</strong>
+        </article>
+      </section>
+
+      <section className="accumulation-grid">
         {goals.length === 0 ? (
           <article className="panel empty-state">Chưa có mục tích lũy nào.</article>
         ) : (
@@ -4283,8 +4524,12 @@ function AccumulationPage({
                     <strong>{formatVnd(remainingAmount)}</strong>
                   </div>
                   <div>
-                    <small>Dự kiến còn</small>
-                    <strong>{unpaidMonths > 0 ? `${unpaidMonths} tháng` : "Hoàn tất"}</strong>
+                    <small>Còn</small>
+                    <strong>{unpaidMonths > 0 ? `${unpaidMonths} tháng` : "hoàn tất"}</strong>
+                  </div>
+                  <div>
+                    <small>Mỗi tháng</small>
+                    <strong>{formatVnd(goal.monthlyAmount)}</strong>
                   </div>
                 </div>
                 <div className="card-actions accumulation-actions">
@@ -4297,7 +4542,37 @@ function AccumulationPage({
           })
         )}
         </section>
-      )}
+
+      <section className="panel accumulation-history-panel">
+        <div className="panel-title accumulation-history-title">
+          <h2>Lịch sử mục tiêu đã hoàn thành</h2>
+        </div>
+        {historyGoals.length === 0 ? (
+          <div className="accumulation-history-empty">
+            <span><Check size={24} /></span>
+            <strong>Chưa có mục tiêu nào hoàn thành</strong>
+          </div>
+        ) : (
+          <div className="accumulation-history-list">
+            {historyGoals.map((goal) => {
+              const progress = accumulationProgress(state, goal);
+              const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
+              return (
+                <article className="accumulation-history-row" key={goal.id}>
+                  <div className="accumulation-history-main">
+                    <strong>{goal.name}</strong>
+                    <small>{goal.endedAt ? `Hoàn thành ${formatDate(goal.endedAt)}` : "Đã hoàn thành"}</small>
+                  </div>
+                  <div className="accumulation-history-money">
+                    <strong>{formatVnd(progress)} / {formatVnd(goal.targetAmount)}</strong>
+                    <span>{percent.toFixed(0)}%</span>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
       {traceEventIds && (
         <SourceTraceModal
           state={state}
@@ -6008,6 +6283,17 @@ function StockPage({
   embedded: boolean;
 }) {
   const stats = stockPortfolioStats(state);
+  const stockSymbolColor = (symbol: string) => {
+    const normalized = symbol.toUpperCase();
+    if (normalized === "MBB") return "#f97316";
+    if (normalized === "ACB") return "#38bdf8";
+    const palette = ["#22c55e", "#a78bfa", "#f43f5e", "#facc15", "#14b8a6", "#fb7185", "#60a5fa"];
+    const sortedSymbols = [...new Set(stats.holdings.map((holding) => holding.symbol.toUpperCase()))]
+      .filter((item) => item !== "MBB" && item !== "ACB")
+      .sort((left, right) => left.localeCompare(right, "vi"));
+    const index = Math.max(sortedSymbols.indexOf(normalized), 0) % palette.length;
+    return palette[index];
+  };
   const defaultBuyRows = (): StockBuyRow[] => [{ id: uid(), symbol: "", percent: "100", shares: "", buyPrice: "" }];
   const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [purchaseDate, setPurchaseDate] = useState(today());
@@ -6062,6 +6348,22 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
         transaction.note === "Chia quỹ cuối tháng" &&
         !state.settings.dismissedStockAllocationIds.includes(transaction.id)
     );
+  const latestStockPriceUpdatedAt = stats.holdings
+    .map((holding) => holding.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0];
+  const stockRefreshTimeLabel = latestStockPriceUpdatedAt
+    ? new Date(latestStockPriceUpdatedAt).toLocaleString("vi-VN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      })
+    : "";
+  const stockHeaderStatusLabel = refreshStatus === "Đang cập nhật giá..." ? "Đang cập nhật..." : stockRefreshTimeLabel;
   const corporateActionLabels: Partial<Record<CorporateAction["type"], string>> = {
     cash_dividend: "Cổ tức tiền mặt",
     stock_dividend: "Cổ tức cổ phiếu",
@@ -6964,34 +7266,43 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
       <section className="panel">
         <div className="panel-title">
           <h2>Danh mục cổ phiếu</h2>
-          <button className="ghost report-refresh-button" onClick={() => refreshPrices()} type="button" aria-label="Cập nhật giá"><LineChart size={17} /></button>
+          <div className="stock-title-actions">
+            {stockHeaderStatusLabel && <small>{stockHeaderStatusLabel}</small>}
+            <button className="ghost report-refresh-button" onClick={() => refreshPrices()} type="button" aria-label="Cập nhật giá"><RefreshCw size={17} /></button>
+          </div>
         </div>
-        {refreshStatus && <p className="muted">{refreshStatus}</p>}
         {stats.holdings.length === 0 ? (
           <p className="muted">Chưa có cổ phiếu nào.</p>
         ) : (
           <div className="stock-holding-list">
             {stats.holdings.map((holding) => (
-              <article className="stock-holding-card" key={holding.symbol}>
-                <div>
-                  <h3>{holding.symbol}</h3>
-                  <small>{holding.hasMarketPrice ? `${holding.source} · ${holding.updatedAt ? formatDateTime(holding.updatedAt) : "mới cập nhật"}` : "Chưa cập nhật giá, Đang dùng giá vốn"}</small>
+              <article className="stock-holding-card" key={holding.symbol} style={{ "--stock-symbol-color": stockSymbolColor(holding.symbol) } as React.CSSProperties}>
+                <div className="stock-holding-head">
+                  <div>
+                    <div className="stock-symbol-line">
+                      <h3>{holding.symbol}</h3>
+                      <span>{holding.shares.toLocaleString("vi-VN")} cp</span>
+                    </div>
+                  </div>
+                  <b className={holding.pnl < 0 ? "stock-holding-percent loss" : "stock-holding-percent gain"}>{holding.pnlPercent.toFixed(1)}%</b>
                 </div>
                 <div className="stock-holding-grid">
-                  <span>Số cổ <strong>{holding.shares.toLocaleString("vi-VN")}</strong></span>
                   <label className="stock-price-pair">
-                    <span>Giá TT / Giá TB</span>
-                    <div>
-                      <input key={`${holding.symbol}-${holding.marketPrice}`} defaultValue={formatStockPrice(holding.marketPrice)} onBlur={(event) => saveManualPrice(holding.symbol, event.target.value)} />
-                      <strong>{formatStockPrice(holding.averageCost)}</strong>
-                    </div>
+                    <span>Giá TT</span>
+                    <strong>{formatStockPrice(holding.marketPrice)}</strong>
                   </label>
+                  <span className="stock-average-price">
+                    Giá TB
+                    <strong>{formatStockPrice(holding.averageCost)}</strong>
+                  </span>
                   <span className="stock-value-pair">
-                    Vốn / Thị trường
-                    <strong>{formatVnd(holding.cost)}</strong>
+                    Giá trị
                     <b>{formatVnd(holding.marketValue)}</b>
                   </span>
-                  <span>Lãi/lỗ <strong className={holding.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(holding.pnl)} · {holding.pnlPercent.toFixed(1)}%</strong></span>
+                  <span className="stock-pnl-pair">
+                    <span>Lãi/lỗ</span>
+                    <strong className={holding.pnl < 0 ? "stock-pnl loss" : "stock-pnl gain"}>{formatVnd(holding.pnl)}</strong>
+                  </span>
                 </div>
               </article>
             ))}
@@ -8508,7 +8819,7 @@ function BankDepositPage({
               <input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} />
             </label>
             <button className="primary bank-deposit-submit" onClick={addDeposit}>
-              <Plus size={17} /> Thêm s?
+              <Plus size={17} /> Thêm sổ
             </button>
             {depositFormError && <span className="form-error">{depositFormError}</span>}
           </div>
@@ -9237,6 +9548,13 @@ function CryptoPage({
   const usdtValueVnd = btcStats.usdtBalance * usdtVndRate;
   const btcCostBasis = btcAssetCostBasisVnd(state);
   const solAverageCost = solStats.balance ? solStats.cost / solStats.balance : 0;
+  const usdtAverageCost = btcStats.usdtBalance ? btcCostBasis.usdtCostVnd / btcStats.usdtBalance : 0;
+  const formatBtcPlain = (value: number) =>
+    value.toLocaleString("vi-VN", { minimumFractionDigits: 8, maximumFractionDigits: 8 });
+  const formatCryptoPricePlain = (value: number, digits = 3) =>
+    value.toLocaleString("vi-VN", { maximumFractionDigits: digits });
+  const formatCryptoAmountPlain = (value: number, digits = 5) =>
+    value.toLocaleString("vi-VN", { maximumFractionDigits: digits });
   const activeDcaPlans = state.btcDcaPlans.filter((plan) => plan.isActive);
   const latestCryptoAllocationNotice = [...state.fundTransactions]
     .reverse()
@@ -9260,10 +9578,43 @@ function CryptoPage({
     ];
   };
   const assetRows = [
-    { id: "btc", name: "Bitcoin", symbol: "BTC", amount: formatBtc(btcStats.btcBalance), value: btcValueVnd, pnlVnd: btcValueVnd - btcCostBasis.btcCostVnd, icon: <Bitcoin size={18} /> },
-    { id: "sol", name: "Solana", symbol: "SOL", amount: formatSolAmount(solStats.balance), value: solValueVnd, pnlVnd: solPnlVnd, icon: <Coins size={18} /> },
-    { id: "usdt", name: "Tether", symbol: "USDT", amount: formatUsdt(btcStats.usdtBalance), value: usdtValueVnd, pnlVnd: usdtValueVnd - btcCostBasis.usdtCostVnd, icon: <CircleDollarSign size={18} /> },
+    {
+      id: "btc",
+      name: "Bitcoin",
+      symbol: "BTC",
+      amount: formatBtcPlain(btcStats.btcBalance),
+      value: btcValueVnd,
+      marketPrice: state.market.btcUsdt ? formatCryptoPricePlain(state.market.btcUsdt) : "Đang chờ",
+      averagePrice: btcStats.averageCostUsdt ? formatCryptoPricePlain(btcStats.averageCostUsdt) : "0",
+      pnlVnd: btcValueVnd - btcCostBasis.btcCostVnd,
+      icon: <Bitcoin size={18} />,
+    },
+    {
+      id: "sol",
+      name: "Solana",
+      symbol: "SOL",
+      amount: formatCryptoAmountPlain(solStats.balance),
+      value: solValueVnd,
+      marketPrice: state.market.solUsd ? formatCryptoPricePlain(state.market.solUsd, 2) : "Đang chờ",
+      averagePrice: solAverageCost ? formatCryptoPricePlain(solAverageCost, 2) : "0",
+      pnlVnd: solPnlVnd,
+      icon: <Coins size={18} />,
+    },
+    {
+      id: "usdt",
+      name: "Tether",
+      symbol: "USDT",
+      amount: formatCryptoAmountPlain(btcStats.usdtBalance, 3),
+      value: usdtValueVnd,
+      marketPrice: usdtVndRate ? formatVnd(usdtVndRate) : "Đang chờ",
+      averagePrice: usdtAverageCost ? formatVnd(usdtAverageCost) : "0đ",
+      pnlVnd: usdtValueVnd - btcCostBasis.usdtCostVnd,
+      icon: <CircleDollarSign size={18} />,
+    },
   ];
+  const cryptoMarketStatusLabel = state.market.updatedAt
+    ? `Cập nhật ${new Date(state.market.updatedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+    : marketStatus || "Chưa cập nhật";
 
   const dismissCryptoAllocationNotice = () => {
     if (!latestCryptoAllocationNotice) return;
@@ -9997,17 +10348,27 @@ function CryptoPage({
         </section>
       )}
 
-      <section className="crypto-section">
+      <section className="panel crypto-section crypto-asset-panel">
         <div className="crypto-section-title">
           <h2>Danh mục tài sản</h2>
+          <small className="market-status crypto-asset-market-status">{cryptoMarketStatusLabel}</small>
+          <button className="ghost report-refresh-button" onClick={() => onRefreshMarket()} type="button" aria-label="Cập nhật giá"><RefreshCw size={17} /></button>
+        </div>
+        <div className="crypto-asset-header" aria-hidden="true">
+          <span>Coin</span>
+          <span>Giá TT/Giá TB</span>
+          <span>Số lượng</span>
         </div>
         <div className="crypto-asset-list">
           {assetRows.map((asset) => (
             <article className="crypto-asset-row" key={asset.id}>
-              <span className={`crypto-token-icon ${asset.id}`}>{asset.icon}</span>
-              <div>
+              <div className={`crypto-asset-coin ${asset.id}`}>
                 <strong>{asset.name}</strong>
                 <small>{asset.symbol}</small>
+              </div>
+              <div className="crypto-asset-prices" aria-label={`Giá ${asset.symbol}`}>
+                <strong>{asset.marketPrice}</strong>
+                <strong>{asset.averagePrice}</strong>
               </div>
               <div className="crypto-asset-values">
                 <strong>{asset.amount}</strong>
@@ -10019,21 +10380,6 @@ function CryptoPage({
               </button>
             </article>
           ))}
-        </div>
-      </section>
-
-      <section className="panel crypto-market-panel">
-        <div className="panel-title">
-          <h2>Giá thị trường</h2>
-          <button className="ghost report-refresh-button" onClick={() => onRefreshMarket()} type="button" aria-label="Cập nhật giá"><RefreshCw size={17} /></button>
-        </div>
-        <small className="market-status">{marketStatus || (state.market.updatedAt ? `Cập nhật ${formatDateTime(state.market.updatedAt)}` : "Chưa cập nhật")}</small>
-        <div className="market-grid crypto-market-grid">
-          <div><small>BTC/USDT</small><strong>{state.market.btcUsdt ? formatUsdt(state.market.btcUsdt) : "Đang chờ"}</strong></div>
-          <div><small>SOL/USDT</small><strong>{state.market.solUsd ? formatUsd(state.market.solUsd) : "Đang chờ"}</strong></div>
-          <div><small>USDT/VND</small><strong>{usdtVndRate ? formatVnd(usdtVndRate) : "Đang chờ"}</strong></div>
-          <div><small>Giá TB BTC</small><strong>{btcStats.averageCostUsdt ? formatUsdt(btcStats.averageCostUsdt) : "0 USDT"}</strong></div>
-          <div><small>Giá TB SOL</small><strong>{solAverageCost ? formatUsd(solAverageCost) : "0 USDT"}</strong></div>
         </div>
       </section>
 
@@ -10156,11 +10502,13 @@ function ReportsPage({
   setState,
   onRefreshMarket,
   onOpenAccumulation,
+  onOpenInvestment,
 }: {
   state: AppState;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   onRefreshMarket: (silent?: boolean) => Promise<boolean>;
   onOpenAccumulation: () => void;
+  onOpenInvestment: (target: { tab: InvestmentTab; depositFund?: DepositFund }) => void;
 }) {
   const [activeReportChart, setActiveReportChart] = useState<ReportChartKey>("current-assets");
   const [reportRefreshSuccess, setReportRefreshSuccess] = useState(false);
@@ -10223,35 +10571,21 @@ function ReportsPage({
     saving: "Quỹ tiết kiệm",
     emergency: "Quỹ dự phòng",
   };
-  const fundRows = [
-    { id: "btc" as const, label: "Crypto", value: btc },
-    { id: "stock" as const, label: "CK", value: stock },
-    { id: "saving" as const, label: "Quỹ tiết kiệm", value: saving },
-    { id: "emergency" as const, label: "Quỹ dự phòng", value: emergency },
+  const fundRows: Array<{ id: FundKey | TransferDepositFund; label: string; value: number; tab: InvestmentTab; depositFund?: DepositFund }> = [
+    { id: "btc", label: "Crypto", value: btc, tab: "crypto" },
+    { id: "stock", label: "CK", value: stock, tab: "stock" },
+    { id: "saving", label: "Quỹ tiết kiệm", value: saving, tab: "mbb", depositFund: "saving" },
+    { id: "emergency", label: "Quỹ dự phòng", value: emergency, tab: "mbb", depositFund: "emergency" },
   ];
   const pnlRows = assetPnlRows(state);
   const totalPnlRow = pnlRows.find((row) => row.id === "total");
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
-  const compactMoney = (value: number) => {
-    const absolute = Math.abs(value);
-    if (absolute >= 1_000_000_000) return `${(value / 1_000_000_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}B`;
-    if (absolute >= 1_000_000) return `${(value / 1_000_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}M`;
-    if (absolute >= 1_000) return `${(value / 1_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}K`;
-    return Math.round(value).toLocaleString("vi-VN");
+  const reportGoalTimeline = (endMonth: string) => {
+    const remainingMonths = Math.max(monthIndex(endMonth) - monthIndex(currentMonth()) + 1, 0);
+    return remainingMonths > 0
+      ? `Còn ${remainingMonths}mo · end ${formatMonth(endMonth)}`
+      : `Đến hạn · Dự kiến ${formatMonth(endMonth)}`;
   };
-  const allocationRows = [
-    { label: "Quỹ đầu tư", value: btc + stock, color: "#ff8a00" },
-    { label: "Quỹ Tiết kiệm", value: saving, color: "#88ceff" },
-    { label: "Quỹ dự phòng", value: emergency, color: "#c4c6d0" },
-  ];
-  const investmentPercent = totalAssets ? Math.round(((btc + stock) / totalAssets) * 100) : 0;
-  const savingPercent = totalAssets ? Math.round((saving / totalAssets) * 100) : 0;
-  const emergencyPercent = Math.max(100 - investmentPercent - savingPercent, 0);
-  const allocationLegendRows = [
-    { ...allocationRows[0], percent: investmentPercent },
-    { ...allocationRows[1], percent: savingPercent },
-    { ...allocationRows[2], percent: emergencyPercent },
-  ];
   const pnlRowDetails = (row: AssetPnlRow) => {
     const detail = (label: string, value: string) => ({ label, value });
     if (row.id === "total") {
@@ -10480,32 +10814,6 @@ function ReportsPage({
           )}
         </div>
       </header>
-      <section className="financial-rule-grid">
-        <article className="financial-rule-card">
-          <div>
-            <small>Tự do tài chính</small>
-            <strong>{formatVnd(totalAssets)} / {formatVnd(retirementTarget)}</strong>
-          </div>
-          <b>{retirementProgress.toFixed(0)}%</b>
-          <div className="financial-rule-progress"><span style={{ width: `${retirementProgress}%` }} /></div>
-        </article>
-        <article className="financial-rule-card emergency">
-          <div>
-            <small>dự phòng 6 tháng</small>
-            <strong>{formatVnd(emergency)} / {formatVnd(emergencyTarget)}</strong>
-          </div>
-          <b>{emergencyProgress.toFixed(0)}%</b>
-          <div className="financial-rule-progress"><span style={{ width: `${emergencyProgress}%` }} /></div>
-        </article>
-        <article className="financial-rule-card milestone">
-          <div>
-            <small>Mục tiêu</small>
-            <strong>{formatVnd(totalAssets)} / {formatVnd(assetMilestoneTarget)}</strong>
-          </div>
-          <b>{assetMilestoneProgress.toFixed(0)}%</b>
-          <div className="financial-rule-progress"><span style={{ width: `${assetMilestoneProgress}%` }} /></div>
-        </article>
-      </section>
       <section className="metrics-grid report-metrics">
         <MetricCard
           label="Tài sản"
@@ -10529,23 +10837,48 @@ function ReportsPage({
           tone={(totalPnlRow?.pnl ?? 0) < 0 ? "loss" : undefined}
         />
       </section>
-      <section className="panel">
+      <section className="panel asset-growth-panel">
         <div className="panel-title">
           <h2>{reportChartLabels[activeReportChart]}</h2>
         </div>
         <ResponsiveContainer width="100%" height={260}>
-          <AreaChart data={reportRows}>
+          <AreaChart data={reportRows} margin={{ top: 12, right: 18, bottom: 8, left: -4 }}>
             <defs>
               <linearGradient id="assetFill" x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor="#f97316" stopOpacity={0.55} />
-                <stop offset="100%" stopColor="#f97316" stopOpacity={0.05} />
+                <stop offset="0%" stopColor="#ff8a00" stopOpacity={0.34} />
+                <stop offset="58%" stopColor="#ff8a00" stopOpacity={0.16} />
+                <stop offset="100%" stopColor="#ff8a00" stopOpacity={0.02} />
               </linearGradient>
             </defs>
-            <CartesianGrid stroke="#2a2520" />
-            <XAxis dataKey="month" stroke="#a59b91" />
-            <YAxis stroke="#a59b91" tickFormatter={(value) => `${Math.round(Number(value) / 1_000_000)}M`} />
-            <Tooltip content={(props) => <GrowthTooltip {...(props as any)} chartKey={activeReportChart} label={reportChartLabels[activeReportChart]} />} />
-            <Area type="monotone" dataKey="value" stroke="#f97316" fill="url(#assetFill)" />
+            <CartesianGrid stroke="rgba(255, 255, 255, 0.055)" strokeDasharray="0" />
+            <XAxis
+              dataKey="month"
+              axisLine={{ stroke: "rgba(255, 255, 255, 0.08)" }}
+              tickLine={false}
+              tick={{ fill: "rgba(221, 193, 174, 0.68)", fontSize: 10, fontWeight: 700 }}
+              dy={8}
+              interval="preserveStartEnd"
+            />
+            <YAxis
+              axisLine={false}
+              tickLine={false}
+              tick={{ fill: "rgba(221, 193, 174, 0.68)", fontSize: 10, fontWeight: 700 }}
+              tickFormatter={formatChartMoneyTick}
+              width={52}
+            />
+            <Tooltip
+              cursor={{ stroke: "rgba(255, 138, 0, 0.26)", strokeWidth: 1 }}
+              content={(props) => <GrowthTooltip {...(props as any)} chartKey={activeReportChart} label={reportChartLabels[activeReportChart]} />}
+            />
+            <Area
+              type="monotone"
+              dataKey="value"
+              stroke="#ff8a00"
+              strokeWidth={2.4}
+              fill="url(#assetFill)"
+              dot={{ r: 2.2, fill: "#fff7ed", stroke: "#ff8a00", strokeWidth: 1.8 }}
+              activeDot={{ r: 4.4, fill: "#fff7ed", stroke: "#ff8a00", strokeWidth: 2.2 }}
+            />
           </AreaChart>
         </ResponsiveContainer>
       </section>
@@ -10558,6 +10891,7 @@ function ReportsPage({
             percent={assetPercent(fund?.value)}
             tone={activeReportChart === fund?.id ? "highlight" : undefined}
             onClick={() => setActiveReportChart(fund?.id)}
+            onOpen={() => onOpenInvestment({ tab: fund.tab, depositFund: fund.depositFund })}
           />
         ))}
       </section>
@@ -10571,7 +10905,7 @@ function ReportsPage({
             <p className="muted">Chưa có mục tích lũy đang hoạt động.</p>
           ) : (
             <div className="report-goal-list">
-              {activeAccumulationGoals.slice(0, 3).map((goal, index) => {
+              {activeAccumulationGoals.slice(0, 3).map((goal) => {
                 const progress = accumulationProgress(state, goal);
                 const percent = goal.targetAmount ? Math.min((progress / goal.targetAmount) * 100, 100) : 0;
                 const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
@@ -10580,15 +10914,15 @@ function ReportsPage({
                     <div className="report-goal-row">
                       <div>
                         <strong>{goal.name}</strong>
-                        <small>{formatMonth(goal.startMonth)} - {formatMonth(endMonth)}</small>
+                        <small>{reportGoalTimeline(endMonth)}</small>
                       </div>
                       <div>
                         <b>{percent.toFixed(0)}%</b>
-                        <small>{compactMoney(progress)} / {compactMoney(goal.targetAmount)}</small>
+                        <small>{formatVnd(progress)}/{formatVnd(goal.targetAmount)}</small>
                       </div>
                     </div>
                     <div className="report-mini-progress">
-                      <span className={index === 2 ? "tertiary" : ""} style={{ width: `${percent}%` }} />
+                      <span style={{ width: `${percent}%` }} />
                     </div>
                   </div>
                 );
@@ -10596,33 +10930,32 @@ function ReportsPage({
             </div>
           )}
         </article>
-        <article className="panel report-allocation-card">
-          <div className="report-card-title">
-            <h2>Phân bổ quỹ tài chính</h2>
-          </div>
-          <div className="report-allocation-body">
-            <div
-              className="report-donut"
-              style={{
-                "--investment": `${investmentPercent}%`,
-                "--saving": `${investmentPercent + savingPercent}%`,
-              } as React.CSSProperties}
-            >
-              <div>
-                <strong>100%</strong>
-                <span>Portfolio</span>
-              </div>
+        <section className="report-financial-rule-stack" aria-label="Quy tắc tài chính">
+          <article className="financial-rule-card">
+            <div>
+              <small>Tự do tài chính</small>
+              <strong>{formatVnd(totalAssets)} / {formatVnd(retirementTarget)}</strong>
             </div>
-            <div className="report-allocation-legend">
-              {allocationLegendRows.map((item) => (
-                <div key={item.label}>
-                  <span style={{ "--legend-color": item.color } as React.CSSProperties}>{item.label}</span>
-                  <strong>{item.percent}%</strong>
-                </div>
-              ))}
+            <b>{retirementProgress.toFixed(0)}%</b>
+            <div className="financial-rule-progress"><span style={{ width: `${retirementProgress}%` }} /></div>
+          </article>
+          <article className="financial-rule-card emergency">
+            <div>
+              <small>Dự phòng 6 tháng</small>
+              <strong>{formatVnd(emergency)} / {formatVnd(emergencyTarget)}</strong>
             </div>
-          </div>
-        </article>
+            <b>{emergencyProgress.toFixed(0)}%</b>
+            <div className="financial-rule-progress"><span style={{ width: `${emergencyProgress}%` }} /></div>
+          </article>
+          <article className="financial-rule-card milestone">
+            <div>
+              <small>Mục tiêu</small>
+              <strong>{formatVnd(totalAssets)} / {formatVnd(assetMilestoneTarget)}</strong>
+            </div>
+            <b>{assetMilestoneProgress.toFixed(0)}%</b>
+            <div className="financial-rule-progress"><span style={{ width: `${assetMilestoneProgress}%` }} /></div>
+          </article>
+        </section>
       </section>
       <section className="panel">
         <div className="panel-title">
@@ -10676,6 +11009,23 @@ function ReportsPage({
       )}
     </div>
   );
+}
+
+function formatChartMoneyTick(value: number | string) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || Math.abs(numeric) < 1) return "0";
+  const absolute = Math.abs(numeric);
+  const sign = numeric < 0 ? "-" : "";
+  if (absolute >= 1_000_000_000) {
+    return `${sign}${(absolute / 1_000_000_000).toLocaleString("vi-VN", { maximumFractionDigits: 1 })} tỷ`;
+  }
+  if (absolute >= 1_000_000) {
+    return `${sign}${Math.round(absolute / 1_000_000).toLocaleString("vi-VN")} triệu`;
+  }
+  if (absolute >= 1_000) {
+    return `${sign}${Math.round(absolute / 1_000).toLocaleString("vi-VN")}K`;
+  }
+  return `${sign}${Math.round(absolute).toLocaleString("vi-VN")}`;
 }
 
 function monthlyWithdrawal(state: AppState, month: string) {
@@ -13121,7 +13471,13 @@ export function App() {
         {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} commitWithUndo={commitWithUndo} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} setInvestmentAction={setInvestmentAction} onRefreshMarket={refreshMarket} />}
         {page === "accumulation" && <AccumulationPage state={state} setState={setState} commitWithUndo={commitWithUndo} onOpenMbbDeposits={openAccumulationMbbDeposits} />}
         {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} mbbDepositIntent={mbbDepositIntent} onMbbDepositIntentHandled={() => setMbbDepositIntent(null)} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
-        {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} onOpenAccumulation={() => navigateToPage("accumulation")} />}
+        {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} onOpenAccumulation={() => navigateToPage("accumulation")} onOpenInvestment={(target) => {
+          setAssetTab(target.tab);
+          if (target.depositFund) {
+            setMbbDepositIntent({ id: uid(), fund: target.depositFund, accumulationGoalId: "all" });
+          }
+          navigateToPage("investment");
+        }} />}
         {page === "settings" && (
           <SettingsPage
             state={state}

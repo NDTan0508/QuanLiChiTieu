@@ -1128,12 +1128,23 @@ label strong {
 
 .fund-chip {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
   gap: 8px;
   padding: 15px;
 }
 
+.fund-chip-copy {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
 .fund-chip strong {
   font-size: 1.05rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fund-chip span {
@@ -1146,6 +1157,25 @@ label strong {
 .fund-chip small b {
   color: #14b8a6;
   font-weight: 900;
+}
+
+.fund-chip-open {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(255, 183, 127, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 138, 0, 0.08);
+  color: var(--primary);
+  padding: 0;
+}
+
+.fund-chip-open:hover,
+.fund-chip-open:focus-visible {
+  border-color: rgba(255, 183, 127, 0.42);
+  background: rgba(255, 138, 0, 0.16);
+  color: #fff7ed;
 }
 
 .check-list div {
@@ -1289,6 +1319,29 @@ label strong {
   margin-top: 10px;
 }
 
+.modal-category-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.modal-category-actions button {
+  min-width: 0;
+  justify-content: center;
+  padding: 0 10px;
+}
+
+.ghost.danger-action {
+  border-color: rgba(244, 63, 94, 0.36);
+  color: #ffb4ab;
+}
+
+.ghost.danger-action:hover {
+  border-color: rgba(244, 63, 94, 0.62);
+  background: rgba(244, 63, 94, 0.12);
+}
+
 .ghost,
 .toggle {
   border: 1px solid #332c26;
@@ -1349,6 +1402,14 @@ label strong {
   font-size: 0.78rem;
 }
 
+.allocation-field.locked {
+  opacity: 0.54;
+}
+
+.allocation-field.locked .allocation-lock-button {
+  opacity: 1;
+}
+
 .allocation-field span {
   min-height: 1rem;
 }
@@ -1358,13 +1419,110 @@ label strong {
   font-weight: 800;
 }
 
+.allocation-amount-lock {
+  position: relative;
+  min-width: 0;
+}
+
+.allocation-amount-lock .amount-input {
+  width: 100%;
+  padding-right: 42px;
+}
+
+.allocation-lock-button {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  place-items: center;
+  border: 1px solid rgba(165, 155, 145, 0.22);
+  border-radius: 7px;
+  background: rgba(165, 155, 145, 0.08);
+  color: #a59b91;
+  padding: 0;
+  transform: translateY(-50%);
+}
+
+.allocation-lock-button:hover,
+.allocation-lock-button.active {
+  border-color: rgba(249, 115, 22, 0.58);
+  background: rgba(249, 115, 22, 0.14);
+  color: #ffb86b;
+}
+
+.allocation-lock-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .accumulation-form {
   grid-template-columns: repeat(6, minmax(0, 1fr)) auto;
+}
+
+.accumulation-page-header {
+  align-items: stretch;
+}
+
+.accumulation-page-header > div:first-child {
+  display: grid;
+  align-content: center;
+}
+
+.accumulation-header-actions {
+  align-items: stretch;
+}
+
+.accumulation-header-add-button {
+  align-self: stretch;
+  min-width: 100px;
+  min-height: 0;
+  padding: 0 18px;
 }
 
 .accumulation-computed,
 .accumulation-form-error {
   grid-column: 1 / -1;
+}
+
+.accumulation-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.accumulation-metrics-grid article {
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  min-height: 72px;
+  gap: 8px;
+  border: 1px solid rgba(255, 138, 0, 0.18);
+  border-radius: 10px;
+  background:
+    linear-gradient(145deg, rgba(255, 138, 0, 0.105), rgba(255, 255, 255, 0.018) 44%, rgba(11, 15, 21, 0.88)),
+    rgba(11, 15, 21, 0.82);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.045) inset;
+  padding: 13px 14px;
+}
+
+.accumulation-metrics-grid small {
+  color: #ffb86b;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.accumulation-metrics-grid strong {
+  color: #fff7ed;
+  font-size: 1.08rem;
+  font-weight: 900;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+  text-shadow: 0 0 14px rgba(255, 138, 0, 0.13);
 }
 
 .accumulation-grid {
@@ -1412,6 +1570,123 @@ label strong {
 
 .accumulation-card.ended {
   opacity: 0.78;
+}
+
+.accumulation-history-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  border-color: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(145deg, rgba(23, 26, 33, 0.92), rgba(13, 16, 22, 0.92)),
+    rgba(15, 17, 21, 0.92);
+}
+
+.accumulation-history-title {
+  margin-bottom: 0;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.accumulation-history-title h2 {
+  position: relative;
+  padding-left: 12px;
+  font-size: 1rem;
+}
+
+.accumulation-history-title h2::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 4px;
+  border-radius: 999px;
+  background: #34d399;
+}
+
+.accumulation-history-list {
+  display: grid;
+  max-height: 384px;
+  overflow-y: auto;
+  padding-right: 4px;
+  gap: 10px;
+}
+
+.accumulation-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 68px;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
+    rgba(18, 22, 29, 0.72);
+}
+
+.accumulation-history-main,
+.accumulation-history-money {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.accumulation-history-main strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.accumulation-history-main small {
+  color: var(--muted-soft);
+  font-size: 0.78rem;
+}
+
+.accumulation-history-money {
+  justify-items: end;
+  text-align: right;
+}
+
+.accumulation-history-money strong {
+  color: #e5e7eb;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.accumulation-history-money span {
+  color: #34d399;
+  font-weight: 850;
+}
+
+.accumulation-history-empty {
+  display: grid;
+  min-height: 170px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--muted-soft);
+  text-align: center;
+}
+
+.accumulation-history-empty span {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.14);
+  color: #34d399;
+}
+
+.accumulation-history-empty strong {
+  color: var(--text);
+}
+
+.accumulation-history-empty small {
+  color: var(--muted-soft);
 }
 
 .progress-track {
@@ -1698,7 +1973,21 @@ label strong {
 
 .stock-holding-list {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.stock-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stock-title-actions small {
+  color: var(--muted-soft);
+  font-size: 0.74rem;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .stock-holding-card {
@@ -1706,26 +1995,93 @@ label strong {
   border: 1px solid #2b251f;
   border-radius: 8px;
   background: #100d0b;
-  padding: 14px 118px 14px 14px;
+  padding: 14px;
+}
+
+.stock-holding-head {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  align-items: center;
+}
+
+.stock-symbol-line {
+  display: flex;
+  grid-column: 1 / 4;
+  min-width: 0;
+  align-items: baseline;
+  gap: 12px;
 }
 
 .stock-holding-card h3 {
-  margin: 0 0 2px;
+  margin: 0;
+  width: fit-content;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--stock-symbol-color, #f97316) 20%, transparent);
+  color: var(--stock-symbol-color, #f97316);
+  padding: 5px 7px;
+  font-size: 1rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.stock-symbol-line span {
+  color: #34d399;
+  font-size: 0.8rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.stock-holding-percent {
+  display: inline-flex;
+  grid-column: 4;
+  justify-self: end;
+  width: fit-content;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.stock-holding-percent.gain {
+  background: rgba(52, 211, 153, 0.16);
+  color: #34d399;
+}
+
+.stock-holding-percent.loss {
+  background: rgba(251, 113, 133, 0.17);
+  color: #fb7185;
 }
 
 .stock-holding-grid {
   display: grid;
-  grid-template-columns: 0.65fr 1.35fr 1.3fr 1fr;
-  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: clamp(18px, 4vw, 42px);
+  row-gap: 10px;
   align-items: end;
   margin-top: 14px;
 }
 
-.stock-holding-grid span,
+.stock-holding-grid > *:nth-child(2),
+.stock-holding-grid > *:nth-child(3) {
+  justify-self: center;
+  min-width: 72px;
+}
+
+.stock-holding-grid > *:nth-child(4) {
+  justify-self: end;
+  min-width: 72px;
+}
+
+.stock-holding-grid > span,
 .stock-holding-grid label {
   display: grid;
   align-content: start;
-  gap: 5px;
+  grid-template-rows: 18px 24px;
+  gap: 4px;
   color: #a59b91;
   font-size: 0.82rem;
 }
@@ -1739,28 +2095,23 @@ label strong {
   color: #fff7ed;
 }
 
-.stock-price-pair > div {
-  display: flex;
+.stock-price-pair strong,
+.stock-average-price strong {
+  display: grid;
+  height: 24px;
   align-items: center;
-  gap: 8px;
-}
-
-.stock-price-pair input {
-  width: 92px;
-  min-width: 0;
-  height: 36px;
-  padding: 0 10px;
-  font-weight: 800;
-}
-
-.stock-price-pair strong {
-  min-width: 58px;
-  border: 1px solid #2b251f;
-  border-radius: 8px;
-  background: rgba(249, 115, 22, 0.08);
   color: #fff7ed;
-  padding: 8px 10px;
-  text-align: center;
+  padding: 0;
+  text-align: left;
+  line-height: 24px;
+}
+
+.stock-value-pair b,
+.stock-holding-grid > span:not(.stock-average-price) strong {
+  display: grid;
+  height: 24px;
+  align-items: center;
+  line-height: 24px;
 }
 
 .stock-value-pair {
@@ -1769,10 +2120,6 @@ label strong {
 
 .stock-value-pair b {
   color: #14b8a6;
-  font-size: 0.92rem;
-}
-
-.stock-value-pair strong {
   font-size: 0.92rem;
 }
 
@@ -3215,6 +3562,49 @@ button[aria-label^="Xem ngu"] {
     flex: 1;
   }
 
+  .accumulation-page-header {
+    align-items: stretch;
+    flex-direction: row;
+    gap: 10px;
+  }
+
+  .accumulation-page-header .page-header-actions {
+    flex: 0 0 auto;
+  }
+
+  .accumulation-page-header .page-header-actions button {
+    flex: 0 0 auto;
+  }
+
+  .accumulation-header-add-button {
+    min-width: 98px;
+    padding: 0 14px;
+  }
+
+  .accumulation-metrics-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+    margin-bottom: 12px;
+  }
+
+  .accumulation-metrics-grid article {
+    min-height: 58px;
+    gap: 5px;
+    padding: 8px 5px;
+    border-radius: 9px;
+  }
+
+  .accumulation-metrics-grid small {
+    font-size: 0.52rem;
+    line-height: 1.12;
+  }
+
+  .accumulation-metrics-grid strong {
+    font-size: 0.50rem;
+    line-height: 1.08;
+    white-space: nowrap;
+  }
+
   .report-page-header {
     align-items: center;
     flex-direction: row;
@@ -3587,7 +3977,21 @@ button[aria-label^="Xem ngu"] {
 
   .stock-holding-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    column-gap: 28px;
+    row-gap: 10px;
+  }
+
+  .stock-holding-grid > *:nth-child(2),
+  .stock-holding-grid > *:nth-child(4) {
+    justify-self: end;
+  }
+
+  .stock-holding-grid > *:nth-child(3) {
+    justify-self: start;
+  }
+
+  .stock-holding-list {
+    grid-template-columns: 1fr;
   }
 
   .stock-sale-form {
@@ -3644,29 +4048,41 @@ button[aria-label^="Xem ngu"] {
     padding: 14px;
   }
 
-  .stock-holding-card h3,
+  .stock-holding-head {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stock-holding-card h3 {
+    font-size: 0.94rem;
+  }
+
+  .stock-symbol-line {
+    grid-column: 1;
+    gap: 9px;
+  }
+
+  .stock-symbol-line span {
+    font-size: 0.74rem;
+  }
+
+  .stock-holding-percent {
+    grid-column: 2;
+    justify-self: end;
+    font-size: 0.74rem;
+  }
+
   .stock-holding-card small {
-    padding-right: 86px;
+    padding-right: 0;
   }
 
-  .stock-price-pair > div {
-    justify-content: flex-start;
-    gap: 6px;
-  }
-
-  .stock-price-pair input {
-    width: 72px;
-    height: 34px;
-    padding: 0 8px;
-  }
-
-  .stock-price-pair strong {
-    min-width: 0;
-    padding: 7px 8px;
+  .stock-price-pair strong,
+  .stock-average-price strong {
+    min-height: 0;
+    padding: 0;
     font-size: 0.9rem;
   }
 
-  .stock-value-pair strong,
   .stock-value-pair b {
     font-size: 0.84rem;
   }
@@ -4748,6 +5164,16 @@ label strong {
   gap: 14px;
 }
 
+.crypto-asset-panel {
+  gap: 12px;
+}
+
+.crypto-asset-panel .crypto-section-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 34px;
+  align-items: center;
+}
+
 .crypto-section-title {
   display: flex;
   align-items: center;
@@ -4762,30 +5188,64 @@ label strong {
 }
 
 .crypto-section-title button {
-  border: 0;
-  background: transparent;
+  min-width: 34px;
   color: var(--primary);
   font-size: 0.82rem;
   font-weight: 800;
 }
 
+.crypto-asset-market-status {
+  justify-self: center;
+  margin: 0;
+  color: var(--muted-soft);
+  font-size: 0.74rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.crypto-asset-header {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1fr) minmax(126px, 0.8fr);
+  gap: 14px;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 0 14px;
+  color: var(--muted-soft);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.crypto-asset-header span:first-child {
+  grid-column: auto;
+}
+
+.crypto-asset-header span:nth-child(2) {
+  justify-self: center;
+  text-align: center;
+}
+
+.crypto-asset-header span:last-child {
+  justify-self: end;
+  text-align: right;
+}
+
 .crypto-asset-list {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .crypto-asset-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1fr) minmax(126px, 0.8fr);
   align-items: center;
   gap: 14px;
   min-height: 72px;
   padding: 14px;
   border: 1px solid rgba(255, 255, 255, 0.055);
-  border-radius: 18px;
+  border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
-    rgba(23, 26, 33, 0.78);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0)),
+    rgba(15, 17, 21, 0.36);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035) inset;
 }
 
@@ -4797,6 +5257,48 @@ label strong {
 .crypto-asset-row > div:first-of-type {
   display: grid;
   gap: 3px;
+}
+
+.crypto-asset-coin.btc strong,
+.crypto-asset-coin.btc small {
+  color: #f59e0b;
+}
+
+.crypto-asset-coin.sol strong,
+.crypto-asset-coin.sol small {
+  color: #c084fc;
+}
+
+.crypto-asset-coin.usdt strong,
+.crypto-asset-coin.usdt small {
+  color: #34d399;
+}
+
+.crypto-asset-prices {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-width: 0;
+  text-align: center;
+}
+
+.crypto-asset-prices strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.crypto-asset-prices strong:first-child {
+  color: var(--text);
+}
+
+.crypto-asset-prices strong:last-child {
+  color: var(--muted-soft);
+  font-weight: 750;
 }
 
 .crypto-asset-values {
@@ -4835,6 +5337,10 @@ label strong {
 
 .crypto-asset-row .crypto-asset-pnl.loss {
   color: var(--danger);
+}
+
+.crypto-asset-row .icon-only {
+  display: none;
 }
 
 .crypto-token-icon {
@@ -4956,16 +5462,45 @@ label strong {
     font-size: 1rem;
   }
 
+  .crypto-asset-panel {
+    padding: 12px !important;
+  }
+
+  .crypto-asset-panel .crypto-section-title {
+    grid-template-columns: minmax(0, 1fr) auto 32px;
+    gap: 8px;
+  }
+
+  .crypto-asset-market-status {
+    font-size: 0.58rem;
+  }
+
+  .crypto-asset-header {
+    grid-template-columns: minmax(74px, 0.85fr) minmax(86px, 1fr) minmax(78px, 0.9fr);
+    gap: 7px;
+    padding: 0 10px;
+    font-size: 0.58rem;
+  }
+
   .crypto-asset-row {
-    min-height: 62px;
+    grid-template-columns: minmax(74px, 0.85fr) minmax(86px, 1fr) minmax(78px, 0.9fr);
+    min-height: 0;
     padding: 10px;
     border-radius: 12px;
-    gap: 10px;
+    gap: 7px;
   }
 
   .crypto-token-icon {
-    width: 40px;
-    height: 40px;
+    width: 34px;
+    height: 34px;
+  }
+
+  .crypto-asset-prices {
+    gap: 3px;
+  }
+
+  .crypto-asset-prices strong {
+    font-size: 0.62rem;
   }
 
   .crypto-asset-row strong {
@@ -4974,6 +5509,14 @@ label strong {
 
   .crypto-asset-row small {
     font-size: 0.68rem;
+  }
+
+  .crypto-asset-values strong,
+  .crypto-asset-values small {
+    max-width: 84px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -5118,7 +5661,7 @@ label strong {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   padding: 14px 0 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.055);
@@ -5130,6 +5673,11 @@ label strong {
   min-width: 0;
 }
 
+.accumulation-stat-grid div:nth-child(2) {
+  justify-items: center;
+  text-align: center;
+}
+
 .accumulation-stat-grid div:last-child {
   justify-items: end;
   text-align: right;
@@ -5139,7 +5687,7 @@ label strong {
   color: var(--muted-soft);
   font-size: 0.68rem;
   font-weight: 850;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .accumulation-stat-grid strong {
@@ -5147,10 +5695,6 @@ label strong {
   font-size: 1.12rem;
   line-height: 1.2;
   overflow-wrap: anywhere;
-}
-
-.accumulation-stat-grid div:last-child strong {
-  color: var(--text);
 }
 
 .accumulation-card-meta {
@@ -5272,6 +5816,28 @@ label strong {
 
   .accumulation-stat-grid strong {
     font-size: 0.96rem;
+  }
+
+  .accumulation-history-panel {
+    margin-top: 12px;
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .accumulation-history-list {
+    max-height: 360px;
+    padding-right: 2px;
+  }
+
+  .accumulation-history-row {
+    grid-template-columns: minmax(0, 1fr) minmax(112px, auto);
+    min-height: 64px;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .accumulation-history-money strong {
+    font-size: 0.78rem;
   }
 }
 
@@ -5544,6 +6110,45 @@ label strong {
   box-shadow: 0 0 12px rgba(255, 138, 0, 0.28);
 }
 
+.asset-growth-panel {
+  padding: 18px 18px 14px;
+  border-color: rgba(255, 255, 255, 0.06);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0)),
+    #11151b;
+}
+
+.asset-growth-panel .panel-title {
+  margin-bottom: 4px;
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.asset-growth-panel .panel-title h2 {
+  font-size: 0.96rem;
+}
+
+.asset-growth-panel .recharts-responsive-container {
+  margin-top: 4px;
+}
+
+.asset-growth-panel .recharts-cartesian-grid-horizontal line,
+.asset-growth-panel .recharts-cartesian-grid-vertical line {
+  opacity: 0.78;
+}
+
+.asset-growth-panel .recharts-area-area {
+  filter: drop-shadow(0 12px 28px rgba(255, 138, 0, 0.12));
+}
+
+.asset-growth-panel .recharts-area-curve {
+  filter: drop-shadow(0 0 8px rgba(255, 138, 0, 0.34));
+}
+
+.asset-growth-panel .recharts-dot {
+  filter: drop-shadow(0 0 6px rgba(255, 138, 0, 0.5));
+}
+
 .financial-rule-card.emergency .financial-rule-progress span {
   background: var(--tertiary);
   box-shadow: 0 0 12px rgba(136, 206, 255, 0.24);
@@ -5554,11 +6159,40 @@ label strong {
   box-shadow: 0 0 12px rgba(94, 234, 212, 0.24);
 }
 
-.report-goals-card,
-.report-allocation-card {
+.report-goals-card {
   min-height: 220px;
   padding: 24px;
   border-radius: 12px;
+}
+
+.report-financial-rule-stack {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.report-financial-rule-stack .financial-rule-card {
+  min-height: 70px;
+  padding: 13px;
+  border-radius: 12px;
+}
+
+.report-financial-rule-stack .financial-rule-card small {
+  font-size: 0.7rem;
+}
+
+.report-financial-rule-stack .financial-rule-card strong {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.report-financial-rule-stack .financial-rule-card > b {
+  padding: 4px 6px;
+  font-size: 0.72rem;
+}
+
+.report-financial-rule-stack .financial-rule-progress {
+  height: 5px;
 }
 
 .report-card-title {
@@ -5649,12 +6283,13 @@ label strong {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--primary-strong), rgba(255, 183, 127, 0.72));
+  background: linear-gradient(90deg, #22c55e, #86efac);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.32);
 }
 
 .report-mini-progress span.tertiary {
-  background: var(--tertiary);
-  box-shadow: 0 0 8px rgba(136, 206, 255, 0.3);
+  background: linear-gradient(90deg, #22c55e, #86efac);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.32);
 }
 
 .report-allocation-body {
@@ -5750,13 +6385,20 @@ label strong {
   .report-bento-grid {
     grid-template-columns: 1fr;
   }
+
+  .report-financial-rule-stack {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 680px) {
-  .report-goals-card,
-  .report-allocation-card {
+  .report-goals-card {
     min-height: 0;
     padding: 18px;
+  }
+
+  .report-financial-rule-stack {
+    grid-template-columns: 1fr;
   }
 
   .report-allocation-body {
@@ -5851,6 +6493,141 @@ option,
   font-weight: 850 !important;
 }
 
+.metric-content {
+  min-width: 0;
+}
+
+.metric .metric-trend {
+  color: #a59b91;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.metric .metric-trend.success {
+  color: #34d399;
+}
+
+.metric .metric-trend.danger {
+  color: #fb923c;
+}
+
+.metric .metric-trend.neutral {
+  color: #a59b91;
+}
+
+.dashboard-metrics-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+.dashboard-metrics-grid .metric {
+  display: grid !important;
+  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-rows: 28px auto auto;
+  align-content: start;
+  align-items: center;
+  gap: 0 9px !important;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dashboard-metrics-grid .metric-content {
+  display: contents;
+}
+
+.dashboard-metrics-grid .metric small {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-metrics-grid .metric strong {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  font-size: 0.98rem !important;
+  line-height: 1.08 !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-metrics-grid .metric > span {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  margin-top: 0;
+}
+
+.dashboard-metrics-grid .metric-progress-block {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  margin-top: 1px;
+}
+
+.dashboard-metrics-grid .metric em.metric-trend {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+
+.dashboard-metrics-grid .metric-progress-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.dashboard-metrics-grid .metric-progress-meta b {
+  min-width: 0;
+  font-size: 0.64rem !important;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.dashboard-metrics-grid .metric-progress-meta b:last-child {
+  color: #a7f3d0;
+  text-align: right;
+}
+
+.dashboard-metrics-grid .metric-progress-meta b:last-child::after {
+  content: "";
+}
+
+.dashboard-metrics-grid .metric-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dashboard-metrics-grid .metric-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #a59b91, #7c736a);
+  box-shadow: none;
+}
+
+.dashboard-metrics-grid .metric-progress-track.success span {
+  background: linear-gradient(90deg, #34d399, #14b8a6);
+  box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);
+}
+
+.dashboard-metrics-grid .metric-progress-track.danger span {
+  background: linear-gradient(90deg, #fb923c, #f97316);
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.26);
+}
+
 .crypto-portfolio-card {
   min-height: 128px !important;
   gap: 8px !important;
@@ -5899,6 +6676,74 @@ option,
   .metric > span svg {
     width: var(--metric-compact-icon-size) !important;
     height: var(--metric-compact-icon-size) !important;
+  }
+
+  .dashboard-metrics-grid .metric {
+    display: grid !important;
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-rows: 18px auto auto;
+    align-content: start;
+    align-items: center;
+    min-height: 76px !important;
+    gap: 2px 4px !important;
+    padding: 6px !important;
+  }
+
+  .dashboard-metrics-grid .metric > span {
+    position: static;
+    grid-column: 1;
+    grid-row: 1;
+    width: 19px !important;
+    height: 19px !important;
+  }
+
+  .dashboard-metrics-grid .metric > span svg {
+    width: 11px !important;
+    height: 11px !important;
+  }
+
+  .dashboard-metrics-grid .metric-content {
+    display: contents;
+  }
+
+  .dashboard-metrics-grid .metric small {
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 19px;
+    padding-left: 0;
+    font-size: 0.56rem !important;
+    line-height: 1 !important;
+  }
+
+  .dashboard-metrics-grid .metric strong {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-top: 2px !important;
+    font-size: 0.66rem !important;
+    line-height: 1.08 !important;
+  }
+
+  .dashboard-metrics-grid .metric em.metric-trend {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    margin-top: 2px !important;
+    font-size: 0.56rem !important;
+    line-height: 1 !important;
+  }
+
+  .dashboard-metrics-grid .metric-progress-block {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    gap: 2px;
+    margin-top: 2px;
+  }
+
+  .dashboard-metrics-grid .metric-progress-meta b {
+    font-size: 0.5rem !important;
+  }
+
+  .dashboard-metrics-grid .metric-progress-track {
+    height: 3px;
   }
 
   .crypto-portfolio-card {

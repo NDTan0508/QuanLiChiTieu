@@ -8,6 +8,8 @@ export function MetricCard({
   icon,
   tone,
   percent,
+  trend,
+  progress,
   onClick,
 }: {
   label: string;
@@ -17,6 +19,15 @@ export function MetricCard({
   icon: ReactNode;
   tone?: string;
   percent?: number;
+  trend?: {
+    label: string;
+    tone?: "success" | "danger" | "neutral";
+  };
+  progress?: {
+    percent: number;
+    label: string;
+    ariaLabel: string;
+  };
   onClick?: () => void;
 }) {
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -36,10 +47,23 @@ export function MetricCard({
       onKeyDown={handleKeyDown}
     >
       <span>{icon}</span>
-      <div>
+      <div className="metric-content">
         <small>{label} {typeof percent === "number" && <b>{percent}%</b>}</small>
         <strong>{value}</strong>
-        {subValue && <em className={subTone ? `metric-sub ${subTone}` : undefined}>{subValue}</em>}
+        {progress ? (
+          <div className="metric-progress-block">
+            <div className="metric-progress-meta">
+              {trend && <b className={trend.tone ? `metric-trend ${trend.tone}` : "metric-trend"}>{trend.label}</b>}
+              <b>{progress.label}</b>
+            </div>
+            <div className={`metric-progress-track ${trend?.tone ?? "neutral"}`} aria-label={progress.ariaLabel} role="img">
+              <span style={{ width: `${progress.percent}%` }} />
+            </div>
+          </div>
+        ) : (
+          trend && <em className={trend.tone ? `metric-trend ${trend.tone}` : "metric-trend"}>{trend.label}</em>
+        )}
+        {subValue && !progress && <em className={subTone ? `metric-sub ${subTone}` : undefined}>{subValue}</em>}
       </div>
     </article>
   );
