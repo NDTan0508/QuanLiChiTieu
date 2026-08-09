@@ -53,6 +53,7 @@ import {
   loadDataStatus,
   loadAdminPasswordHash,
   loadCloudPayloadRows,
+  loadCloudSnapshot,
   loadCloudState,
   saveCloudState,
   upsertAdminAccountProfile,
@@ -11180,6 +11181,7 @@ function SettingsPage({
     status: string;
     activePin: string;
     onSyncNow: () => void;
+    onPullFromCloud: () => void;
     onVerifyAdminPassword: (password: string) => Promise<AdminActionResult>;
     onChangePin: (pin: string) => Promise<void> | void;
   };
@@ -11322,6 +11324,16 @@ function SettingsPage({
                 <small>{state.backupMeta?.lastExportAt ? `Backup ${formatDateTime(state.backupMeta.lastExportAt)}` : "Chưa backup"}</small>
               </div>
               <div className="settings-action-list">
+                <button className="settings-action-row" disabled={!cloudSync.configured || !cloudSync.activePin} onClick={cloudSync.onPullFromCloud} type="button">
+                  <span className="settings-action-icon info"><RefreshCw size={18} /></span>
+                  <span><strong>Tải từ cloud</strong></span>
+                  <b>Kéo xuống</b>
+                </button>
+                <button className="settings-action-row" disabled={!cloudSync.configured || !cloudSync.activePin} onClick={cloudSync.onSyncNow} type="button">
+                  <span className="settings-action-icon success"><Upload size={18} /></span>
+                  <span><strong>Đồng bộ lên cloud</strong></span>
+                  <b>Đẩy lên</b>
+                </button>
                 <button className="settings-action-row" onClick={dataTools.onExportBackup} type="button">
                   <span className="settings-action-icon warm"><Download size={18} /></span>
                   <span><strong>Tạo backup JSON</strong></span>
@@ -13072,6 +13084,8 @@ export function App() {
   const [mbbDepositIntent, setMbbDepositIntent] = useState<MbbDepositIntent | null>(null);
   const cloudLoaded = useRef(false);
   const lastCloudSnapshot = useRef("");
+  const lastCloudUpdatedAt = useRef("");
+  const cloudPullInFlight = useRef(false);
   const stateRef = useRef(state);
   const marketRef = useRef(state.market);
   const btcCloudMergePausedUntil = useRef(0);
@@ -13087,6 +13101,60 @@ export function App() {
     if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("crypto");
     setPage(nextPage);
     if (nextPage === "dashboard") setMonth(currentMonth());
+  };
+  const normalizeCloudStateForActivePin = (cloudState: AppState) =>
+    normalizeStateWithMigrationSafety({
+      ...initialState,
+      ...cloudState,
+      settings: { ...initialState.settings, ...cloudState.settings, hasPin: true, pin: activePin },
+    }, { backupBeforeMigration: true });
+  const markCloudSnapshotSynced = (syncedState: AppState, updatedAt = "", pin = activePin || syncedState.settings.pin) => {
+    lastCloudSnapshot.current = JSON.stringify(stateForAccountPin(syncedState, pin));
+    lastCloudUpdatedAt.current = updatedAt;
+    if (updatedAt) setLastCloudSyncAt(updatedAt);
+  };
+  const pullCloudState = async (force = false) => {
+    if (!cloudConfigured || !cloudAccountKey || !activePin || cloudPullInFlight.current) return false;
+    cloudPullInFlight.current = true;
+    try {
+      if (force) setCloudStatus("Đang tải dữ liệu cloud...");
+      const cloudSnapshot = await loadCloudSnapshot<AppState>(cloudAccountKey);
+      if (!cloudSnapshot) {
+        if (force) setCloudStatus("Chưa có dữ liệu cloud cho PIN này.");
+        return false;
+      }
+
+      const nextState = normalizeCloudStateForActivePin(cloudSnapshot.state);
+      const snapshot = JSON.stringify(stateForAccountPin(nextState, activePin));
+      const remoteTime = Date.parse(cloudSnapshot.updatedAt);
+      const localTime = Date.parse(lastCloudUpdatedAt.current);
+      const remoteIsNewer =
+        !lastCloudUpdatedAt.current ||
+        !Number.isFinite(localTime) ||
+        (Number.isFinite(remoteTime) && remoteTime > localTime + 500);
+
+      if (force || (remoteIsNewer && snapshot !== lastCloudSnapshot.current)) {
+        stateRef.current = nextState;
+        setState(nextState);
+        lastCloudSnapshot.current = snapshot;
+        lastCloudUpdatedAt.current = cloudSnapshot.updatedAt;
+        if (cloudSnapshot.updatedAt) setLastCloudSyncAt(cloudSnapshot.updatedAt);
+        cloudLoaded.current = true;
+        setCloudStatus(cloudSnapshot.updatedAt ? `Đã tải dữ liệu cloud ${formatDateTime(cloudSnapshot.updatedAt)}.` : "Đã tải dữ liệu cloud.");
+        return true;
+      }
+
+      lastCloudUpdatedAt.current = cloudSnapshot.updatedAt || lastCloudUpdatedAt.current;
+      if (cloudSnapshot.updatedAt) setLastCloudSyncAt(cloudSnapshot.updatedAt);
+      cloudLoaded.current = true;
+      if (force) setCloudStatus("Dữ liệu trên thiết bị đã mới nhất.");
+      return false;
+    } catch {
+      if (force) setCloudStatus("Không tải được dữ liệu cloud.");
+      return false;
+    } finally {
+      cloudPullInFlight.current = false;
+    }
   };
   const openAccumulationMbbDeposits = (accumulationGoalId: string) => {
     setPage("investment");
@@ -13108,6 +13176,9 @@ export function App() {
     setActivePin(state.settings.pin);
     setUnlocked(true);
     if (cloudConfigured) {
+      cloudLoaded.current = false;
+      setCloudStatus("Đang tải dữ liệu cloud...");
+    } else {
       cloudLoaded.current = true;
       lastCloudSnapshot.current = JSON.stringify(stateForAccountPin(state, state.settings.pin));
     }
@@ -13135,6 +13206,7 @@ export function App() {
       setActivePin("");
       setBtcCloudAccountId("");
       cloudLoaded.current = false;
+      lastCloudUpdatedAt.current = "";
     };
     const resetTimer = () => {
       if (timer) window.clearTimeout(timer);
@@ -13233,9 +13305,8 @@ export function App() {
         await syncBtcLedgerToCloudState(targetState, currentState);
         if (cloudAccountKey && activePin) {
           const snapshot = stateForAccountPin(targetState, activePin);
-          await saveCloudState(cloudAccountKey, snapshot);
-          lastCloudSnapshot.current = JSON.stringify(snapshot);
-          setLastCloudSyncAt(new Date().toISOString());
+          const syncedAt = await saveCloudState(cloudAccountKey, snapshot);
+          markCloudSnapshotSynced(targetState, syncedAt);
         }
         if (btcCloudAccountId) setDataStatus(await loadDataStatus(btcCloudAccountId));
       } catch {
@@ -13344,9 +13415,8 @@ export function App() {
     stateRef.current = next;
     setState(next);
     if (cloudAccountKey) {
-      await saveCloudState(cloudAccountKey, stateForAccountPin(next, activePin));
-      lastCloudSnapshot.current = JSON.stringify(next);
-      setLastCloudSyncAt(new Date().toISOString());
+      const syncedAt = await saveCloudState(cloudAccountKey, stateForAccountPin(next, activePin));
+      markCloudSnapshotSynced(next, syncedAt);
     }
     if (btcCloudAccountId) {
       await syncBtcLedgerToCloudState(next, current);
@@ -13594,21 +13664,20 @@ export function App() {
     try {
       setCloudStatus("Đang mở tài khoản...");
       const accountKey = cloudAccountKeyForPin(pin);
-      const cloudState = await loadCloudState<AppState>(accountKey);
-      if (!cloudState) return "Tài khoản chưa tồn tại. Vào /admin để tạo PIN.";
+      const cloudSnapshot = await loadCloudSnapshot<AppState>(accountKey);
+      if (!cloudSnapshot) return "Tài khoản chưa tồn tại. Vào /admin để tạo PIN.";
 
       const nextState = normalizeStateWithMigrationSafety({
         ...initialState,
-        ...cloudState,
-        settings: { ...initialState.settings, ...cloudState.settings, hasPin: true, pin },
+        ...cloudSnapshot.state,
+        settings: { ...initialState.settings, ...cloudSnapshot.state.settings, hasPin: true, pin },
       });
       setState(nextState);
       stateRef.current = nextState;
       setActivePin(pin);
-      lastCloudSnapshot.current = JSON.stringify(nextState);
+      markCloudSnapshotSynced(nextState, cloudSnapshot.updatedAt, pin);
       cloudLoaded.current = true;
       setCloudStatus("Đã mở dữ liệu cloud.");
-      setLastCloudSyncAt(new Date().toISOString());
       setUnlocked(true);
       return null;
     } catch {
@@ -13637,7 +13706,7 @@ export function App() {
     }
 
     try {
-      await saveCloudState(nextKey, nextState);
+      const syncedAt = await saveCloudState(nextKey, nextState);
       if (previousKey !== nextKey) {
         const nextAccountId = await cloudAccountIdForKey(nextKey);
         const profile = (await listAdminAccounts()).find((account) => account.accountId === previousAccountId);
@@ -13649,7 +13718,7 @@ export function App() {
         await deleteAdminAccountProfile(previousAccountId);
         await deleteCloudState(previousKey);
       }
-      setLastCloudSyncAt(new Date().toISOString());
+      markCloudSnapshotSynced(nextState, syncedAt, pin);
       setCloudStatus("Đã đổi PIN và đồng bộ cloud.");
     } catch {
       setCloudStatus("Không đổi được PIN cloud. Vào /admin để đổi PIN lại.");
@@ -13668,10 +13737,9 @@ export function App() {
     try {
       setCloudStatus("Đang đồng bộ...");
       const nextSnapshot = stateForCloud();
-      await saveCloudState(cloudAccountKey, nextSnapshot);
-      lastCloudSnapshot.current = JSON.stringify(nextSnapshot);
+      const syncedAt = await saveCloudState(cloudAccountKey, nextSnapshot);
+      markCloudSnapshotSynced(nextSnapshot, syncedAt);
       cloudLoaded.current = true;
-      setLastCloudSyncAt(new Date().toISOString());
       setCloudStatus(`Đã đồng bộ ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
     } catch {
       setCloudStatus("Không lưu được dữ liệu cloud.");
@@ -13746,6 +13814,28 @@ export function App() {
   }, [unlocked, cloudConfigured, cloudAccountKey]);
 
   useEffect(() => {
+    if (!unlocked || !cloudConfigured || !cloudAccountKey || !activePin) return;
+
+    const refreshCloud = () => {
+      if (document.visibilityState === "hidden") return;
+      void pullCloudState(false);
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshCloud();
+    };
+
+    refreshCloud();
+    const timer = window.setInterval(refreshCloud, 30_000);
+    window.addEventListener("focus", refreshCloud);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshCloud);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [unlocked, cloudConfigured, cloudAccountKey, activePin]);
+
+  useEffect(() => {
     if (!unlocked || !autoStockSymbols) return;
     const symbols = autoStockSymbols.split("|").filter(Boolean);
     const refreshStocks = () => {
@@ -13767,9 +13857,14 @@ export function App() {
     setCloudStatus("Đang đồng bộ...");
     const timer = window.setTimeout(async () => {
       try {
-        await saveCloudState(cloudAccountKey, nextSnapshot);
-        lastCloudSnapshot.current = snapshot;
-        setLastCloudSyncAt(new Date().toISOString());
+        if (await pullCloudState(false)) return;
+        const latestSnapshot = activePin ? stateForAccountPin(stateRef.current, activePin) : stateRef.current;
+        const latestSnapshotJson = JSON.stringify(latestSnapshot);
+        if (latestSnapshotJson === lastCloudSnapshot.current) return;
+        const syncedAt = await saveCloudState(cloudAccountKey, latestSnapshot);
+        lastCloudSnapshot.current = latestSnapshotJson;
+        lastCloudUpdatedAt.current = syncedAt;
+        setLastCloudSyncAt(syncedAt);
         setCloudStatus(`Đã đồng bộ ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
       } catch {
         setCloudStatus("Không lưu được dữ liệu cloud.");
@@ -13817,6 +13912,7 @@ export function App() {
               status: cloudStatus || (lastCloudSyncAt ? `Đã sync lúc ${formatDateTime(lastCloudSyncAt)}` : "Chưa đồng bộ."),
               activePin,
               onSyncNow: () => void syncCloudNow(),
+              onPullFromCloud: () => void pullCloudState(true),
               onVerifyAdminPassword: unlockAdminAccount,
               onChangePin: (pin) => changePin(pin),
             }}

@@ -10,6 +10,11 @@ type SnapshotRow = {
   updated_at?: string;
 };
 
+export type CloudSnapshot<T> = {
+  state: T;
+  updatedAt: string;
+};
+
 type AdminSettingsRow = {
   password_hash: string;
 };
@@ -62,6 +67,11 @@ export function isCloudSyncConfigured() {
 }
 
 export async function loadCloudState<T>(syncKey: string): Promise<T | null> {
+  const snapshot = await loadCloudSnapshot<T>(syncKey);
+  return snapshot?.state ?? null;
+}
+
+export async function loadCloudSnapshot<T>(syncKey: string): Promise<CloudSnapshot<T> | null> {
   const config = getSupabaseConfig();
   if (!config) throw new Error("Thiếu cấu hình Supabase.");
 
@@ -76,7 +86,10 @@ export async function loadCloudState<T>(syncKey: string): Promise<T | null> {
   const row = rows[0];
   if (!row) return null;
 
-  return decryptJson<T>(syncKey, row.payload);
+  return {
+    state: await decryptJson<T>(syncKey, row.payload),
+    updatedAt: row.updated_at ?? "",
+  };
 }
 
 export async function saveCloudState(syncKey: string, state: unknown) {
@@ -85,6 +98,7 @@ export async function saveCloudState(syncKey: string, state: unknown) {
 
   const id = await syncKeyId(syncKey);
   const payload = await encryptJson(syncKey, state);
+  const updatedAt = new Date().toISOString();
   const response = await fetch(`${config.url}/rest/v1/app_snapshots`, {
     method: "POST",
     headers: {
@@ -95,11 +109,12 @@ export async function saveCloudState(syncKey: string, state: unknown) {
     body: JSON.stringify({
       id,
       payload,
-      updated_at: new Date().toISOString(),
+      updated_at: updatedAt,
     }),
   });
 
   if (!response.ok) throw new Error("Không lưu được dữ liệu cloud.");
+  return updatedAt;
 }
 
 export async function deleteCloudState(syncKey: string) {
