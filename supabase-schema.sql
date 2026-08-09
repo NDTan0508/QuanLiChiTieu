@@ -56,6 +56,46 @@ for select
 to anon
 using (true);
 
+create table if not exists public.app_account_profiles (
+  account_id text primary key,
+  alias text not null,
+  pin text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.app_account_profiles enable row level security;
+
+drop policy if exists "Read account profiles" on public.app_account_profiles;
+drop policy if exists "Create account profiles" on public.app_account_profiles;
+drop policy if exists "Update account profiles" on public.app_account_profiles;
+drop policy if exists "Delete account profiles" on public.app_account_profiles;
+
+create policy "Read account profiles"
+on public.app_account_profiles
+for select
+to anon
+using (true);
+
+create policy "Create account profiles"
+on public.app_account_profiles
+for insert
+to anon
+with check (true);
+
+create policy "Update account profiles"
+on public.app_account_profiles
+for update
+to anon
+using (true)
+with check (true);
+
+create policy "Delete account profiles"
+on public.app_account_profiles
+for delete
+to anon
+using (true);
+
 create table if not exists public.btc_usdt_topups (
   id text primary key,
   account_id text not null,
@@ -157,3 +197,4 @@ create policy "Read app job runs" on public.app_job_runs for select to anon usin
 --   );
 --   $$
 -- );
+ . I . I guess . I guess open my . I guess open my ear . I guess open my ear and I . I guess open my ear and I serve you . I guess open my ear and I serve you all for . I guess open my ear and I serve you all for I don't . I guess open my ear and I serve you all for I don't go so . I guess open my ear and I serve you all for I don't go so color

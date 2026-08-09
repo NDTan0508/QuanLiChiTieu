@@ -19,18 +19,23 @@ import {
   CheckCircle2,
   CircleDollarSign,
   Coins,
+  Database,
   Download,
   FileText,
   History,
+  KeyRound,
   Pencil,
   Landmark,
   LineChart,
+  ListFilter,
   Lock,
   PiggyBank,
   Plus,
   RefreshCw,
   RotateCcw,
   Save,
+  ShieldCheck,
+  TimerReset,
   Trash2,
   Unlock,
   Upload,
@@ -38,15 +43,19 @@ import {
 } from "lucide-react";
 import {
   DataStatus,
+  AdminAccountProfile,
   cloudAccountIdForKey,
+  deleteAdminAccountProfile,
   deleteCloudState,
   deleteCloudPayloadRow,
   isCloudSyncConfigured,
+  listAdminAccounts,
   loadDataStatus,
   loadAdminPasswordHash,
   loadCloudPayloadRows,
   loadCloudState,
   saveCloudState,
+  upsertAdminAccountProfile,
   upsertCloudPayloadRow,
 } from "./cloudSync";
 import { AppNav, type AppNavPage } from "./components/AppNav";
@@ -418,6 +427,8 @@ type Market = {
 type SettingsState = {
   pin: string;
   hasPin: boolean;
+  autoLockEnabled: boolean;
+  pinLoginDisabledUntil?: string | "manual";
   dismissedCryptoAllocationIds: string[];
   dismissedStockAllocationIds: string[];
 };
@@ -551,6 +562,7 @@ const BACKUP_VERSION = 2;
 const AUTO_RESTORE_BACKUP_KEY = `${STORAGE_KEY}-pre-restore-backup`;
 const AUTO_MIGRATION_BACKUP_KEY = `${STORAGE_KEY}-pre-migration-backup`;
 const DEFAULT_ADMIN_PASSWORD_HASH = "83e9887aca4b4c1d7b8688d6392c5f20c77a1dc405c3d5406918c46c68da6063";
+const AUTO_LOCK_MS = 5 * 60_000;
 const DEFAULT_START_MONTH = "2026-06";
 const FINANCIAL_RULE_START_MONTH = "2026-07";
 const FINANCIAL_RULE_MIN_MONTHLY_EXPENSE = 10_000_000;
@@ -2370,6 +2382,8 @@ function normalizeState(state: AppState): AppState {
     schemaVersion: state.schemaVersion ?? 1,
     settings: {
       ...settings,
+      autoLockEnabled: settings.autoLockEnabled ?? true,
+      pinLoginDisabledUntil: settings.pinLoginDisabledUntil,
       dismissedCryptoAllocationIds: settings.dismissedCryptoAllocationIds ?? [],
       dismissedStockAllocationIds: settings.dismissedStockAllocationIds ?? [],
     },
@@ -2580,6 +2594,8 @@ const initialState: AppState = {
   settings: {
     pin: "",
     hasPin: false,
+    autoLockEnabled: true,
+    pinLoginDisabledUntil: undefined,
     dismissedCryptoAllocationIds: [],
     dismissedStockAllocationIds: [],
   },
@@ -11105,6 +11121,33 @@ function GrowthTooltip({
   );
 }
 
+type SettingsSection = "data" | "security" | "trash" | "history";
+type PinBypassOption = "now" | "10m" | "1h" | "6h" | "manual";
+type AuditFilter = "all" | AuditAction;
+
+const pinBypassOptions: Array<{ value: PinBypassOption; label: string; ms?: number }> = [
+  { value: "now", label: "Ngay lập tức" },
+  { value: "10m", label: "10 phút", ms: 10 * 60_000 },
+  { value: "1h", label: "1 giờ", ms: 60 * 60_000 },
+  { value: "6h", label: "6 giờ", ms: 6 * 60 * 60_000 },
+  { value: "manual", label: "Đến khi bật lại" },
+];
+
+function pinLoginBypassStatus(value?: string) {
+  if (!value) return "Yêu cầu PIN";
+  if (value === "manual") return "Tắt đến khi bật lại.";
+  const expiresAt = new Date(value).getTime();
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return "Yêu cầu PIN";
+  return `${formatDateTime(value)} mở lại`;
+}
+
+function isPinLoginBypassActive(value?: string) {
+  if (!value) return false;
+  if (value === "manual") return true;
+  const expiresAt = new Date(value).getTime();
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
 function SettingsPage({
   state,
   setState,
@@ -11116,8 +11159,10 @@ function SettingsPage({
   cloudSync: {
     configured: boolean;
     status: string;
+    activePin: string;
     onSyncNow: () => void;
-    onChangePin: (pin: string) => void;
+    onVerifyAdminPassword: (password: string) => Promise<AdminActionResult>;
+    onChangePin: (pin: string) => Promise<void> | void;
   };
   dataTools: {
     onExportBackup: () => void;
@@ -11127,14 +11172,58 @@ function SettingsPage({
     onPermanentDeleteTrash: (trashItemId: string) => void;
   };
 }) {
+  const [activeSection, setActiveSection] = useState<SettingsSection>("data");
   const [restoreStatus, setRestoreStatus] = useState("");
+  const [restorePinModalOpen, setRestorePinModalOpen] = useState(false);
+  const [restorePin, setRestorePin] = useState("");
+  const [restoreAuthorized, setRestoreAuthorized] = useState(false);
+  const [pinChangeOpen, setPinChangeOpen] = useState(false);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [pinStatus, setPinStatus] = useState("");
+  const [historyFilter, setHistoryFilter] = useState<AuditFilter>("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const recentAuditLogs = state.auditLogs.slice(0, 50);
   const trashItems = [...state.trashItems].sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+  const filteredAuditLogs = state.auditLogs.filter((log) => historyFilter === "all" || log.action === historyFilter).slice(0, 80);
+  const currentPin = cloudSync.activePin || state.settings.pin;
+  const bypassActive = state.settings.pinLoginDisabledUntil === "manual" || (
+    Boolean(state.settings.pinLoginDisabledUntil) &&
+    new Date(state.settings.pinLoginDisabledUntil ?? "").getTime() > Date.now()
+  );
+
+  const updateSettings = (updater: (settings: SettingsState) => SettingsState) => {
+    setState((prev) => ({ ...prev, settings: updater(prev.settings) }));
+  };
+
+  const openRestorePinModal = () => {
+    setRestorePin("");
+    setRestoreStatus("");
+    setRestorePinModalOpen(true);
+  };
+
+  const authorizeRestore = () => {
+    if (!currentPin || restorePin !== currentPin) {
+      setRestoreStatus("PIN không đúng. Không thể khôi phục JSON.");
+      return;
+    }
+    setRestoreAuthorized(true);
+    setRestorePinModalOpen(false);
+    window.setTimeout(() => fileInputRef.current?.click(), 0);
+  };
 
   const restoreFromFile = async (file?: File) => {
     if (!file) return;
-    if (!window.confirm("Restore backup sẽ thay toàn bộ dữ liệu hiện tại. App sẽ tự lưu bản backup trước khi restore. Tiếp tục?")) return;
+    if (!restoreAuthorized) {
+      setRestoreStatus("Nhập đúng PIN trước khi khôi phục JSON.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    if (!window.confirm("Restore backup sẽ thay toàn bộ dữ liệu hiện tại. App sẽ tự lưu bản backup trước khi restore. Tiếp tục?")) {
+      setRestoreAuthorized(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
     try {
       setRestoreStatus("Đang restore backup...");
       await dataTools.onRestoreBackup(file);
@@ -11142,110 +11231,256 @@ function SettingsPage({
     } catch (error) {
       setRestoreStatus(error instanceof Error ? error.message : "Không restore được backup.");
     } finally {
+      setRestoreAuthorized(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
+  const changePinWithAdmin = async () => {
+    if (!adminPassword) {
+      setPinStatus("Nhập mật khẩu admin.");
+      return;
+    }
+    if (newPin.length < 4) {
+      setPinStatus("PIN mới cần tối thiểu 4 số.");
+      return;
+    }
+    if (newPin === currentPin) {
+      setPinStatus("PIN mới phải khác PIN hiện tại.");
+      return;
+    }
+
+    setPinStatus("Đang kiểm tra mật khẩu admin...");
+    const adminResult = await cloudSync.onVerifyAdminPassword(adminPassword);
+    if (!adminResult.ok) {
+      setPinStatus(adminResult.status);
+      return;
+    }
+    setPinStatus("Đang đổi PIN...");
+    await cloudSync.onChangePin(newPin);
+    setAdminPassword("");
+    setNewPin("");
+    setPinChangeOpen(false);
+    setPinStatus("Đã đổi PIN.");
+  };
+
+  const applyPinBypass = (value: PinBypassOption) => {
+    const option = pinBypassOptions.find((item) => item.value === value);
+    const nextValue = value === "manual" ? "manual" : option?.ms ? new Date(Date.now() + option.ms).toISOString() : undefined;
+    updateSettings((settings) => ({ ...settings, pinLoginDisabledUntil: nextValue }));
+  };
+
   const daysLeft = (iso: string) => Math.max(Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000), 0);
+  const menuItems: Array<{ id: SettingsSection; label: string; icon: JSX.Element; tone: string }> = [
+    { id: "data", label: "Dữ liệu", icon: <Database size={15} />, tone: "orange" },
+    { id: "security", label: "PIN & bảo mật", icon: <ShieldCheck size={15} />, tone: "blue" },
+    { id: "trash", label: "Thùng rác", icon: <Trash2 size={15} />, tone: "rose" },
+    { id: "history", label: "Lịch sử thao tác", icon: <History size={15} />, tone: "green" },
+  ];
 
   return (
-    <div className="page">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Cài đặt</p>
-          <h1>Bảo mật và dữ liệu</h1>
-        </div>
-      </header>
+    <div className="page settings-page">
+      <div className="settings-shell">
+        <aside className="settings-menu panel" aria-label="Menu cài đặt">
+          {menuItems.map((item) => (
+            <button
+              className={`settings-menu-item ${activeSection === item.id ? "active" : ""} tone-${item.tone}`}
+              key={item.id}
+              onClick={() => setActiveSection(item.id)}
+              type="button"
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </aside>
 
-      <section className="panel data-panel">
-        <div className="panel-title">
-          <h2>Dữ liệu</h2>
-          <small>
-            {state.backupMeta?.lastExportAt ? `Backup ${formatDateTime(state.backupMeta.lastExportAt)}` : "Chưa backup"}
-          </small>
-        </div>
-        <div className="data-actions">
-          <button className="primary action-button-sm" onClick={dataTools.onExportBackup} type="button">
-            <Download size={16} /> Tạo backup JSON
-          </button>
-          <button className="ghost action-button-sm" onClick={dataTools.onExportCsv} type="button">
-            <FileText size={16} /> Export CSV
-          </button>
-          <button className="ghost action-button-sm" onClick={() => fileInputRef.current?.click()} type="button">
-            <Upload size={16} /> Restore JSON
-          </button>
-          <input
-            ref={fileInputRef}
-            className="hidden-file-input"
-            type="file"
-            accept="application/json,.json"
-            onChange={(event) => void restoreFromFile(event.target.files?.[0])}
-          />
-        </div>
-        <small className={restoreStatus.includes("thành công") ? "ok" : restoreStatus ? "form-error" : "muted"}>
-          {restoreStatus || (cloudSync.configured ? cloudSync.status : "Cloud sync chưa cấu hình; PIN và dữ liệu vẫn lưu local/PWA.")}
-        </small>
-      </section>
-
-      <section className="two-column compact settings-data-grid">
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Thùng rác 30 ngày</h2>
-            <small>{trashItems.length} mục</small>
-          </div>
-          {trashItems.length === 0 ? (
-            <p className="muted">Chưa có dữ liệu nào trong thùng rác.</p>
-          ) : (
-            <div className="settings-list">
-              {trashItems.map((item) => (
-                <div className="settings-list-row" key={item.id}>
-                  <div>
-                    <strong>{item.label}</strong>
-                    <small>{formatDateTime(item.deletedAt)} · còn {daysLeft(item.expiresAt)} ngày</small>
-                  </div>
-                  <div className="settings-list-actions">
-                    <button className="ghost icon-only" onClick={() => dataTools.onRestoreTrash(item.id)} title="Khôi phục" type="button">
-                      <RotateCcw size={16} />
-                    </button>
-                    <button
-                      className="ghost icon-only danger-text"
-                      onClick={() => {
-                        if (window.confirm(`Xóa vĩnh viễn ${item.label}Đ Không thể khôi phục sau thao tác này.`)) dataTools.onPermanentDeleteTrash(item.id);
-                      }}
-                      title="Xóa vĩnh viễn"
-                      type="button"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+        <section className="panel settings-section-panel">
+          {activeSection === "data" && (
+            <>
+              <div className="panel-title settings-section-title">
+                <h2>Quản lý dữ liệu</h2>
+                <small>{state.backupMeta?.lastExportAt ? `Backup ${formatDateTime(state.backupMeta.lastExportAt)}` : "Chưa backup"}</small>
+              </div>
+              <div className="settings-action-list">
+                <button className="settings-action-row" onClick={dataTools.onExportBackup} type="button">
+                  <span className="settings-action-icon warm"><Download size={18} /></span>
+                  <span><strong>Tạo backup JSON</strong></span>
+                  <b>Tải xuống</b>
+                </button>
+                <button className="settings-action-row" onClick={dataTools.onExportCsv} type="button">
+                  <span className="settings-action-icon success"><FileText size={18} /></span>
+                  <span><strong>Xuất dữ liệu CSV</strong></span>
+                  <b>Xuất file</b>
+                </button>
+                <button className="settings-action-row" onClick={openRestorePinModal} type="button">
+                  <span className="settings-action-icon info"><Upload size={18} /></span>
+                  <span><strong>Khôi phục từ JSON</strong></span>
+                  <b>Chọn file</b>
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                className="hidden-file-input"
+                type="file"
+                accept="application/json,.json"
+                onChange={(event) => void restoreFromFile(event.target.files?.[0])}
+              />
+              <small className={restoreStatus.includes("thành công") ? "ok" : restoreStatus ? "form-error" : "muted"}>
+                {restoreStatus || (cloudSync.configured ? cloudSync.status : "Cloud sync chưa cấu hình; PIN và dữ liệu vẫn lưu local/PWA.")}
+              </small>
+            </>
           )}
-        </article>
 
-        <article className="panel">
-          <div className="panel-title">
-            <h2>Lịch sử thao tác</h2>
-            <small>{state.auditLogs.length} log</small>
-          </div>
-          {recentAuditLogs.length === 0 ? (
-            <p className="muted">Chưa có log thao tác.</p>
-          ) : (
-            <div className="settings-list audit-list">
-              {recentAuditLogs.map((log) => (
-                <div className="settings-list-row audit-row" key={log.id}>
-                  <div>
-                    <strong>{log.label}</strong>
-                    <small>{formatDateTime(log.createdAt)} · {log.entityType}</small>
-                  </div>
-                  <span className={`status-badge neutral audit-action-${log.action}`}>{log.action}</span>
+          {activeSection === "security" && (
+            <>
+              <div className="panel-title settings-section-title">
+                <h2>PIN & bảo mật</h2>
+                <small>{state.settings.hasPin ? "PIN đang bật" : "Chưa bật PIN"}</small>
+              </div>
+              <div className="settings-security-card">
+                <span className="settings-action-icon info"><KeyRound size={18} /></span>
+                <div>
+                  <strong>Mã PIN đang bật</strong>
                 </div>
-              ))}
-            </div>
+                <button className="ghost" onClick={() => setPinChangeOpen((open) => !open)} type="button">Đổi PIN</button>
+              </div>
+              {pinChangeOpen && (
+                <div className="settings-pin-change">
+                  <label>Mật khẩu admin<input type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} /></label>
+                  <label>PIN mới<input className="pin-input" type="tel" inputMode="numeric" pattern="[0-9]*" value={newPin} onChange={(event) => setNewPin(event.target.value.replace(/\D/g, ""))} /></label>
+                  <button className="primary" onClick={() => void changePinWithAdmin()} type="button">Lưu PIN mới</button>
+                </div>
+              )}
+              <div className="settings-toggle-row">
+                <div>
+                  <strong>Tự khóa khi không hoạt động</strong>
+                  <small>Khóa app sau 5 phút không thao tác.</small>
+                </div>
+                <button
+                  className={`settings-switch ${state.settings.autoLockEnabled ? "on" : ""}`}
+                  onClick={() => updateSettings((settings) => ({ ...settings, autoLockEnabled: !settings.autoLockEnabled }))}
+                  role="switch"
+                  aria-checked={state.settings.autoLockEnabled}
+                  type="button"
+                >
+                  <span />
+                </button>
+              </div>
+              <div className="settings-toggle-row">
+                <div>
+                  <strong>Tắt PIN</strong>
+                  <small>{pinLoginBypassStatus(state.settings.pinLoginDisabledUntil)}</small>
+                </div>
+                <label className="settings-select-label">
+                  <TimerReset size={16} />
+                  <select value={bypassActive ? (state.settings.pinLoginDisabledUntil === "manual" ? "manual" : "10m") : "now"} onChange={(event) => applyPinBypass(event.target.value as PinBypassOption)}>
+                    {pinBypassOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              {pinStatus && <small className={pinStatus.includes("Đã") ? "ok" : "form-error"}>{pinStatus}</small>}
+            </>
           )}
-        </article>
-      </section>
+
+          {activeSection === "trash" && (
+            <>
+              <div className="panel-title settings-section-title">
+                <h2>Thùng rác 30 ngày</h2>
+                <small>{trashItems.length} mục</small>
+              </div>
+              {trashItems.length === 0 ? (
+                <p className="muted">Chưa có dữ liệu nào trong thùng rác.</p>
+              ) : (
+                <div className="settings-list settings-list-full">
+                  {trashItems.map((item) => (
+                    <div className="settings-list-row" key={item.id}>
+                      <div className="settings-row-main">
+                        <span className="settings-action-icon danger"><Trash2 size={16} /></span>
+                        <div>
+                          <strong>{item.label}</strong>
+                          <small>Đã xóa {formatDateTime(item.deletedAt)} · còn {daysLeft(item.expiresAt)} ngày</small>
+                        </div>
+                      </div>
+                      <div className="settings-list-actions">
+                        <button className="ghost" onClick={() => dataTools.onRestoreTrash(item.id)} type="button">
+                          <RotateCcw size={15} /> Khôi phục
+                        </button>
+                        <button
+                          className="ghost danger-action"
+                          onClick={() => {
+                            if (window.confirm(`Xóa vĩnh viễn ${item.label}? Không thể khôi phục sau thao tác này.`)) dataTools.onPermanentDeleteTrash(item.id);
+                          }}
+                          type="button"
+                        >
+                          <Trash2 size={15} /> Xóa hẳn
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {activeSection === "history" && (
+            <>
+              <div className="panel-title settings-section-title">
+                <h2>Lịch sử thao tác</h2>
+                <button className="ghost" onClick={() => setFiltersOpen((open) => !open)} type="button"><ListFilter size={15} /> Lọc</button>
+              </div>
+              {filtersOpen && (
+                <div className="settings-filter-row">
+                  {(["all", "create", "update", "delete", "restore", "backup", "sync"] as AuditFilter[]).map((filter) => (
+                    <button className={historyFilter === filter ? "active" : ""} key={filter} onClick={() => setHistoryFilter(filter)} type="button">
+                      {filter === "all" ? "Tất cả" : filter}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {filteredAuditLogs.length === 0 ? (
+                <p className="muted">Chưa có log thao tác.</p>
+              ) : (
+                <div className="settings-list audit-list settings-list-full">
+                  {filteredAuditLogs.map((log) => (
+                    <div className="settings-list-row audit-row" key={log.id}>
+                      <div>
+                        <strong>{log.label}</strong>
+                        <small>{log.action} · {log.entityType} · {formatDateTime(log.createdAt)}</small>
+                      </div>
+                      <span className={`status-badge neutral audit-action-${log.action}`}>{log.action}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+
+      {restorePinModalOpen && (
+        <div className="modal-backdrop">
+          <div className="modal-card settings-pin-modal">
+            <div className="panel-title">
+              <h2>Xác nhận PIN</h2>
+              <button className="ghost icon-only" onClick={() => setRestorePinModalOpen(false)} title="Đóng" type="button"><X size={16} /></button>
+            </div>
+            <p className="muted">Nhập PIN hiện tại để khôi phục dữ liệu từ JSON.</p>
+            <input
+              className="pin-input"
+              type="tel"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={restorePin}
+              onChange={(event) => setRestorePin(event.target.value.replace(/\D/g, ""))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") authorizeRestore();
+              }}
+            />
+            <button className="primary full" onClick={authorizeRestore} type="button">Xác nhận và chọn file</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -12849,6 +13084,52 @@ export function App() {
     if (undoToastTimer.current) window.clearTimeout(undoToastTimer.current);
   }, []);
 
+  useEffect(() => {
+    if (unlocked || !state.settings.hasPin || !state.settings.pin || !isPinLoginBypassActive(state.settings.pinLoginDisabledUntil)) return;
+    setActivePin(state.settings.pin);
+    setUnlocked(true);
+    if (cloudConfigured) {
+      cloudLoaded.current = true;
+      lastCloudSnapshot.current = JSON.stringify(stateForAccountPin(state, state.settings.pin));
+    }
+  }, [cloudConfigured, state.settings.hasPin, state.settings.pin, state.settings.pinLoginDisabledUntil, unlocked]);
+
+  useEffect(() => {
+    const value = state.settings.pinLoginDisabledUntil;
+    if (!value || value === "manual") return;
+    const expiresAt = new Date(value).getTime();
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      setState((prev) => ({ ...prev, settings: { ...prev.settings, pinLoginDisabledUntil: undefined } }));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setState((prev) => ({ ...prev, settings: { ...prev.settings, pinLoginDisabledUntil: undefined } }));
+    }, expiresAt - Date.now() + 100);
+    return () => window.clearTimeout(timer);
+  }, [setState, state.settings.pinLoginDisabledUntil]);
+
+  useEffect(() => {
+    if (!unlocked || !state.settings.autoLockEnabled || isPinLoginBypassActive(state.settings.pinLoginDisabledUntil)) return;
+    let timer: number | null = null;
+    const lockApp = () => {
+      setUnlocked(false);
+      setActivePin("");
+      setBtcCloudAccountId("");
+      cloudLoaded.current = false;
+    };
+    const resetTimer = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(lockApp, AUTO_LOCK_MS);
+    };
+    const events = ["pointerdown", "keydown", "touchstart", "scroll", "mousemove"];
+    events.forEach((eventName) => window.addEventListener(eventName, resetTimer, { passive: true }));
+    resetTimer();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      events.forEach((eventName) => window.removeEventListener(eventName, resetTimer));
+    };
+  }, [state.settings.autoLockEnabled, state.settings.pinLoginDisabledUntil, unlocked]);
+
   const commitWithUndo: CommitWithUndo = (label, updater, meta) => {
     const previous = stateRef.current;
     const rawNext = typeof updater === "function" ? (updater as (prev: AppState) => AppState)(previous) : updater;
@@ -13221,12 +13502,12 @@ export function App() {
     const expectedHash = await loadAdminPasswordHash(DEFAULT_ADMIN_PASSWORD_HASH);
     const passwordHash = await sha256Hex(password);
     if (passwordHash !== expectedHash) {
-      return { ok: false, status: "Mởt khĐu admin chưa dúng." };
+      return { ok: false, status: "Mật khẩu admin chưa đúng." };
     }
-    return { ok: true, status: "SĐn sàng quỹn lý tài khoản PIN." };
+    return { ok: true, status: "Sẵn sàng quản lý tài khoản PIN." };
   };
 
-  const createAdminAccount = async (pin: string): Promise<AdminActionResult> => {
+  const createAdminAccount = async (alias: string, pin: string): Promise<AdminActionResult> => {
     const accountKey = cloudAccountKeyForPin(pin);
     const existing = await loadCloudState<AppState>(accountKey);
     if (existing) {
@@ -13234,20 +13515,25 @@ export function App() {
     }
 
     await saveCloudState(accountKey, stateForAccountPin(initialState, pin));
+    await upsertAdminAccountProfile({
+      accountId: await cloudAccountIdForKey(accountKey),
+      alias,
+      pin,
+    });
     return { ok: true, status: "Đã tạo tài khoản mới. Bạn có thể quay lại app và đăng nhập bằng PIN này." };
   };
 
-  const changeAdminAccountPin = async (oldPin: string, replacementPin: string): Promise<AdminActionResult> => {
-    const oldKey = cloudAccountKeyForPin(oldPin);
+  const changeAdminAccountPin = async (account: AdminAccountProfile, replacementPin: string): Promise<AdminActionResult> => {
+    const oldKey = cloudAccountKeyForPin(account.pin);
     const oldState = await loadCloudState<AppState>(oldKey);
     if (!oldState) {
-      return { ok: false, status: "Không tìm thĐy tài khoản với PIN cũ." };
+      return { ok: false, status: "Không tìm thấy tài khoản với PIN hiện tại." };
     }
 
     const nextKey = cloudAccountKeyForPin(replacementPin);
     const existingNext = await loadCloudState<AppState>(nextKey);
     if (existingNext) {
-      return { ok: false, status: "PIN mới dã có tài khoản khác. Hãy chọn PIN khác." };
+      return { ok: false, status: "PIN mới đã có tài khoản khác. Hãy chọn PIN khác." };
     }
 
     const nextState = normalizeStateWithMigrationSafety({
@@ -13257,7 +13543,19 @@ export function App() {
     });
     await saveCloudState(nextKey, nextState);
     await deleteCloudState(oldKey);
+    await deleteAdminAccountProfile(account.accountId);
+    await upsertAdminAccountProfile({
+      accountId: await cloudAccountIdForKey(nextKey),
+      alias: account.alias,
+      pin: replacementPin,
+    });
     return { ok: true, status: "Đã đổi PIN. Từ giờ hãy đăng nhập bằng PIN mới." };
+  };
+
+  const deleteAdminAccount = async (account: AdminAccountProfile): Promise<AdminActionResult> => {
+    await deleteCloudState(cloudAccountKeyForPin(account.pin));
+    await deleteAdminAccountProfile(account.accountId);
+    return { ok: true, status: `Đã xóa tài khoản ${account.alias}.` };
   };
 
   const unlockWithPin = async (pin: string) => {
@@ -13306,6 +13604,7 @@ export function App() {
     const previousKey = cloudAccountKeyForPin(activePin);
     const nextKey = cloudAccountKeyForPin(pin);
     const nextState = stateForAccountPin(state, pin);
+    const previousAccountId = cloudConfigured ? await cloudAccountIdForKey(previousKey) : "";
     setCloudStatus("Đang đổi PIN...");
     setState(nextState);
     stateRef.current = nextState;
@@ -13320,7 +13619,17 @@ export function App() {
 
     try {
       await saveCloudState(nextKey, nextState);
-      if (previousKey !== nextKey) await deleteCloudState(previousKey);
+      if (previousKey !== nextKey) {
+        const nextAccountId = await cloudAccountIdForKey(nextKey);
+        const profile = (await listAdminAccounts()).find((account) => account.accountId === previousAccountId);
+        await upsertAdminAccountProfile({
+          accountId: nextAccountId,
+          alias: profile?.alias ?? "Tài khoản",
+          pin,
+        });
+        await deleteAdminAccountProfile(previousAccountId);
+        await deleteCloudState(previousKey);
+      }
       setLastCloudSyncAt(new Date().toISOString());
       setCloudStatus("Đã đổi PIN và đồng bộ cloud.");
     } catch {
@@ -13456,8 +13765,10 @@ export function App() {
       <AdminPage
         cloudConfigured={cloudConfigured}
         onUnlockAdmin={unlockAdminAccount}
+        onListAccounts={listAdminAccounts}
         onCreateAccount={createAdminAccount}
         onChangeAccountPin={changeAdminAccountPin}
+        onDeleteAccount={deleteAdminAccount}
       />
     );
   }
@@ -13485,8 +13796,10 @@ export function App() {
             cloudSync={{
               configured: cloudConfigured,
               status: cloudStatus || (lastCloudSyncAt ? `Đã sync lúc ${formatDateTime(lastCloudSyncAt)}` : "Chưa đồng bộ."),
+              activePin,
               onSyncNow: () => void syncCloudNow(),
-              onChangePin: (pin) => void changePin(pin),
+              onVerifyAdminPassword: unlockAdminAccount,
+              onChangePin: (pin) => changePin(pin),
             }}
             dataTools={{
               onExportBackup: exportBackupJson,

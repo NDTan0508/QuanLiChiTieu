@@ -14,6 +14,22 @@ type AdminSettingsRow = {
   password_hash: string;
 };
 
+type AdminAccountProfileRow = {
+  account_id: string;
+  alias: string;
+  pin: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminAccountProfile = {
+  accountId: string;
+  alias: string;
+  pin: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type BtcLedgerStatus = {
   topups: number;
   dcaPlans: number;
@@ -111,6 +127,66 @@ export async function loadAdminPasswordHash(fallbackHash: string) {
 
   const rows = (await response.json()) as AdminSettingsRow[];
   return rows[0]?.password_hash || fallbackHash;
+}
+
+export async function listAdminAccounts(): Promise<AdminAccountProfile[]> {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const response = await fetch(`${config.url}/rest/v1/app_account_profiles?select=account_id,alias,pin,created_at,updated_at&order=updated_at.desc`, {
+    headers: supabaseHeaders(config),
+  });
+
+  if (!response.ok) throw new Error("Khong tai duoc danh sach tai khoan.");
+
+  const rows = (await response.json()) as AdminAccountProfileRow[];
+  return rows.map((row) => ({
+    accountId: row.account_id,
+    alias: row.alias,
+    pin: row.pin,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function upsertAdminAccountProfile(profile: {
+  accountId: string;
+  alias: string;
+  pin: string;
+  updatedAt?: string;
+}) {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const now = profile.updatedAt ?? new Date().toISOString();
+  const response = await fetch(`${config.url}/rest/v1/app_account_profiles`, {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(config),
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates",
+    },
+    body: JSON.stringify({
+      account_id: profile.accountId,
+      alias: profile.alias,
+      pin: profile.pin,
+      updated_at: now,
+    }),
+  });
+
+  if (!response.ok) throw new Error("Khong luu duoc thong tin tai khoan.");
+}
+
+export async function deleteAdminAccountProfile(accountId: string) {
+  const config = getSupabaseConfig();
+  if (!config) throw new Error("Thieu cau hinh Supabase.");
+
+  const response = await fetch(`${config.url}/rest/v1/app_account_profiles?account_id=eq.${encodeURIComponent(accountId)}`, {
+    method: "DELETE",
+    headers: supabaseHeaders(config),
+  });
+
+  if (!response.ok) throw new Error("Khong xoa duoc thong tin tai khoan.");
 }
 
 export async function cloudAccountIdForKey(syncKey: string) {
