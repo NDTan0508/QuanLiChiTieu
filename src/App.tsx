@@ -10594,7 +10594,7 @@ function ReportsPage({
     if (target <= 0) return `TB ${formatVnd(averageMonthly)}/tháng · Chưa có mục tiêu`;
     if (current >= target) return `TB ${formatVnd(averageMonthly)}/tháng · Đã đạt mục tiêu`;
     if (averageMonthly <= 0) return `TB ${formatVnd(0)}/tháng · Chưa đủ dữ liệu dự kiến`;
-    return `TB ${formatVnd(averageMonthly)}/tháng · Dự kiến còn ${formatGoalDuration((target - current) / averageMonthly)}`;
+    return `TB ${formatVnd(averageMonthly)}/tháng · còn ${formatGoalDuration((target - current) / averageMonthly)}`;
   };
   const reportChartLabels: Record<ReportChartKey, string> = {
     "current-assets": "Tổng tài sản hiện tại",
@@ -10617,8 +10617,8 @@ function ReportsPage({
     const endMonth = goal.dueDate ? monthFromDate(goal.dueDate) : shiftMonth(goal.startMonth, Math.max(goal.months - 1, 0));
     const unpaidMonths = accumulationUnpaidMonths(state, goal);
     return unpaidMonths > 0
-      ? `Còn ${unpaidMonths} tháng · Dự kiến ${formatMonth(endMonth)}`
-      : `Hoàn tất · Dự kiến ${formatMonth(endMonth)}`;
+      ? `Còn ${unpaidMonths}mo · end ${formatMonth(endMonth)}`
+      : `Hoàn tất · end ${formatMonth(endMonth)}`;
   };
   const pnlRowDetails = (row: AssetPnlRow) => {
     const detail = (label: string, value: string) => ({ label, value });
