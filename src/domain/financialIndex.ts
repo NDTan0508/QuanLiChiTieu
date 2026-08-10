@@ -47,6 +47,20 @@ export type FinancialIndex = {
 
 const numberValue = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const stringValue = (value: unknown) => (typeof value === "string" ? value : "");
+const estimatedStockSaleFee = (value: number, shares = 0) =>
+  Math.round(Math.max(value, 0) * 0.0008) +
+  Math.round(Math.max(value, 0) * 0.001) +
+  Math.round(Math.max(shares, 0) * 0.3);
+const stockSaleNetValue = (row: AnyRow) =>
+  Math.max(
+    Math.round(
+      numberValue(row.netVndAmount) ||
+        numberValue(row.vndAmount) -
+          (row.fee === undefined ? estimatedStockSaleFee(numberValue(row.vndAmount), numberValue(row.shares)) : numberValue(row.fee)) -
+          numberValue(row.tax)
+    ),
+    0
+  );
 
 function eventId(row: AnyRow, entityType: string, fallbackId: string) {
   return row.meta?.eventId || stableEventId(entityType, String(row.id || row.month || fallbackId));
@@ -119,7 +133,7 @@ export function buildFinancialIndex(state: FinancialIndexState): FinancialIndex 
   }));
   addRows(state.stockPurchases, "stock-purchase", () => "Mua cổ phiếu", () => ({ asset: "STOCK" }));
   addRows(state.stockSales, "stock-sale", () => "Rút/bán cổ phiếu", (row) => ({
-    amountVnd: numberValue(row.vndAmount),
+    amountVnd: stockSaleNetValue(row),
     asset: "STOCK",
     quantity: numberValue(row.shares),
     stockSymbol: stringValue(row.symbol),

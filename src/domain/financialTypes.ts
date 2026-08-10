@@ -21,7 +21,7 @@ export type FinancialAccount = {
   isActive: boolean;
 };
 
-export type MoneyFlowAsset = "VND" | "USDT" | "BTC" | "SOL" | "STOCK";
+export type MoneyFlowAsset = "VND" | "USDT" | "BTC" | "SOL" | "STOCK" | "STOCK_TOTAL";
 
 export type FinancialEvent = {
   id: string;

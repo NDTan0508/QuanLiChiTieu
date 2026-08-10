@@ -443,7 +443,14 @@ function stockBalances(state: HealthState) {
     const symbol = s(sale.symbol).toUpperCase();
     const shares = n(sale.shares);
     holdings.set(symbol, (holdings.get(symbol) ?? 0) - shares);
-    if (sale.destination === "stock") soldToCash += n(sale.vndAmount);
+    if (sale.destination === "stock") {
+      const gross = n(sale.vndAmount);
+      const fee =
+        sale.fee === undefined
+          ? Math.round(Math.max(gross, 0) * 0.0008) + Math.round(Math.max(gross, 0) * 0.001) + Math.round(Math.max(shares, 0) * 0.3)
+          : n(sale.fee);
+      soldToCash += n(sale.netVndAmount) || Math.max(gross - fee - n(sale.tax), 0);
+    }
   });
   return { cash: fundCash - invested + soldToCash + corporateCash, holdings };
 }
