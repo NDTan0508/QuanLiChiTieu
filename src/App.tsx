@@ -1737,13 +1737,94 @@ async function fetchMarket(fallback: Market) {
   };
 }
 
+function corporateActionEventDate(action: Pick<CorporateAction, "receiveDate" | "paymentDate" | "recordDate" | "exDate" | "appliedAt">) {
+  return action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? action.appliedAt?.slice(0, 10) ?? "";
+}
+
+function stockSharesAtDate(state: AppState, symbolValue: string, upToDate: string, excludeCorporateActionId?: string) {
+  const targetSymbol = symbolValue.trim().toUpperCase();
+  if (!targetSymbol || !upToDate) return 0;
+  const holdings = new Map<string, number>();
+  const events = [
+    ...state.stockPurchases.flatMap((purchase, purchaseIndex) =>
+      purchase.lines.map((line, lineIndex) => ({
+        kind: "buy" as const,
+        date: purchase.date,
+        createdAt: purchase.createdAt,
+        order: purchaseIndex * 100 + lineIndex,
+        line,
+      }))
+    ),
+    ...state.stockSales.map((sale, index) => ({
+      kind: "sale" as const,
+      date: sale.date,
+      createdAt: sale.createdAt,
+      order: index,
+      sale,
+    })),
+    ...state.corporateActions
+      .filter((action) => action.status === "applied" && action.id !== excludeCorporateActionId)
+      .map((action, index) => ({
+        kind: "corporate-action" as const,
+        date: corporateActionEventDate(action),
+        createdAt: action.appliedAt,
+        order: index,
+        action,
+      })),
+  ]
+    .filter((event) => event.date && event.date <= upToDate)
+    .sort((left, right) => {
+      const dateOrder = left.date.localeCompare(right.date);
+      if (dateOrder) return dateOrder;
+      const leftTime = new Date(left.createdAt ?? `${left.date}T00:00:00`).getTime();
+      const rightTime = new Date(right.createdAt ?? `${right.date}T00:00:00`).getTime();
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      if (!left.createdAt && !right.createdAt && left.kind !== right.kind) return left.kind === "sale" ? -1 : 1;
+      return left.kind === right.kind ? left.order - right.order : left.kind === "buy" ? -1 : 1;
+    });
+
+  events.forEach((event) => {
+    if (event.kind === "buy") {
+      const symbol = event.line.symbol.toUpperCase();
+      holdings.set(symbol, (holdings.get(symbol) ?? 0) + event.line.shares);
+      return;
+    }
+    if (event.kind === "sale") {
+      const symbol = event.sale.symbol.toUpperCase();
+      holdings.set(symbol, Math.max((holdings.get(symbol) ?? 0) - event.sale.shares, 0));
+      return;
+    }
+    const action = event.action;
+    const symbol = action.symbol.toUpperCase();
+    if (action.type === "cash_dividend") return;
+    const current = holdings.get(symbol) ?? 0;
+    const ratioFrom = action.ratioFrom || 1;
+    const ratioTo = action.ratioTo || 1;
+    if (action.type === "stock_dividend" || action.type === "bonus_issue" || action.type === "rights_issue") {
+      const addedShares = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+      holdings.set(symbol, current + addedShares);
+      return;
+    }
+    if (action.type === "stock_split" || action.type === "reverse_split") {
+      holdings.set(symbol, Math.floor((current * ratioTo) / ratioFrom));
+      return;
+    }
+    if (action.type === "symbol_change" && action.newSymbol) {
+      holdings.delete(symbol);
+      holdings.set(action.newSymbol.toUpperCase(), current);
+    }
+  });
+
+  return holdings.get(targetSymbol) ?? 0;
+}
+
 function stockPortfolioStats(state: AppState, upToMonth?: string) {
   const fundCash = state.fundTransactions
     .filter((item) => item.fund === "stock" && (!upToMonth || item.month <= upToMonth) && !item.note.startsWith("Rút từ CK"))
     .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
   const purchases = state.stockPurchases.filter((purchase) => !upToMonth || purchase.month <= upToMonth);
   const sales = state.stockSales.filter((sale) => !upToMonth || monthFromDate(sale.date) <= upToMonth);
-  const corporateActions = state.corporateActions.filter((action) => action.status === "applied" && (!upToMonth || monthFromDate(action.appliedAt ?? action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? "") <= upToMonth));
+  const corporateActions = state.corporateActions.filter((action) => action.status === "applied" && (!upToMonth || monthFromDate(corporateActionEventDate(action)) <= upToMonth));
   const invested = purchases.reduce((sum, purchase) => sum + stockPurchaseLinesCost(purchase.lines), 0);
   const holdings = new Map<string, { symbol: string; shares: number; cost: number; lastBuyPrice: number }>();
   let soldToCashBalance = 0;
@@ -1769,7 +1850,7 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
     })),
     ...corporateActions.map((action, index) => ({
       kind: "corporate-action" as const,
-      date: action.appliedAt ?? action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? "",
+      date: corporateActionEventDate(action),
       createdAt: action.appliedAt,
       order: index,
       action,
@@ -1923,7 +2004,7 @@ function stockSaleHistoryRows(state: AppState) {
       .filter((action) => action.status === "applied")
       .map((action, index) => ({
         kind: "corporate-action" as const,
-        date: action.appliedAt ?? action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? "",
+        date: corporateActionEventDate(action),
         createdAt: action.appliedAt,
         order: index,
         action,
@@ -6935,13 +7016,12 @@ function StockPage({
     exDate: today(),
     recordDate: today(),
     receiveDate: today(),
-    ratioFrom: "10",
-    ratioTo: "1",
+    ratioFrom: "100",
+    ratioTo: "10",
     cashDividendPercent: "10",
     cashPerShare: "",
     subscriptionPrice: "10",
     taxRate: "5",
-    fee: "",
     eligibleShares: "",
     resultingShares: "",
     cashReceived: "",
@@ -6954,7 +7034,6 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
   const plannedGrossValue = buyRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) }), 0);
   const plannedFeeAmount = estimateStockBuyFee(plannedGrossValue);
   const plannedValue = plannedGrossValue + plannedFeeAmount;
-  const plannedPercent = stats.cash ? Math.round((plannedValue / stats.cash) * 100) : 0;
   const saleVndAmount = Math.round((Number(saleForm.shares) || 0) * parseDecimal(saleForm.price) * STOCK_PRICE_UNIT);
   const saleFeeAmount = saleForm.fee ? parseMoney(saleForm.fee) : estimateStockSaleFee(saleVndAmount, Number(saleForm.shares) || 0);
   const saleNetVndAmount = saleForm.netVnd ? parseMoney(saleForm.netVnd) : Math.max(saleVndAmount - saleFeeAmount, 0);
@@ -7007,8 +7086,10 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
   const appliedCorporateActions = [...state.corporateActions]
     .filter((action) => action.status === "applied")
     .sort((left, right) => (right.appliedAt ?? right.receiveDate ?? "").localeCompare(left.appliedAt ?? left.receiveDate ?? ""));
-  const selectedCorporateHolding = stats.holdings.find((item) => item.symbol === corporateForm.symbol.trim().toUpperCase());
-  const corporateEligibleShares = Number(corporateForm.eligibleShares) || selectedCorporateHolding?.shares || 0;
+  const selectedCorporateSymbol = corporateForm.symbol.trim().toUpperCase();
+  const selectedCorporateHolding = stats.holdings.find((item) => item.symbol === selectedCorporateSymbol);
+  const selectedCorporateEventShares = selectedCorporateSymbol ? stockSharesAtDate(state, selectedCorporateSymbol, corporateForm.receiveDate) : 0;
+  const corporateEligibleShares = Number(corporateForm.eligibleShares) || selectedCorporateEventShares || selectedCorporateHolding?.shares || 0;
   const corporateRatioFrom = parseDecimal(corporateForm.ratioFrom) || 1;
   const corporateRatioTo = parseDecimal(corporateForm.ratioTo) || 1;
   const computedCorporateShares = Math.floor((corporateEligibleShares * corporateRatioTo) / corporateRatioFrom);
@@ -7674,13 +7755,12 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
       exDate: today(),
       recordDate: today(),
       receiveDate: today(),
-      ratioFrom: "10",
-      ratioTo: "1",
+      ratioFrom: "100",
+      ratioTo: "10",
       cashDividendPercent: "10",
       cashPerShare: "",
       subscriptionPrice: "10",
       taxRate: "5",
-      fee: "",
       eligibleShares: "",
       resultingShares: "",
       cashReceived: "",
@@ -7721,28 +7801,62 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
     };
   };
 
+  const formatCorporateRatioBase100 = (ratioFrom: number, ratioTo: number) => {
+    const normalizedTo = ratioFrom ? (ratioTo * 100) / ratioFrom : 0;
+    const formatRatioNumber = (value: number) =>
+      Number.isInteger(value)
+        ? String(value)
+        : value.toLocaleString("vi-VN", { maximumFractionDigits: 4 });
+    return `100:${formatRatioNumber(normalizedTo)}`;
+  };
+
   const corporatePreview = (action: CorporateAction | null) => {
-    if (!action) return "Chọn mã cổ phiếu đang giữ để app tự tính theo số cổ hiện có.";
-    const holding = stats.holdings.find((item) => item.symbol === action.symbol.toUpperCase());
-    const beforeShares = holding?.shares ?? action.eligibleShares;
+    if (!action) return "Chọn mã và ngày nhận để app tự tính số cổ tại ngày sự kiện.";
+    const beforeShares = stockSharesAtDate(state, action.symbol, corporateActionEventDate(action), action.id) || action.eligibleShares;
     const ratioFrom = action.ratioFrom || 1;
     const ratioTo = action.ratioTo || 1;
+    const ratioLabel = (changedShares?: number) => {
+      if (action.type === "cash_dividend" || action.type === "symbol_change") return "";
+      const sharesText = typeof changedShares === "number" ? ` (${Math.abs(changedShares).toLocaleString("vi-VN")} cp)` : "";
+      return ` · Tỷ lệ ${formatCorporateRatioBase100(ratioFrom, ratioTo)}${sharesText}`;
+    };
     if (action.type === "cash_dividend") {
       const cash = action.cashReceived ?? action.eligibleShares * (action.cashPerShare ?? 0) * (1 - (action.taxRate ?? 0) / 100) - (action.fee ?? 0);
       return `Tiền dư CK +${formatVnd(Math.max(cash, 0))}`;
     }
     if (action.type === "rights_issue") {
       const added = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
-      return `${beforeShares.toLocaleString("vi-VN")} -> ${(beforeShares + added).toLocaleString("vi-VN")} cp`;
+      return `${beforeShares.toLocaleString("vi-VN")} -> ${(beforeShares + added).toLocaleString("vi-VN")} cp${ratioLabel(added)}`;
     }
     if (action.type === "stock_dividend" || action.type === "bonus_issue") {
       const added = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
-      return `${beforeShares.toLocaleString("vi-VN")} -> ${(beforeShares + added).toLocaleString("vi-VN")} cp`;
+      return `${beforeShares.toLocaleString("vi-VN")} -> ${(beforeShares + added).toLocaleString("vi-VN")} cp${ratioLabel(added)}`;
     }
     if (action.type === "stock_split" || action.type === "reverse_split") {
-      return `${beforeShares.toLocaleString("vi-VN")} -> ${Math.floor((beforeShares * ratioTo) / ratioFrom).toLocaleString("vi-VN")} cp`;
+      const afterShares = Math.floor((beforeShares * ratioTo) / ratioFrom);
+      return `${beforeShares.toLocaleString("vi-VN")} -> ${afterShares.toLocaleString("vi-VN")} cp${ratioLabel(afterShares - beforeShares)}`;
     }
     return "Chưa áp dụng";
+  };
+  const corporateActionRatioSummary = (action: CorporateAction) => {
+    if (action.type === "symbol_change") return "";
+    if (action.type === "cash_dividend") {
+      const cashPerShare = action.cashPerShare ?? 0;
+      const dividendPercent = cashPerShare ? (cashPerShare / STOCK_PAR_VALUE) * 100 : 0;
+      const percentText = Number.isInteger(dividendPercent)
+        ? String(dividendPercent)
+        : dividendPercent.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
+      const netCash = action.cashReceived ?? Math.max(Math.round(action.eligibleShares * cashPerShare * (1 - (action.taxRate ?? 0) / 100) - (action.fee ?? 0)), 0);
+      return ` · Tỷ lệ 100:${percentText} · Sau thuế ${formatVnd(netCash)}`;
+    }
+    const ratioFrom = action.ratioFrom || 1;
+    const ratioTo = action.ratioTo || 1;
+    const shares =
+      action.type === "stock_split" || action.type === "reverse_split"
+        ? Math.abs(Math.floor((action.eligibleShares * ratioTo) / ratioFrom) - action.eligibleShares)
+        : action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
+    const paidText = action.type === "rights_issue" ? ` · ${formatVnd(corporateActionRightsIssueCost(action))}` : "";
+    return ` · Tỷ lệ ${formatCorporateRatioBase100(ratioFrom, ratioTo)} (${shares.toLocaleString("vi-VN")} cp)${paidText}`;
   };
   const corporatePreviewAction = corporateActionFromForm();
 
@@ -7873,15 +7987,16 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
       <label>Mã cổ phiếu<select value={corporateForm.symbol} onChange={(event) => {
         const symbol = event.target.value;
         const holding = stats.holdings.find((item) => item.symbol === symbol);
-        setCorporateForm({ ...corporateForm, symbol, eligibleShares: holding ? String(holding.shares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
+        const eventShares = stockSharesAtDate(state, symbol, corporateForm.receiveDate);
+        setCorporateForm({ ...corporateForm, symbol, eligibleShares: eventShares ? String(eventShares) : holding ? String(holding.shares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
       }}><option value="">Chọn mã</option>{stats.holdings.map((holding) => <option key={holding.symbol} value={holding.symbol}>{holding.symbol} · {holding.shares.toLocaleString("vi-VN")} cp</option>)}</select></label>
       <label>Loại sự kiện<select value={corporateForm.type} onChange={(event) => {
         const type = event.target.value as CorporateAction["type"];
         setCorporateForm({
           ...corporateForm,
           type,
-          ratioFrom: "10",
-          ratioTo: "1",
+          ratioFrom: "100",
+          ratioTo: "10",
           cashDividendPercent: type === "cash_dividend" ? corporateForm.cashDividendPercent || "10" : corporateForm.cashDividendPercent,
           taxRate: type === "cash_dividend" ? corporateForm.taxRate || "5" : "",
           subscriptionPrice: type === "rights_issue" ? corporateForm.subscriptionPrice || "10" : corporateForm.subscriptionPrice,
@@ -7889,12 +8004,16 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
           cashReceived: "",
         });
       }}>{corporateActionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-      <label>Ngày nhận<input type="date" value={corporateForm.receiveDate} onChange={(event) => setCorporateForm({ ...corporateForm, receiveDate: event.target.value })} /></label>
+      <label>Ngày nhận<input type="date" value={corporateForm.receiveDate} onChange={(event) => {
+        const receiveDate = event.target.value;
+        const eventShares = stockSharesAtDate(state, corporateForm.symbol, receiveDate);
+        setCorporateForm({ ...corporateForm, receiveDate, eligibleShares: eventShares ? String(eventShares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
+      }} /></label>
       <label>Số cổ đủ quyền<input value={corporateForm.eligibleShares} onChange={(event) => setCorporateForm({ ...corporateForm, eligibleShares: event.target.value.replace(/\D/g, "") })} placeholder="1000" /></label>
       {corporateForm.type !== "cash_dividend" && (
         <>
-          <label>Tỷ lệ từ<input value={corporateForm.ratioFrom} onChange={(event) => setCorporateForm({ ...corporateForm, ratioFrom: formatDecimalChange(event) })} placeholder="10" /></label>
-          <label>Tỷ lệ đến<input value={corporateForm.ratioTo} onChange={(event) => setCorporateForm({ ...corporateForm, ratioTo: formatDecimalChange(event) })} placeholder="1" /></label>
+          <label>Tỷ lệ từ<input value={corporateForm.ratioFrom} onChange={(event) => setCorporateForm({ ...corporateForm, ratioFrom: formatDecimalChange(event) })} placeholder="100" /></label>
+          <label>Tỷ lệ đến<input value={corporateForm.ratioTo} onChange={(event) => setCorporateForm({ ...corporateForm, ratioTo: formatDecimalChange(event) })} placeholder="10" /></label>
         </>
       )}
       {corporateForm.type === "cash_dividend" && (
@@ -7917,7 +8036,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
         <>
           <label>Giá quyền mua<input value={corporateForm.subscriptionPrice} onChange={(event) => setCorporateForm({ ...corporateForm, subscriptionPrice: formatDecimalChange(event) })} placeholder="10,0" /></label>
           <label>Số cổ được mua<input value={corporateForm.resultingShares || (computedCorporateShares ? String(computedCorporateShares) : "")} onChange={(event) => setCorporateForm({ ...corporateForm, resultingShares: event.target.value.replace(/\D/g, "") })} placeholder="Tự tính" /></label>
-          <label>Số tiền mua<input value={rightsIssueAmount ? rightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
+          <label>Thực trả<input value={rightsIssueAmount ? rightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
           <button className="primary corporate-confirm-button" onClick={applyManualCorporateAction} type="button">Xác nhận</button>
         </>
       )}
@@ -7979,16 +8098,12 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
             <>
               <div className="confirm-summary stock-confirm-summary">
                 <div>
-                  <span>Tỉ lệ</span>
-                  <strong>{plannedPercent}%</strong>
+                  <span>Phí mua</span>
+                  <strong>{formatVnd(plannedFeeAmount)}</strong>
                 </div>
                 <div>
                   <span>Tổng tiền</span>
                   <strong>{formatVnd(plannedValue)} / {formatVnd(stats.cash)}</strong>
-                </div>
-                <div>
-                  <span>Phí mua</span>
-                  <strong>{formatVnd(plannedFeeAmount)}</strong>
                 </div>
               </div>
               <div className="stock-buy-list">
@@ -8224,15 +8339,16 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
             <label>Mã cổ phiếu<select value={corporateForm.symbol} onChange={(event) => {
               const symbol = event.target.value;
               const holding = stats.holdings.find((item) => item.symbol === symbol);
-              setCorporateForm({ ...corporateForm, symbol, eligibleShares: holding ? String(holding.shares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
+              const eventShares = stockSharesAtDate(state, symbol, corporateForm.receiveDate);
+              setCorporateForm({ ...corporateForm, symbol, eligibleShares: eventShares ? String(eventShares) : holding ? String(holding.shares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
             }}><option value="">Chọn mã</option>{stats.holdings.map((holding) => <option key={holding.symbol} value={holding.symbol}>{holding.symbol} · {holding.shares.toLocaleString("vi-VN")} cp</option>)}</select></label>
             <label>Loại sự kiện<select value={corporateForm.type} onChange={(event) => {
               const type = event.target.value as CorporateAction["type"];
               setCorporateForm({
                 ...corporateForm,
                 type,
-                ratioFrom: "10",
-                ratioTo: "1",
+                ratioFrom: "100",
+                ratioTo: "10",
                 cashDividendPercent: type === "cash_dividend" ? corporateForm.cashDividendPercent || "10" : corporateForm.cashDividendPercent,
                 taxRate: type === "cash_dividend" ? corporateForm.taxRate || "5" : "",
                 subscriptionPrice: type === "rights_issue" ? corporateForm.subscriptionPrice || "10" : corporateForm.subscriptionPrice,
@@ -8240,12 +8356,16 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
                 cashReceived: "",
               });
             }}>{corporateActionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-            <label>Ngày nhận<input type="date" value={corporateForm.receiveDate} onChange={(event) => setCorporateForm({ ...corporateForm, receiveDate: event.target.value })} /></label>
+            <label>Ngày nhận<input type="date" value={corporateForm.receiveDate} onChange={(event) => {
+              const receiveDate = event.target.value;
+              const eventShares = stockSharesAtDate(state, corporateForm.symbol, receiveDate);
+              setCorporateForm({ ...corporateForm, receiveDate, eligibleShares: eventShares ? String(eventShares) : corporateForm.eligibleShares, resultingShares: "", cashReceived: "" });
+            }} /></label>
             <label>Số cổ đủ quyền<input value={corporateForm.eligibleShares} onChange={(event) => setCorporateForm({ ...corporateForm, eligibleShares: event.target.value.replace(/\D/g, "") })} placeholder="1000" /></label>
             {corporateForm.type !== "cash_dividend" && (
               <>
-                <label>Tỷ lệ từ<input value={corporateForm.ratioFrom} onChange={(event) => setCorporateForm({ ...corporateForm, ratioFrom: formatDecimalChange(event) })} placeholder="10" /></label>
-                <label>Tỷ lệ đến<input value={corporateForm.ratioTo} onChange={(event) => setCorporateForm({ ...corporateForm, ratioTo: formatDecimalChange(event) })} placeholder="1" /></label>
+                <label>Tỷ lệ từ<input value={corporateForm.ratioFrom} onChange={(event) => setCorporateForm({ ...corporateForm, ratioFrom: formatDecimalChange(event) })} placeholder="100" /></label>
+                <label>Tỷ lệ đến<input value={corporateForm.ratioTo} onChange={(event) => setCorporateForm({ ...corporateForm, ratioTo: formatDecimalChange(event) })} placeholder="10" /></label>
               </>
             )}
             {corporateForm.type === "cash_dividend" && (
@@ -8268,7 +8388,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
               <>
                 <label>Giá quyền mua<input value={corporateForm.subscriptionPrice} onChange={(event) => setCorporateForm({ ...corporateForm, subscriptionPrice: formatDecimalChange(event) })} placeholder="10,0" /></label>
                 <label>Số cổ được mua<input value={corporateForm.resultingShares || (computedCorporateShares ? String(computedCorporateShares) : "")} onChange={(event) => setCorporateForm({ ...corporateForm, resultingShares: event.target.value.replace(/\D/g, "") })} placeholder="Tự tính" /></label>
-                <label>Số tiền mua<input value={rightsIssueAmount ? rightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
+                <label>Thực trả<input value={rightsIssueAmount ? rightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
                 <button className="primary corporate-confirm-button" onClick={applyManualCorporateAction} type="button">Xác nhận</button>
               </>
             )}
@@ -8276,13 +8396,13 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
         )}
         <div className="settings-list history-five-list">
           {appliedCorporateActions.length === 0 ? <p className="muted">Chưa áp dụng cổ tức/quyền mua nào.</p> : appliedCorporateActions.map((action) => (
-            <div className="settings-list-row" key={action.id}>
+            <div className="settings-list-row corporate-action-row" key={action.id}>
               <div>
                 <strong>{action.symbol} · {corporateActionLabel(action.type)}</strong>
-                <small>{action.appliedAt ? formatDateTime(action.appliedAt) : action.receiveDate ? formatDate(action.receiveDate) : "Đã áp dụng"} · {corporatePreview(action)}</small>
+                <small>{corporateActionEventDate(action) ? formatDate(corporateActionEventDate(action)) : "Đã áp dụng"}{corporateActionRatioSummary(action)}</small>
               </div>
               <div className="settings-list-actions">
-                <button className="ghost action-button-sm" onClick={() => undoCorporateAction(action)} type="button"><RotateCcw size={16} /> Hoàn tác</button>
+                <button className="ghost action-button-sm icon-only corporate-action-undo" onClick={() => undoCorporateAction(action)} title="Hoàn tác" aria-label="Hoàn tác" type="button"><RotateCcw size={16} /></button>
               </div>
             </div>
           ))}
@@ -8401,7 +8521,7 @@ function corporateActionRightsIssueCost(action: CorporateAction) {
   const ratioFrom = action.ratioFrom || 1;
   const ratioTo = action.ratioTo || 1;
   const addedShares = action.resultingShares ?? Math.floor((action.eligibleShares * ratioTo) / ratioFrom);
-  return Math.round(addedShares * (action.subscriptionPrice ?? 0) * STOCK_PRICE_UNIT + (action.fee ?? 0));
+  return Math.round(addedShares * (action.subscriptionPrice ?? 0) * STOCK_PRICE_UNIT);
 }
 
 function expectedReconciliationBalances(
@@ -12678,8 +12798,8 @@ function QuickActionButton({
     symbol: "",
     type: "cash_dividend" as CorporateAction["type"],
     receiveDate: today(),
-    ratioFrom: "10",
-    ratioTo: "1",
+    ratioFrom: "100",
+    ratioTo: "10",
     cashDividendPercent: "10",
     cashPerShare: "",
     subscriptionPrice: "10",
@@ -12808,7 +12928,6 @@ function QuickActionButton({
   const quickStockPlannedGrossValue = quickStockRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) }), 0);
   const quickStockPlannedFee = estimateStockBuyFee(quickStockPlannedGrossValue);
   const quickStockPlannedValue = quickStockPlannedGrossValue + quickStockPlannedFee;
-  const quickStockPlannedPercent = stockStats.cash ? Math.round((quickStockPlannedValue / stockStats.cash) * 100) : 0;
   const quickStockTransferValue = Math.round((parseDecimal(stockTransfer.shares) || 0) * (parseDecimal(stockTransfer.price) || 0) * STOCK_PRICE_UNIT);
   const quickStockTransferFee = stockTransfer.fee ? parseMoney(stockTransfer.fee) : estimateStockSaleFee(quickStockTransferValue, parseDecimal(stockTransfer.shares) || 0);
   const quickStockTransferNet = stockTransfer.netVnd ? parseMoney(stockTransfer.netVnd) : Math.max(quickStockTransferValue - quickStockTransferFee, 0);
@@ -12822,8 +12941,10 @@ function QuickActionButton({
     { id: "cash", label: "Tiền mặt" },
   ];
   const activeAccumulationGoals = state.accumulationGoals.filter((goal) => goal.status === "active");
-  const selectedQuickCorporateHolding = stockStats.holdings.find((item) => item.symbol === quickCorporate.symbol.trim().toUpperCase());
-  const quickCorporateEligibleShares = Number(quickCorporate.eligibleShares) || selectedQuickCorporateHolding?.shares || 0;
+  const selectedQuickCorporateSymbol = quickCorporate.symbol.trim().toUpperCase();
+  const selectedQuickCorporateHolding = stockStats.holdings.find((item) => item.symbol === selectedQuickCorporateSymbol);
+  const selectedQuickCorporateEventShares = selectedQuickCorporateSymbol ? stockSharesAtDate(state, selectedQuickCorporateSymbol, quickCorporate.receiveDate) : 0;
+  const quickCorporateEligibleShares = Number(quickCorporate.eligibleShares) || selectedQuickCorporateEventShares || selectedQuickCorporateHolding?.shares || 0;
   const quickCorporateRatioFrom = parseDecimal(quickCorporate.ratioFrom) || 1;
   const quickCorporateRatioTo = parseDecimal(quickCorporate.ratioTo) || 1;
   const quickComputedCorporateShares = Math.floor((quickCorporateEligibleShares * quickCorporateRatioTo) / quickCorporateRatioFrom);
@@ -13365,8 +13486,8 @@ function QuickActionButton({
       symbol: "",
       type: "cash_dividend",
       receiveDate: today(),
-      ratioFrom: "10",
-      ratioTo: "1",
+      ratioFrom: "100",
+      ratioTo: "10",
       cashDividendPercent: "10",
       cashPerShare: "",
       subscriptionPrice: "10",
@@ -14003,16 +14124,12 @@ function QuickActionButton({
               {kind === "stock-buy" && <>
                 <div className="confirm-summary stock-confirm-summary">
                   <div>
-                    <span>Tỉ lệ</span>
-                    <strong>{quickStockPlannedPercent}%</strong>
+                    <span>Phí mua</span>
+                    <strong>{formatVnd(quickStockPlannedFee)}</strong>
                   </div>
                   <div>
                     <span>Tổng tiền</span>
                     <strong>{formatVnd(quickStockPlannedValue)} / {formatVnd(stockStats.cash)}</strong>
-                  </div>
-                  <div>
-                    <span>Phí mua</span>
-                    <strong>{formatVnd(quickStockPlannedFee)}</strong>
                   </div>
                 </div>
                 <div className="stock-buy-list">
@@ -14094,18 +14211,19 @@ function QuickActionButton({
                 </div>
               </>}
               {kind === "stock-event" && <>
-                <label>Mã cổ phiếu<select value={quickCorporate.symbol} onChange={(event) => {
-                  const symbol = event.target.value;
-                  const holding = stockStats.holdings.find((item) => item.symbol === symbol);
-                  setQuickCorporate({ ...quickCorporate, symbol, eligibleShares: holding ? String(holding.shares) : quickCorporate.eligibleShares, resultingShares: "", cashReceived: "" });
-                }}><option value="">Chọn mã</option>{stockStats.holdings.map((holding) => <option key={holding.symbol} value={holding.symbol}>{holding.symbol} · {holding.shares.toLocaleString("vi-VN")} cp</option>)}</select></label>
+                  <label>Mã cổ phiếu<select value={quickCorporate.symbol} onChange={(event) => {
+                    const symbol = event.target.value;
+                    const holding = stockStats.holdings.find((item) => item.symbol === symbol);
+                    const eventShares = stockSharesAtDate(state, symbol, quickCorporate.receiveDate);
+                    setQuickCorporate({ ...quickCorporate, symbol, eligibleShares: eventShares ? String(eventShares) : holding ? String(holding.shares) : quickCorporate.eligibleShares, resultingShares: "", cashReceived: "" });
+                  }}><option value="">Chọn mã</option>{stockStats.holdings.map((holding) => <option key={holding.symbol} value={holding.symbol}>{holding.symbol} · {holding.shares.toLocaleString("vi-VN")} cp</option>)}</select></label>
                 <label>Loại sự kiện<select value={quickCorporate.type} onChange={(event) => {
                   const type = event.target.value as CorporateAction["type"];
                   setQuickCorporate({
                     ...quickCorporate,
                     type,
-                    ratioFrom: "10",
-                    ratioTo: "1",
+                    ratioFrom: "100",
+                    ratioTo: "10",
                     cashDividendPercent: type === "cash_dividend" ? quickCorporate.cashDividendPercent || "10" : quickCorporate.cashDividendPercent,
                     taxRate: type === "cash_dividend" ? quickCorporate.taxRate || "5" : "",
                     subscriptionPrice: type === "rights_issue" ? quickCorporate.subscriptionPrice || "10" : quickCorporate.subscriptionPrice,
@@ -14113,11 +14231,15 @@ function QuickActionButton({
                     cashReceived: "",
                   });
                 }}>{quickCorporateActionOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-                <label>Ngày nhận<input type="date" value={quickCorporate.receiveDate} onChange={(event) => setQuickCorporate({ ...quickCorporate, receiveDate: event.target.value })} /></label>
+                <label>Ngày nhận<input type="date" value={quickCorporate.receiveDate} onChange={(event) => {
+                  const receiveDate = event.target.value;
+                  const eventShares = stockSharesAtDate(state, quickCorporate.symbol, receiveDate);
+                  setQuickCorporate({ ...quickCorporate, receiveDate, eligibleShares: eventShares ? String(eventShares) : quickCorporate.eligibleShares, resultingShares: "", cashReceived: "" });
+                }} /></label>
                 <label>Số cổ đủ quyền<input value={quickCorporate.eligibleShares} onChange={(event) => setQuickCorporate({ ...quickCorporate, eligibleShares: event.target.value.replace(/\D/g, "") })} placeholder="1000" /></label>
                 {quickCorporate.type !== "cash_dividend" && <>
-                  <label>Tỷ lệ từ<input value={quickCorporate.ratioFrom} onChange={(event) => setQuickCorporate({ ...quickCorporate, ratioFrom: formatDecimalChange(event) })} placeholder="10" /></label>
-                  <label>Tỷ lệ đến<input value={quickCorporate.ratioTo} onChange={(event) => setQuickCorporate({ ...quickCorporate, ratioTo: formatDecimalChange(event) })} placeholder="1" /></label>
+                  <label>Tỷ lệ từ<input value={quickCorporate.ratioFrom} onChange={(event) => setQuickCorporate({ ...quickCorporate, ratioFrom: formatDecimalChange(event) })} placeholder="100" /></label>
+                  <label>Tỷ lệ đến<input value={quickCorporate.ratioTo} onChange={(event) => setQuickCorporate({ ...quickCorporate, ratioTo: formatDecimalChange(event) })} placeholder="10" /></label>
                 </>}
                 {quickCorporate.type === "cash_dividend" && <>
                   <label>Cổ tức %<input value={quickCorporate.cashDividendPercent} onChange={(event) => setQuickCorporate({ ...quickCorporate, cashDividendPercent: formatDecimalChange(event), cashPerShare: "", cashReceived: "" })} placeholder="10" /></label>
@@ -14130,7 +14252,7 @@ function QuickActionButton({
                 {quickCorporate.type === "rights_issue" && <>
                   <label>Giá quyền mua<input value={quickCorporate.subscriptionPrice} onChange={(event) => setQuickCorporate({ ...quickCorporate, subscriptionPrice: formatDecimalChange(event) })} placeholder="10,0" /></label>
                   <label>Số cổ được mua<input value={quickCorporate.resultingShares || (quickComputedCorporateShares ? String(quickComputedCorporateShares) : "")} onChange={(event) => setQuickCorporate({ ...quickCorporate, resultingShares: event.target.value.replace(/\D/g, "") })} placeholder="Tự tính" /></label>
-                  <label>Số tiền mua<input value={quickRightsIssueAmount ? quickRightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
+                  <label>Thực trả<input value={quickRightsIssueAmount ? quickRightsIssueAmount.toLocaleString("vi-VN") : ""} readOnly placeholder="Tự tính" /></label>
                 </>}
               </>}
               {kind === "deposit" && <>

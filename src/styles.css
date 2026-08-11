@@ -3311,6 +3311,23 @@ button[aria-label^="Xem ngu"] {
   flex-shrink: 0;
 }
 
+.corporate-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.corporate-action-row > div:first-child {
+  min-width: 0;
+}
+
+.corporate-action-undo {
+  width: 40px;
+  min-width: 40px;
+  height: 48px;
+  min-height: 48px;
+}
+
 .icon-only {
   width: 36px;
   height: 36px;
@@ -3848,9 +3865,26 @@ button[aria-label^="Xem ngu"] {
     margin-left: auto;
   }
 
+  .settings-list-row.corporate-action-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .corporate-action-row .settings-list-actions {
+    align-self: stretch;
+    align-items: center;
+  }
+
   .icon-only {
     width: 34px;
     height: 34px;
+  }
+
+  .corporate-action-undo {
+    width: 40px;
+    min-width: 40px;
+    height: 48px;
+    min-height: 48px;
   }
 
   .panel {
