@@ -770,6 +770,9 @@ const formatSolAmount = (value: number) =>
 const formatStockPrice = (value: number) =>
   value.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
 
+const formatStockAveragePrice = (value: number) =>
+  value.toLocaleString("vi-VN", { maximumFractionDigits: 3 });
+
 const formatMoneyInput = (value: string) => {
   const digits = value.replace(/\D/g, "");
   return digits ? Number(digits).toLocaleString("vi-VN") : "";
@@ -1443,9 +1446,39 @@ function btcAssetCostBasisVnd(state: AppState) {
 const stockLineValue = (line: Pick<StockPurchaseLine, "shares" | "buyPrice">) =>
   Math.round(line.shares * line.buyPrice * STOCK_PRICE_UNIT);
 
+const STOCK_BUY_BROKERAGE_FEE_RATE = 0.0008;
 const STOCK_SALE_BROKERAGE_FEE_RATE = 0.0008;
 const STOCK_SALE_TAX_RATE = 0.001;
 const STOCK_SALE_TRANSFER_FEE_PER_SHARE = 0.3;
+
+const estimateStockBuyFee = (grossValue: number) =>
+  Math.round(Math.max(grossValue, 0) * STOCK_BUY_BROKERAGE_FEE_RATE);
+
+const stockPurchaseLineCost = (line: Pick<StockPurchaseLine, "shares" | "buyPrice">) => {
+  const grossValue = stockLineValue(line);
+  return grossValue + estimateStockBuyFee(grossValue);
+};
+
+const stockPurchaseLinesWithCost = (lines: StockPurchaseLine[]) => {
+  const grossValues = lines.map(stockLineValue);
+  const totalGross = grossValues.reduce((sum, value) => sum + value, 0);
+  const totalFee = estimateStockBuyFee(totalGross);
+  let allocatedFee = 0;
+  return lines.map((line, index) => {
+    const grossValue = grossValues[index] ?? 0;
+    const fee =
+      index === lines.length - 1
+        ? totalFee - allocatedFee
+        : totalGross
+          ? Math.round((totalFee * grossValue) / totalGross)
+          : 0;
+    allocatedFee += fee;
+    return { line, grossValue, fee, cost: grossValue + fee };
+  });
+};
+
+const stockPurchaseLinesCost = (lines: StockPurchaseLine[]) =>
+  stockPurchaseLinesWithCost(lines).reduce((sum, item) => sum + item.cost, 0);
 
 const estimateStockSaleFee = (grossValue: number, shares = 0) =>
   Math.round(Math.max(grossValue, 0) * STOCK_SALE_BROKERAGE_FEE_RATE) +
@@ -1486,8 +1519,11 @@ const stockTotalAssetAdjustment = (state: AppState, upToMonth?: string) =>
 
 const stockSharesForBudget = (budget: number, price: number) => {
   if (!budget || !price) return "";
-  const rawShares = Math.floor(budget / (price * STOCK_PRICE_UNIT));
-  const shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
+  const rawShares = Math.floor(budget / (price * STOCK_PRICE_UNIT * (1 + STOCK_BUY_BROKERAGE_FEE_RATE)));
+  let shares = rawShares >= STOCK_LOT ? Math.floor(rawShares / STOCK_LOT) * STOCK_LOT : rawShares;
+  while (shares > 0 && stockPurchaseLineCost({ shares, buyPrice: price }) > budget) {
+    shares -= shares >= STOCK_LOT ? STOCK_LOT : 1;
+  }
   return shares > 0 ? String(shares) : "";
 };
 
@@ -1708,19 +1744,20 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
   const purchases = state.stockPurchases.filter((purchase) => !upToMonth || purchase.month <= upToMonth);
   const sales = state.stockSales.filter((sale) => !upToMonth || monthFromDate(sale.date) <= upToMonth);
   const corporateActions = state.corporateActions.filter((action) => action.status === "applied" && (!upToMonth || monthFromDate(action.appliedAt ?? action.receiveDate ?? action.paymentDate ?? action.recordDate ?? action.exDate ?? "") <= upToMonth));
-  const invested = purchases.reduce((sum, purchase) => sum + purchase.lines.reduce((lineSum, line) => lineSum + stockLineValue(line), 0), 0);
+  const invested = purchases.reduce((sum, purchase) => sum + stockPurchaseLinesCost(purchase.lines), 0);
   const holdings = new Map<string, { symbol: string; shares: number; cost: number; lastBuyPrice: number }>();
   let soldToCashBalance = 0;
   let corporateCashBalance = 0;
   let corporateCost = 0;
   const events = [
     ...purchases.flatMap((purchase, purchaseIndex) =>
-      purchase.lines.map((line, lineIndex) => ({
+      stockPurchaseLinesWithCost(purchase.lines).map((item, lineIndex) => ({
         kind: "buy" as const,
         date: purchase.date,
         createdAt: purchase.createdAt,
         order: purchaseIndex * 100 + lineIndex,
-        line,
+        line: item.line,
+        cost: item.cost,
       }))
     ),
     ...sales.map((sale, index) => ({
@@ -1752,7 +1789,7 @@ function stockPortfolioStats(state: AppState, upToMonth?: string) {
       const symbol = event.line.symbol.toUpperCase();
       const existing = holdings.get(symbol) ?? { symbol, shares: 0, cost: 0, lastBuyPrice: event.line.buyPrice };
       existing.shares += event.line.shares;
-      existing.cost += stockLineValue(event.line);
+      existing.cost += event.cost;
       existing.lastBuyPrice = event.line.buyPrice;
       holdings.set(symbol, existing);
       return;
@@ -1866,12 +1903,13 @@ function stockSaleHistoryRows(state: AppState) {
   }> = [];
   const events = [
     ...state.stockPurchases.flatMap((purchase, purchaseIndex) =>
-      purchase.lines.map((line, lineIndex) => ({
+      stockPurchaseLinesWithCost(purchase.lines).map((item, lineIndex) => ({
         kind: "buy" as const,
         date: purchase.date,
         createdAt: purchase.createdAt,
         order: purchaseIndex * 100 + lineIndex,
-        line,
+        line: item.line,
+        cost: item.cost,
       }))
     ),
     ...state.stockSales.map((sale, index) => ({
@@ -1905,7 +1943,7 @@ function stockSaleHistoryRows(state: AppState) {
       const symbol = event.line.symbol.toUpperCase();
       const existing = holdings.get(symbol) ?? { symbol, shares: 0, cost: 0, lastBuyPrice: event.line.buyPrice };
       existing.shares += event.line.shares;
-      existing.cost += stockLineValue(event.line);
+      existing.cost += event.cost;
       existing.lastBuyPrice = event.line.buyPrice;
       holdings.set(symbol, existing);
       return;
@@ -2557,17 +2595,19 @@ function exportCsvBundle(state: AppState) {
     safeDateTime(item.updatedAt),
   ]));
 
-  section("CK - Lịch sử mua", ["ID", "Ngày", "Tháng", "Mã", "Số cổ", "Giá mua", "Giá trị", "Giá trị hiển thị", "Ghi chú", "Tạo lúc"], state.stockPurchases.flatMap((purchase) => purchase.lines.map((line) => [
-    purchase.id,
-    safeDate(purchase.date),
-    formatMonth(purchase.month),
-    line.symbol,
-    line.shares,
-    line.buyPrice,
-    ...moneyPair(stockLineValue(line)),
-    purchase.note,
-    safeDateTime(purchase.createdAt),
-  ])));
+  section("CK - Lịch sử mua", ["ID", "Ngày", "Tháng", "Mã", "Số cổ", "Giá mua", "Giá trị gồm phí", "Giá trị gồm phí hiển thị", "Ghi chú", "Tạo lúc"], state.stockPurchases.flatMap((purchase) =>
+    stockPurchaseLinesWithCost(purchase.lines).map((item) => [
+      purchase.id,
+      safeDate(purchase.date),
+      formatMonth(purchase.month),
+      item.line.symbol,
+      item.line.shares,
+      item.line.buyPrice,
+      ...moneyPair(item.cost),
+      purchase.note,
+      safeDateTime(purchase.createdAt),
+    ])
+  ));
 
   section("CK - Lịch sử rút / bán", ["ID", "Ngày", "Mã", "Số cổ", "Giá bán", "Giá trị khớp", "Giá trị khớp hiển thị", "Phí/thuế", "Phí/thuế hiển thị", "Thực nhận", "Thực nhận hiển thị", "Nơi nhận", "Ghi chú", "Tạo lúc"], sortedByDate(state.stockSales).map((item) => [
     item.id,
@@ -6911,7 +6951,9 @@ const marketPriceForBuyRow = (row: StockBuyRow) =>
 
 const effectiveBuyPrice = (row: StockBuyRow) =>
   parseDecimal(row.buyPrice) || marketPriceForBuyRow(row);
-  const plannedValue = buyRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) }), 0);
+  const plannedGrossValue = buyRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) }), 0);
+  const plannedFeeAmount = estimateStockBuyFee(plannedGrossValue);
+  const plannedValue = plannedGrossValue + plannedFeeAmount;
   const plannedPercent = stats.cash ? Math.round((plannedValue / stats.cash) * 100) : 0;
   const saleVndAmount = Math.round((Number(saleForm.shares) || 0) * parseDecimal(saleForm.price) * STOCK_PRICE_UNIT);
   const saleFeeAmount = saleForm.fee ? parseMoney(saleForm.fee) : estimateStockSaleFee(saleVndAmount, Number(saleForm.shares) || 0);
@@ -7010,7 +7052,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
     const pricedRows = rows.map(withMarketPrice);
     const fixedValue = pricedRows
       .filter((row) => row.sharesTouched && Number(row.shares) > 0)
-      .reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) }), 0);
+      .reduce((sum, row) => sum + stockPurchaseLineCost({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) }), 0);
     const autoRows = pricedRows.filter((row) => !row.sharesTouched);
     const autoPercentTotal = autoRows.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
     const remainingCash = Math.max(stats.cash - fixedValue, 0);
@@ -7240,7 +7282,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
       );
       const otherValue = rowsWithPrice
         .filter((item) => item.id !== id)
-        .reduce((sum, item) => sum + stockLineValue({ shares: Number(item.shares) || 0, buyPrice: effectiveBuyPrice(item) }), 0);
+        .reduce((sum, item) => sum + stockPurchaseLineCost({ shares: Number(item.shares) || 0, buyPrice: effectiveBuyPrice(item) }), 0);
       const shares = stockSharesForBudget(Math.max(stats.cash - otherValue, 0), price);
       return recalculateBuyRows(rowsWithPrice.map((item) => (item.id === id ? { ...item, shares, sharesTouched: Boolean(shares) } : item)));
     });
@@ -7263,7 +7305,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
         buyPrice: effectiveBuyPrice(row),
       }))
       .filter((line) => line.symbol && line.shares > 0 && line.buyPrice > 0);
-    const total = lines.reduce((sum, line) => sum + stockLineValue(line), 0);
+    const total = stockPurchaseLinesCost(lines);
     if (!lines.length) {
       setStockError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
       return;
@@ -7944,10 +7986,14 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
                   <span>Tổng tiền</span>
                   <strong>{formatVnd(plannedValue)} / {formatVnd(stats.cash)}</strong>
                 </div>
+                <div>
+                  <span>Phí mua</span>
+                  <strong>{formatVnd(plannedFeeAmount)}</strong>
+                </div>
               </div>
               <div className="stock-buy-list">
                 {buyRows.map((row, index) => {
-                  const value = stockLineValue({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) });
+                  const value = stockPurchaseLineCost({ shares: Number(row.shares) || 0, buyPrice: effectiveBuyPrice(row) });
                   return (
                     <div className="stock-buy-row" key={row.id}>
                       <label>
@@ -8120,7 +8166,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
                   </label>
                   <span className="stock-average-price">
                     Giá TB
-                    <strong>{formatStockPrice(holding.averageCost)}</strong>
+                    <strong>{formatStockAveragePrice(holding.averageCost)}</strong>
                   </span>
                   <span className="stock-value-pair">
                     Giá trị
@@ -8256,7 +8302,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
                   <span className="deposit">+</span>
                   <div className="timeline-row-content">
                     <div>
-                      <strong>{formatVnd(purchase.lines.reduce((sum, line) => sum + stockLineValue(line), 0))}</strong>
+                      <strong>{formatVnd(stockPurchaseLinesCost(purchase.lines))}</strong>
                       <small>
                         {formatDate(purchase.date)} · {purchase.lines.map((line) => `${line.symbol} ${line.shares.toLocaleString("vi-VN")}cp @ ${formatStockPrice(line.buyPrice)}`).join(" · ")}{purchase.note ? ` · ${purchase.note}` : ""}
                       </small>
@@ -8418,7 +8464,7 @@ function expectedReconciliationBalances(
       .reduce((sum, item) => sum + (item.type === "deposit" ? item.amount : -item.amount), 0);
     const invested = state.stockPurchases
       .filter((purchase) => hasIndexedEvent("stock-purchase", purchase.id))
-      .reduce((sum, purchase) => sum + purchase.lines.reduce((lineSum, line) => lineSum + stockLineValue(line), 0), 0);
+      .reduce((sum, purchase) => sum + stockPurchaseLinesCost(purchase.lines), 0);
     const soldToCashBalance = state.stockSales
       .filter((sale) => hasIndexedEvent("stock-sale", sale.id) && sale.destination === "stock")
       .reduce((sum, sale) => sum + stockSaleNetVndAmount(sale), 0);
@@ -12759,7 +12805,9 @@ function QuickActionButton({
 
   const quickEffectiveBuyPrice = (row: StockBuyRow) =>
   parseDecimal(row.buyPrice) || quickMarketPriceForBuyRow(row);
-  const quickStockPlannedValue = quickStockRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) }), 0);
+  const quickStockPlannedGrossValue = quickStockRows.reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) }), 0);
+  const quickStockPlannedFee = estimateStockBuyFee(quickStockPlannedGrossValue);
+  const quickStockPlannedValue = quickStockPlannedGrossValue + quickStockPlannedFee;
   const quickStockPlannedPercent = stockStats.cash ? Math.round((quickStockPlannedValue / stockStats.cash) * 100) : 0;
   const quickStockTransferValue = Math.round((parseDecimal(stockTransfer.shares) || 0) * (parseDecimal(stockTransfer.price) || 0) * STOCK_PRICE_UNIT);
   const quickStockTransferFee = stockTransfer.fee ? parseMoney(stockTransfer.fee) : estimateStockSaleFee(quickStockTransferValue, parseDecimal(stockTransfer.shares) || 0);
@@ -13186,7 +13234,7 @@ function QuickActionButton({
     const pricedRows = rows.map(quickWithMarketPrice);
     const fixedValue = pricedRows
       .filter((row) => row.sharesTouched && Number(row.shares) > 0)
-      .reduce((sum, row) => sum + stockLineValue({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) }), 0);
+      .reduce((sum, row) => sum + stockPurchaseLineCost({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) }), 0);
     const autoRows = pricedRows.filter((row) => !row.sharesTouched);
     const autoPercentTotal = autoRows.reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
     const remainingCash = Math.max(stockStats.cash - fixedValue, 0);
@@ -13300,7 +13348,7 @@ function QuickActionButton({
       );
       const otherValue = rowsWithPrice
         .filter((item) => item.id !== id)
-        .reduce((sum, item) => sum + stockLineValue({ shares: Number(item.shares) || 0, buyPrice: quickEffectiveBuyPrice(item) }), 0);
+        .reduce((sum, item) => sum + stockPurchaseLineCost({ shares: Number(item.shares) || 0, buyPrice: quickEffectiveBuyPrice(item) }), 0);
       const shares = stockSharesForBudget(Math.max(stockStats.cash - otherValue, 0), price);
       return recalculateQuickStockRows(rowsWithPrice.map((item) => (item.id === id ? { ...item, shares, sharesTouched: Boolean(shares) } : item)));
     });
@@ -13663,7 +13711,7 @@ function QuickActionButton({
           buyPrice: quickEffectiveBuyPrice(row),
         }))
         .filter((line) => line.symbol && line.shares > 0 && line.buyPrice > 0);
-      const total = lines.reduce((sum, line) => sum + stockLineValue(line), 0);
+      const total = stockPurchaseLinesCost(lines);
       if (!lines.length) return setError("Nhập ít nhất một mã cổ phiếu hợp lệ.");
       if (total > stockStats.cash) return setError("Tổng giá trị mua đang vượt quá tiền mặt CK.");
       const purchase: StockPurchase = { id: uid(), date: quickStockMeta.date, month: monthFromDate(quickStockMeta.date), note: "", lines, createdAt: new Date().toISOString() };
@@ -13962,10 +14010,14 @@ function QuickActionButton({
                     <span>Tổng tiền</span>
                     <strong>{formatVnd(quickStockPlannedValue)} / {formatVnd(stockStats.cash)}</strong>
                   </div>
+                  <div>
+                    <span>Phí mua</span>
+                    <strong>{formatVnd(quickStockPlannedFee)}</strong>
+                  </div>
                 </div>
                 <div className="stock-buy-list">
                   {quickStockRows.map((row, index) => {
-                    const value = stockLineValue({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) });
+                    const value = stockPurchaseLineCost({ shares: Number(row.shares) || 0, buyPrice: quickEffectiveBuyPrice(row) });
                     return (
                       <div className="stock-buy-row" key={row.id}>
                         <label>

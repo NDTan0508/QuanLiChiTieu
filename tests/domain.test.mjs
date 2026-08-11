@@ -95,6 +95,30 @@ test("cash dividend is a VND event into VPS", async () => {
   assert.equal(event.amountVnd, 95_000);
 });
 
+test("stock purchase includes 0.08 percent buy fee in amount and cash balance", async () => {
+  const { buildFinancialIndex, runHealthChecks, stableEventId } = await loadDomain();
+  const stockPurchase = {
+    id: "sp-1",
+    date: "2026-07-01",
+    month: "2026-07",
+    note: "",
+    lines: [{ symbol: "MBB", shares: 100, buyPrice: 27.5 }],
+    meta: { eventId: stableEventId("stock-purchase", "sp-1") },
+  };
+  const index = buildFinancialIndex({
+    stockPurchases: [stockPurchase],
+    fundTransactions: [{ id: "ft-1", fund: "stock", type: "deposit", amount: 2_752_200, date: "2026-07-01", month: "2026-07", note: "", meta: { eventId: stableEventId("fund-transaction", "ft-1"), accountToId: "vps" } }],
+  });
+  const purchaseEvent = index.eventsById.get(stableEventId("stock-purchase", "sp-1"));
+  const issues = runHealthChecks({
+    stockPurchases: [stockPurchase],
+    fundTransactions: [{ id: "ft-1", fund: "stock", type: "deposit", amount: 2_752_200, date: "2026-07-01", month: "2026-07", note: "" }],
+  }, index, "2026-07-02T00:00:00.000Z");
+
+  assert.equal(purchaseEvent.amountVnd, 2_752_200);
+  assert.equal(issues.some((item) => item.fingerprint === "stock-cash-negative"), false);
+});
+
 test("health check detects overspend and preserves ignored fingerprints", async () => {
   const { buildFinancialIndex, runHealthChecks, stableEventId } = await loadDomain();
   const state = {

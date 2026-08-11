@@ -47,10 +47,24 @@ export type FinancialIndex = {
 
 const numberValue = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const stringValue = (value: unknown) => (typeof value === "string" ? value : "");
+const STOCK_PRICE_UNIT = 1000;
+const STOCK_BUY_BROKERAGE_FEE_RATE = 0.0008;
 const estimatedStockSaleFee = (value: number, shares = 0) =>
   Math.round(Math.max(value, 0) * 0.0008) +
   Math.round(Math.max(value, 0) * 0.001) +
   Math.round(Math.max(shares, 0) * 0.3);
+const stockPurchaseGrossValue = (row: AnyRow) => {
+  const lines = Array.isArray(row.lines) ? row.lines as AnyRow[] : [];
+  return lines.reduce((sum, line) => sum + Math.round(numberValue(line.shares) * numberValue(line.buyPrice) * STOCK_PRICE_UNIT), 0);
+};
+const stockPurchaseCostValue = (row: AnyRow) => {
+  const grossValue = stockPurchaseGrossValue(row);
+  return grossValue + Math.round(Math.max(grossValue, 0) * STOCK_BUY_BROKERAGE_FEE_RATE);
+};
+const stockPurchaseQuantity = (row: AnyRow) => {
+  const lines = Array.isArray(row.lines) ? row.lines as AnyRow[] : [];
+  return lines.reduce((sum, line) => sum + numberValue(line.shares), 0);
+};
 const stockSaleNetValue = (row: AnyRow) =>
   Math.max(
     Math.round(
@@ -131,7 +145,15 @@ export function buildFinancialIndex(state: FinancialIndexState): FinancialIndex 
     asset: "SOL",
     quantity: numberValue(row.solAmount),
   }));
-  addRows(state.stockPurchases, "stock-purchase", () => "Mua cổ phiếu", () => ({ asset: "STOCK" }));
+  addRows(state.stockPurchases, "stock-purchase", () => "Mua cổ phiếu", (row) => {
+    const lines = Array.isArray(row.lines) ? row.lines as AnyRow[] : [];
+    return {
+      amountVnd: stockPurchaseCostValue(row),
+      asset: "STOCK",
+      quantity: stockPurchaseQuantity(row),
+      stockSymbol: lines.length === 1 ? stringValue(lines[0].symbol) : undefined,
+    };
+  });
   addRows(state.stockSales, "stock-sale", () => "Rút/bán cổ phiếu", (row) => ({
     amountVnd: stockSaleNetValue(row),
     asset: "STOCK",

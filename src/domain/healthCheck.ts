@@ -40,6 +40,12 @@ type IssueInput = Omit<HealthIssue, "id" | "detectedAt" | "status">;
 const n = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const s = (value: unknown) => (typeof value === "string" ? value : "");
 const dateOf = (row: AnyRow) => s(row.executedAt) || s(row.date) || s(row.appliedAt) || s(row.receiveDate) || s(row.paymentDate) || s(row.recordDate) || s(row.exDate) || "";
+const STOCK_PRICE_UNIT = 1000;
+const STOCK_BUY_BROKERAGE_FEE_RATE = 0.0008;
+const stockPurchaseCost = (shares: number, buyPrice: number) => {
+  const grossValue = Math.round(shares * buyPrice * STOCK_PRICE_UNIT);
+  return grossValue + Math.round(Math.max(grossValue, 0) * STOCK_BUY_BROKERAGE_FEE_RATE);
+};
 
 export function runHealthChecks(state: HealthState, index: FinancialIndex, detectedAt = new Date().toISOString()): HealthIssue[] {
   const previousByFingerprint = new Map((state.healthIssues ?? []).map((issue) => [issue.fingerprint, issue]));
@@ -427,7 +433,7 @@ function stockBalances(state: HealthState) {
     lines.forEach((line) => {
       const symbol = s(line.symbol).toUpperCase();
       const shares = n(line.shares);
-      invested += shares * n(line.buyPrice) * 1000;
+      invested += stockPurchaseCost(shares, n(line.buyPrice));
       holdings.set(symbol, (holdings.get(symbol) ?? 0) + shares);
     });
   });
