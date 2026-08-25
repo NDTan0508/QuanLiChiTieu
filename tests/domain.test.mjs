@@ -20,6 +20,9 @@ async function loadDomain() {
         export { buildFinancialIndex } from "../../src/domain/financialIndex.ts";
         export { runHealthChecks } from "../../src/domain/healthCheck.ts";
         export { normalizeFinancialMetadata, stableEventId, stableGroupId, DEFAULT_FINANCIAL_ACCOUNTS } from "../../src/domain/financialTypes.ts";
+        export { appendMbbSettlementIncome, isIncomeGeneratingMbbSettlement, migrateMbbSettlementIncome, realizedMbbDepositInterest, mbbSettlementIncomeId, MBB_SETTLEMENT_INCOME_CATEGORY_ID } from "../../src/domain/bankDepositSettlement.ts";
+        export { buildCryptoLedger, buildSolLedger, findSolDerivedTopupCostEventIndex } from "../../src/domain/cryptoLedger.ts";
+        export { realizedStockSalePnl, stockOpenPositionSnapshot } from "../../src/domain/stockPnl.ts";
       `
     );
     await build({
@@ -42,9 +45,94 @@ test("migration metadata adds stable event ids and default accounts", async () =
     financialAccounts: [],
   });
 
-  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.schemaVersion, 4);
   assert.equal(migrated.incomeTransactions[0].meta.eventId, stableEventId("income", "income-1"));
   assert.equal(migrated.financialAccounts.length, DEFAULT_FINANCIAL_ACCOUNTS.length);
+});
+
+test("early MBB settlement creates principal income with zero realized interest", async () => {
+  const {
+    appendMbbSettlementIncome,
+    realizedMbbDepositInterest,
+    mbbSettlementIncomeId,
+    MBB_SETTLEMENT_INCOME_CATEGORY_ID,
+  } = await loadDomain();
+  const deposit = {
+    id: "deposit-early",
+    code: "5508",
+    principal: 1_300_000,
+    status: "early-settled",
+    settledAt: "2026-08-24",
+    settledAmount: 1_300_000,
+  };
+  const result = appendMbbSettlementIncome([], [], deposit);
+
+  assert.equal(realizedMbbDepositInterest(deposit), 0);
+  assert.equal(result.incomeCategories[0].id, MBB_SETTLEMENT_INCOME_CATEGORY_ID);
+  assert.equal(result.incomeTransactions[0].id, mbbSettlementIncomeId(deposit.id));
+  assert.equal(result.incomeTransactions[0].amount, 1_300_000);
+  assert.equal(result.incomeTransactions[0].month, "2026-08");
+});
+
+test("mature MBB settlement records total received and exact realized interest", async () => {
+  const { appendMbbSettlementIncome, realizedMbbDepositInterest } = await loadDomain();
+  const deposit = {
+    id: "deposit-mature",
+    code: "1403",
+    principal: 2_000_000,
+    status: "settled",
+    settledAt: "2026-10-22",
+    settledAmount: 2_035_993,
+  };
+  const result = appendMbbSettlementIncome([], [], deposit);
+
+  assert.equal(realizedMbbDepositInterest(deposit), 35_993);
+  assert.equal(result.incomeTransactions[0].amount, 2_035_993);
+});
+
+test("MBB settlement migration backfills once and skips rollover deposits", async () => {
+  const { isIncomeGeneratingMbbSettlement, migrateMbbSettlementIncome, mbbSettlementIncomeId } = await loadDomain();
+  const settled = {
+    id: "deposit-old",
+    code: "5508",
+    principal: 1_300_000,
+    status: "early-settled",
+    settledAt: "2026-08-24",
+    settledAmount: 1_300_000,
+  };
+  const rollover = {
+    id: "deposit-rollover",
+    code: "1403",
+    principal: 2_000_000,
+    status: "settled",
+    settledAt: "2026-10-22",
+    settledAmount: 2_035_993,
+    childId: "deposit-child",
+  };
+  const first = migrateMbbSettlementIncome([], [], [settled, rollover]);
+  const second = migrateMbbSettlementIncome(first.incomeCategories, first.incomeTransactions, [settled, rollover]);
+
+  assert.equal(first.incomeTransactions.length, 1);
+  assert.equal(first.incomeTransactions[0].id, mbbSettlementIncomeId(settled.id));
+  assert.equal(second.incomeTransactions.length, 1);
+  assert.equal(isIncomeGeneratingMbbSettlement(settled), true);
+  assert.equal(isIncomeGeneratingMbbSettlement(rollover), false);
+});
+
+test("financial index omits early-settlement interest and uses mature realized interest", async () => {
+  const { buildFinancialIndex, stableEventId } = await loadDomain();
+  const index = buildFinancialIndex({
+    bankDeposits: [
+      { id: "early", principal: 1_000_000, rate: 7, termMonths: 6, status: "early-settled", settledAt: "2026-08-01", settledAmount: 1_000_000 },
+      { id: "mature", principal: 2_000_000, rate: 7, termMonths: 6, status: "settled", settledAt: "2026-08-02", settledAmount: 2_070_000 },
+      { id: "rollover", principal: 3_000_000, rate: 7, termMonths: 6, status: "rolled-all", settledAt: "2026-08-03", settledAmount: 3_105_000, childId: "next-deposit" },
+    ],
+  });
+
+  assert.equal(index.eventsById.has(stableEventId("deposit-interest", "early")), false);
+  assert.equal(index.eventsById.get(stableEventId("deposit-interest", "mature")).amountVnd, 70_000);
+  assert.equal(index.eventsById.get(stableEventId("deposit-interest", "mature")).occurredAt, "2026-08-02");
+  assert.equal(index.eventsById.get(stableEventId("deposit-interest", "rollover")).amountVnd, 105_000);
 });
 
 test("financial index creates allocation group edges", async () => {
@@ -171,4 +259,249 @@ test("allocation plans survive financial metadata migration", async () => {
 
   assert.equal(state.allocationPlans[0].items[0].actionType, "buy_usdt");
   assert.equal(state.financialAccounts.length, DEFAULT_FINANCIAL_ACCOUNTS.length);
+});
+
+test("crypto ledger resets BTC average cost after a full sale and same-day rebuy", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const oldAverage = 65_555.612;
+  const newAverage = 79_811.99;
+  const initialBtc = 10 / oldAverage;
+  const reboughtBtc = 12 / newAverage;
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 250_000, usdtAmount: 10, date: "2026-08-24" }],
+    trades: [
+      { id: "old-buy", type: "manual-buy", usdtAmount: 10, btcAmount: initialBtc, executedAt: "2026-08-24T00:00:00.000Z" },
+      { id: "rebuy", type: "manual-buy", usdtAmount: 12, btcAmount: reboughtBtc, executedAt: "2026-08-25T00:00:00.000Z" },
+    ],
+    transfers: [{ id: "sell-all", asset: "btc", btcAmount: initialBtc, usdtAmount: 12, vndAmount: 0, destination: "usdt", date: "2026-08-25" }],
+  });
+
+  assert.ok(Math.abs(ledger.btcBalance - reboughtBtc) < 1e-12);
+  assert.ok(Math.abs(ledger.averageBtcCostUsdt - newAverage) < 0.000001);
+  assert.equal(ledger.usdtBalance, 0);
+});
+
+test("crypto ledger keeps average cost unchanged after a partial BTC sale", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01", occurredAt: "2026-08-01T08:00:00.000Z" }],
+    trades: [{ id: "buy", type: "manual-buy", usdtAmount: 100, btcAmount: 0.002, executedAt: "2026-08-01T09:00:00.000Z" }],
+    transfers: [{ id: "sell-part", asset: "btc", btcAmount: 0.0005, usdtAmount: 30, vndAmount: 0, destination: "usdt", date: "2026-08-02", occurredAt: "2026-08-02T09:00:00.000Z" }],
+  });
+
+  assert.ok(Math.abs(ledger.btcBalance - 0.0015) < 1e-12);
+  assert.ok(Math.abs(ledger.btcCostUsdt - 75) < 1e-9);
+  assert.ok(Math.abs(ledger.averageBtcCostUsdt - 50_000) < 0.000001);
+});
+
+test("crypto ledger closes BTC dust and starts the next position from zero", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [{ id: "buy", type: "manual-buy", usdtAmount: 100, btcAmount: 0.002, executedAt: "2026-08-01T00:00:00.000Z" }],
+    transfers: [{ id: "near-full", asset: "btc", btcAmount: 0.0019999, usdtAmount: 120, vndAmount: 0, destination: "usdt", date: "2026-08-02" }],
+  });
+
+  assert.equal(ledger.btcBalance, 0);
+  assert.equal(ledger.btcCostUsdt, 0);
+  assert.equal(ledger.btcCostVnd, 0);
+  assert.deepEqual(ledger.closedTransferIds, ["near-full"]);
+});
+
+test("internal BTC to USDT conversion preserves portfolio VND cost basis", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [{ id: "buy", type: "manual-buy", usdtAmount: 100, btcAmount: 0.002, executedAt: "2026-08-01T00:00:00.000Z" }],
+    transfers: [{ id: "convert", asset: "btc", btcAmount: 0.0005, usdtAmount: 30, vndAmount: 0, destination: "usdt", date: "2026-08-02" }],
+  });
+
+  assert.ok(Math.abs(ledger.btcCostVnd + ledger.usdtCostVnd - 2_500_000) < 0.01);
+});
+
+test("partial BTC sale records realized PnL while preserving the remaining average cost", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [{ id: "buy", type: "manual-buy", usdtAmount: 100, btcAmount: 0.002, executedAt: "2026-08-01T08:00:00.000Z" }],
+    transfers: [{ id: "sell-part", asset: "btc", btcAmount: 0.0005, usdtAmount: 30, vndAmount: 750_000, destination: "usdt", date: "2026-08-02" }],
+  });
+
+  assert.equal(ledger.averageBtcCostUsdt, 50_000);
+  assert.equal(ledger.coinSaleByTransferId["sell-part"].releasedCostUsdt, 25);
+  assert.equal(ledger.coinSaleByTransferId["sell-part"].pnlUsdt, 5);
+  assert.equal(ledger.coinSaleByTransferId["sell-part"].releasedCostVnd, 625_000);
+  assert.equal(ledger.coinSaleByTransferId["sell-part"].pnlVnd, 125_000);
+  assert.equal(ledger.btcCostVnd + ledger.usdtCostVnd, 2_500_000);
+});
+
+test("rounded SOL proceeds still match the linked USDT topup cost basis", async () => {
+  const { findSolDerivedTopupCostEventIndex } = await loadDomain();
+  const events = [{ withdrawalId: "sol-sale", date: "2026-08-25", usdtAmount: 203.655, costVnd: 3_900_000 }];
+
+  assert.equal(findSolDerivedTopupCostEventIndex(events, { date: "2026-08-25", usdtAmount: 203.656 }), 0);
+  assert.equal(findSolDerivedTopupCostEventIndex(events, { sourceSolWithdrawalId: "sol-sale", date: "2026-08-26", usdtAmount: 999 }), 0);
+});
+
+test("external USDT withdrawal releases proportional basis and records realized PnL", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [],
+    transfers: [{ id: "withdraw", asset: "usdt", btcAmount: 0, usdtAmount: 40, vndAmount: 1_200_000, destination: "cash", date: "2026-08-02" }],
+  });
+
+  assert.equal(ledger.usdtBalance, 60);
+  assert.equal(ledger.usdtCostVnd, 1_500_000);
+  assert.equal(ledger.realizedByTransferId.withdraw.releasedCostVnd, 1_000_000);
+  assert.equal(ledger.realizedByTransferId.withdraw.pnlVnd, 200_000);
+});
+
+test("same-day legacy events buy before selling when the opening BTC balance is zero", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [{ id: "buy", type: "manual-buy", usdtAmount: 100, btcAmount: 0.002, executedAt: "2026-08-01T00:00:00.000" }],
+    transfers: [{ id: "sell", asset: "btc", btcAmount: 0.002, usdtAmount: 110, vndAmount: 0, destination: "usdt", date: "2026-08-01" }],
+  });
+
+  assert.equal(ledger.btcBalance, 0);
+  assert.equal(ledger.usdtBalance, 110);
+  assert.equal(ledger.usdtCostVnd, 2_500_000);
+});
+
+test("DCA overrides keep entered BTC quantity and average cost aligned", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 500_000, usdtAmount: 20, date: "2026-08-01" }],
+    plans: [{ id: "plan", startDate: "2026-08-01", btcAmountOverride: 0.00025, averagePriceUsdtOverride: 80_000 }],
+    trades: [
+      { id: "dca-1", type: "dca", planId: "plan", usdtAmount: 10, btcAmount: 0.0001, executedAt: "2026-08-01T08:00:00.000Z" },
+      { id: "dca-2", type: "dca", planId: "plan", usdtAmount: 10, btcAmount: 0.0001, executedAt: "2026-08-02T08:00:00.000Z" },
+    ],
+    transfers: [],
+  });
+
+  assert.ok(Math.abs(ledger.btcBalance - 0.00025) < 1e-12);
+  assert.ok(Math.abs(ledger.averageBtcCostUsdt - 80_000) < 0.000001);
+  assert.equal(ledger.btcCostVnd, 500_000);
+});
+
+test("withdrawing the complete USDT balance clears active cost basis", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [],
+    transfers: [{ id: "withdraw-all", asset: "usdt", btcAmount: 0, usdtAmount: 100, vndAmount: 2_400_000, destination: "cash", date: "2026-08-02" }],
+  });
+
+  assert.equal(ledger.usdtBalance, 0);
+  assert.equal(ledger.usdtCostVnd, 0);
+  assert.equal(ledger.btcBalance, 0);
+  assert.equal(ledger.btcCostVnd, 0);
+  assert.equal(ledger.realizedByTransferId["withdraw-all"].pnlVnd, -100_000);
+});
+
+test("SOL max withdrawal consumes a prior balance adjustment instead of leaving it behind", async () => {
+  const { buildSolLedger } = await loadDomain();
+  const ledger = buildSolLedger({
+    transactions: [
+      { id: "buy", type: "buy", solAmount: 2, priceUsdt: 100, costVnd: 5_000_000, date: "2026-08-25" },
+      { id: "withdraw-max", type: "withdraw", solAmount: 2.00184, proceedsVnd: 5_100_000, destination: "cash", date: "2026-08-25" },
+    ],
+    adjustments: [{ id: "adjust", quantity: 0.00184, date: "2026-08-25", createdAt: "2026-08-25T08:00:00.000Z" }],
+  });
+
+  assert.equal(ledger.balance, 0);
+  assert.equal(ledger.costUsdt, 0);
+  assert.equal(ledger.costVnd, 0);
+});
+
+test("SOL max withdrawal closes rounding dust at eight decimal places", async () => {
+  const { buildSolLedger } = await loadDomain();
+  const ledger = buildSolLedger({
+    transactions: [
+      { id: "buy", type: "buy", solAmount: 1.234567891, priceUsdt: 100, costVnd: 3_000_000, date: "2026-08-24", occurredAt: "2026-08-24T08:00:00.000Z" },
+      { id: "withdraw-max", type: "withdraw", solAmount: 1.23456789, proceedsVnd: 3_100_000, destination: "cash", date: "2026-08-25", occurredAt: "2026-08-25T08:00:00.000Z", closesPosition: true },
+    ],
+  });
+
+  assert.equal(ledger.balance, 0);
+  assert.equal(ledger.costUsdt, 0);
+  assert.equal(ledger.costVnd, 0);
+});
+
+test("partial SOL sale records realized PnL and only releases proportional cost", async () => {
+  const { buildSolLedger } = await loadDomain();
+  const ledger = buildSolLedger({
+    transactions: [
+      { id: "buy", type: "buy", solAmount: 2, priceUsdt: 75, costVnd: 3_750_000, date: "2026-08-24" },
+      { id: "sell-part", type: "withdraw", solAmount: 1, proceedsUsdt: 100, proceedsVnd: 2_500_000, destination: "btc", date: "2026-08-25" },
+    ],
+  });
+
+  assert.equal(ledger.balance, 1);
+  assert.equal(ledger.costUsdt, 75);
+  assert.equal(ledger.costVnd, 1_875_000);
+  assert.equal(ledger.coinSaleByTransactionId["sell-part"].pnlUsdt, 25);
+  assert.equal(ledger.coinSaleByTransactionId["sell-part"].pnlVnd, 625_000);
+});
+
+test("stock open PnL only uses cash and holdings that remain in the portfolio", async () => {
+  const { stockOpenPositionSnapshot } = await loadDomain();
+  const snapshot = stockOpenPositionSnapshot({
+    cashVnd: 1_000_000,
+    holdingsCostVnd: 10_000_000,
+    holdingsMarketValueVnd: 12_000_000,
+  });
+
+  assert.equal(snapshot.investedValueVnd, 11_000_000);
+  assert.equal(snapshot.currentValueVnd, 13_000_000);
+  assert.equal(snapshot.pnlVnd, 2_000_000);
+});
+
+test("stock metrics return to zero after every share and cash balance is withdrawn", async () => {
+  const { stockOpenPositionSnapshot } = await loadDomain();
+  const snapshot = stockOpenPositionSnapshot({
+    cashVnd: 0,
+    holdingsCostVnd: 0,
+    holdingsMarketValueVnd: 0,
+    totalAssetAdjustmentVnd: 49_127_000,
+  });
+
+  assert.equal(snapshot.investedValueVnd, 0);
+  assert.equal(snapshot.currentValueVnd, 0);
+  assert.equal(snapshot.pnlVnd, 0);
+  assert.equal(snapshot.pnlPercent, 0);
+});
+
+test("stock sale history keeps realized PnL after proceeds leave the portfolio", async () => {
+  const { realizedStockSalePnl, stockOpenPositionSnapshot } = await loadDomain();
+  const realizedPnl = realizedStockSalePnl(3_504_130, 3_551_489);
+  const emptyPortfolio = stockOpenPositionSnapshot({ cashVnd: 0, holdingsCostVnd: 0, holdingsMarketValueVnd: 0 });
+
+  assert.equal(realizedPnl, -47_359);
+  assert.equal(emptyPortfolio.pnlVnd, 0);
+});
+
+test("stock sale proceeds kept as broker cash have zero open PnL", async () => {
+  const { stockOpenPositionSnapshot } = await loadDomain();
+  const snapshot = stockOpenPositionSnapshot({
+    cashVnd: 3_504_130,
+    holdingsCostVnd: 0,
+    holdingsMarketValueVnd: 0,
+  });
+
+  assert.equal(snapshot.investedValueVnd, 3_504_130);
+  assert.equal(snapshot.currentValueVnd, 3_504_130);
+  assert.equal(snapshot.pnlVnd, 0);
 });

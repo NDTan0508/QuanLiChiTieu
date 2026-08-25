@@ -1,3 +1,5 @@
+import { FINANCIAL_SCHEMA_VERSION } from "./domain/financialTypes";
+
 type EncryptedPayload = {
   version: 1;
   salt: string;
@@ -270,9 +272,10 @@ function withBtcPayloadMeta(table: string, id: string, payload: unknown) {
   const occurredAt =
     typeof row.createdAt === "string" ? row.createdAt :
       typeof row.executedAt === "string" ? row.executedAt :
-        typeof row.date === "string" ? row.date :
-          typeof row.startDate === "string" ? row.startDate :
-            now;
+        typeof row.occurredAt === "string" ? row.occurredAt :
+          typeof row.date === "string" ? row.date :
+            typeof row.startDate === "string" ? row.startDate :
+              now;
   return {
     ...row,
     meta: {
@@ -284,7 +287,7 @@ function withBtcPayloadMeta(table: string, id: string, payload: unknown) {
       createdAt: occurredAt,
       updatedAt: now,
       createdBy: "system",
-      schemaVersion: 2,
+      schemaVersion: FINANCIAL_SCHEMA_VERSION,
     },
   };
 }

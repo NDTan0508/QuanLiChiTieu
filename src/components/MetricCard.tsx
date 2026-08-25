@@ -10,6 +10,7 @@ export function MetricCard({
   percent,
   trend,
   progress,
+  breakdown,
   onClick,
 }: {
   label: string;
@@ -28,6 +29,10 @@ export function MetricCard({
     label: string;
     ariaLabel: string;
   };
+  breakdown?: {
+    left: { label?: string; value: string; ariaLabel?: string };
+    right: { label?: string; value: string; ariaLabel?: string };
+  };
   onClick?: () => void;
 }) {
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -40,7 +45,7 @@ export function MetricCard({
 
   return (
     <article
-      className={`metric ${tone ?? ""} ${onClick ? "clickable" : ""}`}
+      className={`metric ${tone ?? ""} ${breakdown ? "has-breakdown" : ""} ${onClick ? "clickable" : ""}`}
       onClick={onClick}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
@@ -49,21 +54,39 @@ export function MetricCard({
       <span>{icon}</span>
       <div className="metric-content">
         <small>{label} {typeof percent === "number" && <b>{percent}%</b>}</small>
-        <strong>{value}</strong>
-        {progress ? (
-          <div className="metric-progress-block">
-            <div className="metric-progress-meta">
-              {trend && <b className={trend.tone ? `metric-trend ${trend.tone}` : "metric-trend"}>{trend.label}</b>}
-              <b>{progress.label}</b>
+        {breakdown ? (
+          <>
+            <strong className="metric-current-value">{value}</strong>
+            <div className="metric-breakdown">
+              <div aria-label={breakdown.left.ariaLabel}>
+                {breakdown.left.label && <em>{breakdown.left.label}</em>}
+                <strong>{breakdown.left.value}</strong>
+              </div>
+              <div aria-label={breakdown.right.ariaLabel}>
+                {breakdown.right.label && <em>{breakdown.right.label}</em>}
+                <strong>{breakdown.right.value}</strong>
+              </div>
             </div>
-            <div className={`metric-progress-track ${trend?.tone ?? "neutral"}`} aria-label={progress.ariaLabel} role="img">
-              <span style={{ width: `${progress.percent}%` }} />
-            </div>
-          </div>
+          </>
         ) : (
-          trend && <em className={trend.tone ? `metric-trend ${trend.tone}` : "metric-trend"}>{trend.label}</em>
+          <>
+            <strong>{value}</strong>
+            {progress ? (
+              <div className="metric-progress-block">
+                <div className="metric-progress-meta">
+                  {trend && <b className={trend.tone ? `metric-trend ${trend.tone}` : "metric-trend"}>{trend.label}</b>}
+                  <b>{progress.label}</b>
+                </div>
+                <div className={`metric-progress-track ${trend?.tone ?? "neutral"}`} aria-label={progress.ariaLabel} role="img">
+                  <span style={{ width: `${progress.percent}%` }} />
+                </div>
+              </div>
+            ) : (
+              trend && <em className={trend.tone ? `metric-trend ${trend.tone}` : "metric-trend"}>{trend.label}</em>
+            )}
+            {subValue && !progress && <em className={subTone ? `metric-sub ${subTone}` : undefined}>{subValue}</em>}
+          </>
         )}
-        {subValue && !progress && <em className={subTone ? `metric-sub ${subTone}` : undefined}>{subValue}</em>}
       </div>
     </article>
   );

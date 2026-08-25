@@ -201,7 +201,7 @@ export type AllocationPlan = {
   createdAt: string;
 };
 
-export const FINANCIAL_SCHEMA_VERSION = 2;
+export const FINANCIAL_SCHEMA_VERSION = 4;
 
 export const DEFAULT_FINANCIAL_ACCOUNTS: FinancialAccount[] = [
   { id: "cash", name: "Tiền mặt", type: "cash", currency: "VND", isActive: true },
@@ -250,6 +250,8 @@ type RowWithMeta = {
   date?: string;
   startDate?: string;
   createdAt?: string;
+  executedAt?: string;
+  occurredAt?: string;
   updatedAt?: string;
   note?: string;
   fund?: string;
@@ -315,7 +317,7 @@ function accountHints(row: RowWithMeta, entityType: string) {
 }
 
 function metaFor(row: RowWithMeta, entityType: string, entityId: string): TransactionMeta {
-  const occurredAt = row.createdAt || row.updatedAt || row.date || row.startDate || (row.month ? `${row.month}-01` : "") || new Date().toISOString();
+  const occurredAt = row.createdAt || row.executedAt || row.occurredAt || row.updatedAt || row.date || row.startDate || (row.month ? `${row.month}-01` : "") || new Date().toISOString();
   const hints = accountHints(row, entityType);
   const groupId =
     row.meta?.groupId ||

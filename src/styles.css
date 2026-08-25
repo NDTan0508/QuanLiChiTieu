@@ -221,6 +221,42 @@ label strong {
   position: relative;
 }
 
+.mbb-history-button.active {
+  border-color: rgba(249, 115, 22, 0.52);
+  background: rgba(249, 115, 22, 0.14);
+  color: #ffb37f;
+}
+
+.deposit-history-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 4px 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--stroke, rgba(74, 63, 53, 0.78));
+}
+
+.deposit-history-heading h2 {
+  margin: 4px 0 0;
+  color: #fff7ed;
+  font-size: 1.2rem;
+}
+
+.deposit-history-heading > strong {
+  color: #ffb37f;
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.deposit-empty-state {
+  border: 1px dashed rgba(165, 155, 145, 0.32);
+  border-radius: 8px;
+  color: #a59b91;
+  padding: 28px 16px;
+  text-align: center;
+}
+
 .refresh-success-pill {
   position: absolute;
   top: calc(100% + 7px);
@@ -2567,6 +2603,11 @@ label strong {
 .timeline .withdraw {
   background: rgba(244, 63, 94, 0.16);
   color: #fb7185;
+}
+
+.timeline .conversion {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
 }
 
 .timeline .adjustment {
@@ -7065,6 +7106,143 @@ option,
 
 .metric-content {
   min-width: 0;
+}
+
+.metric.has-breakdown {
+  min-height: 94px !important;
+}
+
+.metric.has-breakdown .metric-content {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 3px;
+  width: 100%;
+}
+
+.metric.has-breakdown .metric-current-value {
+  margin-top: 2px !important;
+  font-size: 1rem !important;
+}
+
+.metric-breakdown {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  align-items: end;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.metric-breakdown > div {
+  min-width: 0;
+}
+
+.metric-breakdown > div:last-child {
+  text-align: right;
+}
+
+.metric-breakdown > div:last-child strong {
+  color: #34d399 !important;
+}
+
+.metric .metric-breakdown em {
+  display: block;
+  margin: 0 0 3px !important;
+  color: #a59b91;
+  font-size: 0.68rem !important;
+  font-weight: 800 !important;
+  white-space: nowrap;
+}
+
+.metric .metric-breakdown strong {
+  display: block;
+  margin: 0 !important;
+  font-size: 0.78rem !important;
+  line-height: 1.18 !important;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+@media (max-width: 680px) {
+  .metrics-grid.mbb-metrics-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 7px !important;
+  }
+
+  .mbb-metrics-grid .metric.has-breakdown {
+    display: grid !important;
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-rows: 18px auto auto;
+    align-content: start;
+    align-items: center;
+    gap: 3px 4px !important;
+    min-height: 82px !important;
+    padding: 6px !important;
+    overflow: hidden;
+  }
+
+  .mbb-metrics-grid .metric.has-breakdown > span {
+    position: static;
+    grid-column: 1;
+    grid-row: 1;
+    width: 19px !important;
+    height: 19px !important;
+  }
+
+  .mbb-metrics-grid .metric.has-breakdown > span svg {
+    width: 11px !important;
+    height: 11px !important;
+  }
+
+  .mbb-metrics-grid .metric.has-breakdown .metric-content {
+    display: contents !important;
+  }
+
+  .mbb-metrics-grid .metric.has-breakdown small {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.56rem !important;
+    line-height: 1 !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mbb-metrics-grid .metric.has-breakdown .metric-current-value {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    margin-top: 2px !important;
+    overflow: hidden;
+    font-size: 0.68rem !important;
+    line-height: 1.08 !important;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mbb-metrics-grid .metric-breakdown {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+    min-width: 0;
+    margin-top: 1px;
+    padding-top: 5px;
+  }
+
+  .mbb-metrics-grid .metric-breakdown > div:last-child {
+    text-align: left;
+  }
+
+  .mbb-metrics-grid .metric .metric-breakdown strong {
+    overflow: visible;
+    font-size: 0.55rem !important;
+    line-height: 1.05 !important;
+    white-space: nowrap;
+  }
+
 }
 
 .metric .metric-trend {

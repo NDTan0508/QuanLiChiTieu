@@ -81,7 +81,7 @@ function eventId(row: AnyRow, entityType: string, fallbackId: string) {
 }
 
 function occurredAt(row: AnyRow) {
-  return stringValue(row.executedAt) || stringValue(row.date) || stringValue(row.startDate) || (stringValue(row.month) ? `${row.month}-01` : "") || row.meta?.createdAt || "";
+  return stringValue(row.executedAt) || stringValue(row.occurredAt) || stringValue(row.date) || stringValue(row.startDate) || (stringValue(row.month) ? `${row.month}-01` : "") || row.meta?.createdAt || "";
 }
 
 function eventFrom(row: AnyRow, entityType: string, label: string, fallbackId: string, patch: Partial<FinancialEvent> = {}): FinancialEvent {
@@ -232,14 +232,19 @@ function addDepositInterestEvents(rows: AnyRow[] | undefined, events: FinancialE
     const principal = numberValue(deposit.principal);
     const rate = numberValue(deposit.rate);
     const termMonths = numberValue(deposit.termMonths);
-    const interest = Math.round((principal * rate * termMonths) / 1200);
+    const status = stringValue(deposit.status);
+    if (status === "early-settled") return;
+    const hasRealizedInterest = status === "settled" || status === "rolled-principal" || status === "rolled-all";
+    const interest = hasRealizedInterest
+      ? Math.max(Math.round(numberValue(deposit.settledAmount) - principal), 0)
+      : Math.round((principal * rate * termMonths) / 1200);
     if (!interest) return;
     events.push({
       id: stableEventId("deposit-interest", String(deposit.id)),
       entityType: "deposit-interest",
       entityId: String(deposit.id),
-      label: "Lãi dự kiến Sổ MBB",
-      occurredAt: stringValue(deposit.maturityDate) || occurredAt(deposit),
+      label: hasRealizedInterest ? "Lãi thực nhận Sổ MBB" : "Lãi dự kiến Sổ MBB",
+      occurredAt: hasRealizedInterest ? stringValue(deposit.settledAt) || occurredAt(deposit) : stringValue(deposit.maturityDate) || occurredAt(deposit),
       amountVnd: interest,
       asset: "VND",
       accountFromId: "mbb-books",
@@ -386,7 +391,7 @@ function deriveRolloverAndInterestEdges(rows: ReturnType<typeof rowsByEntityType
         asset: "VND",
         relationType: "interest",
         method: "direct",
-        confidence: "estimated",
+        confidence: ["settled", "rolled-principal", "rolled-all"].includes(stringValue(deposit.status)) ? "exact" : "estimated",
       });
     }
     if (!deposit.childId) return;
