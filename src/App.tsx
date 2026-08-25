@@ -200,6 +200,16 @@ type SolDestination = FundKey | TransferDepositFund | "cash" | "btc-direct";
 type StockCashWithdrawDestination = Exclude<SolDestination, "stock" | "btc-direct">;
 type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | TransferDepositFund;
 
+type ReportMonthlySnapshot = {
+  month: string;
+  btc: number;
+  stock: number;
+  sol: number;
+  sourceHash: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type StockPurchaseLine = {
   symbol: string;
   shares: number;
@@ -548,6 +558,7 @@ type AppState = {
   corporateActions: CorporateAction[];
   allocationStrategies: AllocationStrategy[];
   allocationPlans: AllocationPlan[];
+  reportMonthlySnapshots: ReportMonthlySnapshot[];
 };
 
 type UndoEntry = {
@@ -2909,6 +2920,7 @@ function normalizeState(state: AppState): AppState {
     corporateActions: arrayOr(state.corporateActions),
     allocationStrategies: arrayOr(state.allocationStrategies, initialState.allocationStrategies),
     allocationPlans: arrayOr(state.allocationPlans),
+    reportMonthlySnapshots: arrayOr(state.reportMonthlySnapshots),
     market: {
       ...market,
       btcUsdt: market.btcUsdt ?? 0,
@@ -3122,6 +3134,7 @@ const initialState: AppState = {
   corporateActions: [],
   allocationStrategies: DEFAULT_ALLOCATION_STRATEGIES,
   allocationPlans: [],
+  reportMonthlySnapshots: [],
 };
 
 const preferredMoneyRowId = (rows: Array<{ id: string; value: number }>) =>
@@ -11834,6 +11847,87 @@ function CryptoPage({
   return <div className="page">{content}</div>;
 }
 
+const reportSnapshotHash = (value: string) => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const roundReportValue = (value: number) =>
+  Number.isFinite(value) ? Math.round(value) : 0;
+
+function reportMonthlySnapshotSourceHash(state: AppState, month: string) {
+  const upToMonth = (date: string) => monthFromDate(date) <= month;
+  const source = {
+    funds: state.fundTransactions
+      .filter((item) => (item.fund === "btc" || item.fund === "stock") && item.month <= month)
+      .map((item) => ({ id: item.id, fund: item.fund, type: item.type, amount: item.amount, date: item.date, month: item.month, note: item.note })),
+    btcTopups: state.btcUsdtTopups
+      .filter((item) => upToMonth(item.date))
+      .map((item) => ({ id: item.id, vndAmount: item.vndAmount, usdtAmount: item.usdtAmount, date: item.date, occurredAt: item.occurredAt, sourceSolWithdrawalId: item.sourceSolWithdrawalId, note: item.note })),
+    btcTrades: state.btcTrades
+      .filter((item) => monthFromDate(dateValueFromDateTime(item.executedAt)) <= month)
+      .map((item) => ({ id: item.id, type: item.type, usdtAmount: item.usdtAmount, btcAmount: item.btcAmount, btcPriceUsdt: item.btcPriceUsdt, costVnd: item.costVnd, executedAt: item.executedAt, planId: item.planId })),
+    btcTransfers: state.btcTransfers
+      .filter((item) => upToMonth(item.date))
+      .map((item) => ({ id: item.id, asset: item.asset, btcAmount: item.btcAmount, usdtAmount: item.usdtAmount, btcPriceUsdt: item.btcPriceUsdt, vndAmount: item.vndAmount, destination: item.destination, date: item.date, occurredAt: item.occurredAt, closesPosition: item.closesPosition })),
+    btcDcaPlans: state.btcDcaPlans.map((item) => ({ id: item.id, amountUsdt: item.amountUsdt, frequency: item.frequency, time: item.time, startDate: item.startDate, nextRunAt: item.nextRunAt, isActive: item.isActive, status: item.status })),
+    solTransactions: state.solTransactions
+      .filter((item) => upToMonth(item.date))
+      .map((item) => ({
+        id: item.id,
+        type: item.type,
+        solAmount: item.solAmount,
+        buyPrice: isSolWithdrawal(item) ? undefined : item.buyPrice,
+        sellPrice: isSolWithdrawal(item) ? item.sellPrice : undefined,
+        costVnd: isSolWithdrawal(item) ? undefined : item.costVnd,
+        vndAmount: isSolWithdrawal(item) ? item.vndAmount : undefined,
+        usdtAmount: isSolWithdrawal(item) ? item.usdtAmount : undefined,
+        destination: isSolWithdrawal(item) ? item.destination : undefined,
+        date: item.date,
+        occurredAt: item.occurredAt,
+      })),
+    stockPurchases: state.stockPurchases
+      .filter((item) => item.month <= month)
+      .map((item) => ({ id: item.id, date: item.date, month: item.month, lines: item.lines, createdAt: item.createdAt })),
+    stockSales: state.stockSales
+      .filter((item) => upToMonth(item.date))
+      .map((item) => ({ id: item.id, symbol: item.symbol, shares: item.shares, sellPrice: item.sellPrice, vndAmount: item.vndAmount, fee: item.fee, tax: item.tax, netVndAmount: item.netVndAmount, destination: item.destination, date: item.date, createdAt: item.createdAt })),
+    corporateActions: state.corporateActions
+      .filter((item) => item.status === "applied" && upToMonth(corporateActionEventDate(item)))
+      .map((item) => ({ id: item.id, symbol: item.symbol, type: item.type, receiveDate: item.receiveDate, paymentDate: item.paymentDate, recordDate: item.recordDate, exDate: item.exDate, ratioFrom: item.ratioFrom, ratioTo: item.ratioTo, cashPerShare: item.cashPerShare, subscriptionPrice: item.subscriptionPrice, taxRate: item.taxRate, fee: item.fee, eligibleShares: item.eligibleShares, resultingShares: item.resultingShares, cashReceived: item.cashReceived, newSymbol: item.newSymbol, status: item.status, appliedAt: item.appliedAt })),
+    adjustments: state.adjustmentTransactions
+      .filter((item) => (isCryptoQuantityAdjustment(item, "BTC") || isCryptoQuantityAdjustment(item, "USDT") || isCryptoQuantityAdjustment(item, "SOL") || isStockCashAdjustment(item) || isStockTotalAssetAdjustment(item)) && upToMonth(item.date))
+      .map((item) => ({ id: item.id, asset: item.asset, accountId: item.accountId, amountVnd: item.amountVnd, quantity: item.quantity, date: item.date, createdAt: item.createdAt, note: item.note })),
+  };
+  return reportSnapshotHash(JSON.stringify(source));
+}
+
+function liveReportAssetSnapshot(state: AppState, month: string, sourceHash = reportMonthlySnapshotSourceHash(state, month)): ReportMonthlySnapshot {
+  const sol = roundReportValue(solPositionFromState(state, month).balance * state.market.solUsd * (state.market.usdtVnd || state.market.usdVnd));
+  return {
+    month,
+    btc: roundReportValue(btcPortfolioStats(state, month).reportValueVnd + sol),
+    stock: roundReportValue(stockPortfolioStats(state, month).totalValue),
+    sol,
+    sourceHash,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+const sameReportAssetSnapshotValues = (left: ReportMonthlySnapshot | undefined, right: ReportMonthlySnapshot) => {
+  if (!left) return false;
+  return (
+    left.btc === right.btc &&
+    left.stock === right.stock &&
+    left.sol === right.sol &&
+    left.sourceHash === right.sourceHash
+  );
+};
+
 function ReportsPage({
   state,
   setState,
@@ -12083,8 +12177,6 @@ function ReportsPage({
       .reduce((sum, transfer) => sum + transfer.vndAmount, 0);
   const depositFundBalanceAtMonth = (fund: DepositFund, month: string) =>
     depositBalanceAtMonth(fund, month) + pendingSolDepositAtMonth(fund, month) + pendingStockSaleDepositAtMonth(fund, month) + pendingBtcTransferDepositAtMonth(fund, month);
-  const solValueAtMonth = (month: string) =>
-    solPositionFromState(state, month).balance * state.market.solUsd * (state.market.usdtVnd || state.market.usdVnd);
   const withdrawalAtMonth = (key: ReportChartKey, month: string) => {
     if (key === "btc" || key === "stock") {
       return state.fundTransactions
@@ -12098,6 +12190,55 @@ function ReportsPage({
     }
     return monthlyWithdrawal(state, month);
   };
+  const reportSnapshotByMonth = useMemo(
+    () => new Map(state.reportMonthlySnapshots.map((item) => [item.month, item])),
+    [state.reportMonthlySnapshots]
+  );
+  const reportAssetSnapshotAtMonth = (month: string) => {
+    const sourceHash = reportMonthlySnapshotSourceHash(state, month);
+    const snapshot = reportSnapshotByMonth.get(month);
+    if (month < currentMonth() && snapshot?.sourceHash === sourceHash) return snapshot;
+    return liveReportAssetSnapshot(state, month, sourceHash);
+  };
+
+  useEffect(() => {
+    setState((prev) => {
+      const thisMonth = currentMonth();
+      const snapshotMonths = months.filter((item) => item <= thisMonth);
+      if (!snapshotMonths.length) return prev;
+
+      const now = new Date().toISOString();
+      const nextByMonth = new Map(prev.reportMonthlySnapshots.map((item) => [item.month, item]));
+      let changed = false;
+
+      snapshotMonths.forEach((month) => {
+        const sourceHash = reportMonthlySnapshotSourceHash(prev, month);
+        const live = liveReportAssetSnapshot(prev, month, sourceHash);
+        const existing = nextByMonth.get(month);
+        const shouldReplace =
+          !existing ||
+          existing.sourceHash !== sourceHash ||
+          (month === thisMonth && !sameReportAssetSnapshotValues(existing, live));
+
+        if (!shouldReplace) return;
+        changed = true;
+        nextByMonth.set(month, {
+          ...live,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
+      });
+
+      if (!changed) return prev;
+      const snapshotMonthSet = new Set(snapshotMonths);
+      const retained = prev.reportMonthlySnapshots.filter((item) => !snapshotMonthSet.has(item.month));
+      const nextSnapshots = [
+        ...retained,
+        ...snapshotMonths.map((month) => nextByMonth.get(month)!),
+      ].sort((left, right) => left.month.localeCompare(right.month));
+      return { ...prev, reportMonthlySnapshots: nextSnapshots };
+    });
+  }, [months, setState, state]);
 
   const reportRows = months.reduce<
     Array<{
@@ -12117,9 +12258,10 @@ function ReportsPage({
       const summary = monthlySummary(state, month);
       const withdrawn = monthlyWithdrawal(state, month);
       const previousNetAccumulation = rows[rows.length - 1]?.netAccumulation ?? 0;
-      const rowSol = solValueAtMonth(month);
-      const rowBtc = btcPortfolioStats(state, month).reportValueVnd + rowSol;
-      const rowStock = stockPortfolioStats(state, month).totalValue;
+      const rowAssetSnapshot = reportAssetSnapshotAtMonth(month);
+      const rowSol = rowAssetSnapshot.sol;
+      const rowBtc = rowAssetSnapshot.btc;
+      const rowStock = rowAssetSnapshot.stock;
       const rowSaving = depositFundBalanceAtMonth("saving", month);
       const rowEmergency = depositFundBalanceAtMonth("emergency", month);
       const currentAssets = rowBtc + rowStock + rowSaving + rowEmergency;
