@@ -220,6 +220,18 @@ test("health check detects overspend and preserves ignored fingerprints", async 
   assert.equal(issue.ruleId, "overspend");
 });
 
+test("health check allows USDT topup without pending crypto capital", async () => {
+  const { buildFinancialIndex, runHealthChecks, stableEventId } = await loadDomain();
+  const state = {
+    btcUsdtTopups: [{ id: "topup-1", vndAmount: 250_000, usdtAmount: 10, date: "2026-07-03", note: "", meta: { eventId: stableEventId("btc-topup", "topup-1") } }],
+    fundTransactions: [],
+  };
+  const issues = runHealthChecks(state, buildFinancialIndex(state), "2026-07-04T00:00:00.000Z");
+
+  assert.equal(issues.some((item) => item.fingerprint === "topup-over-capital:topup-1"), false);
+  assert.equal(issues.some((item) => item.fingerprint === "crypto-vnd-negative"), false);
+});
+
 test("financial index includes reconciliation adjustment events", async () => {
   const { buildFinancialIndex, stableEventId } = await loadDomain();
   const index = buildFinancialIndex({

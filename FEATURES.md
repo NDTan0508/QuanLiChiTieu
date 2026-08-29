@@ -191,7 +191,7 @@ Trang có nút cập nhật giá chung cho BTC, CK và SOL. Khi cập nhật th�
 - Nhập note.
 - Lưu giao dịch mua USDT.
 - Chặn lưu nếu VND hoặc USDT không hợp lệ.
-- Chặn lưu nếu VND mua USDT lớn hơn vốn Crypto chưa đổi.
+- Cho phép mua USDT kể cả khi vốn Crypto chưa đổi bằng 0.
 - Đồng bộ giao dịch mua USDT lên BTC cloud ledger nếu có tài khoản cloud.
 
 #### DCA BTC

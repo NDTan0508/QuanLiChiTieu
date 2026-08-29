@@ -6109,10 +6109,6 @@ function BtcPage({
       setBtcError("Nhập VND và USDT thực nhận hợp lệ.");
       return;
     }
-    if (vndAmount > stats.pendingVnd) {
-      setBtcError("Số VND mua USDT đang lớn hơn vốn BTC chưa đổi.");
-      return;
-    }
     const topup: BtcUsdtTopup = { id: uid(), vndAmount, usdtAmount, date: topupForm.date, occurredAt: occurredAtForDate(topupForm.date), note: topupForm.note.trim() };
     commitWithUndo("Đã thêm mua USDT.", (prev) => ({ ...prev, btcUsdtTopups: [...prev.btcUsdtTopups, topup] }));
     syncBtcRow("btc_usdt_topups", topup.id, topup);
@@ -11108,7 +11104,6 @@ function CryptoPage({
     const vndAmount = parseMoney(topupForm.vnd);
     const usdtAmount = parseDecimal(topupForm.usdt);
     if (!vndAmount || !usdtAmount) return setCryptoError("Nhập VND và USDT thực nhận hợp lệ.");
-    if (vndAmount > btcStats.pendingVnd) return setCryptoError("Số VND mua USDT đang lớn hơn vốn crypto chưa đổi.");
     const topupId = uid();
     const topup: BtcUsdtTopup = {
       id: topupId,

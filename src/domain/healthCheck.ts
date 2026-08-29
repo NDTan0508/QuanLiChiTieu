@@ -74,7 +74,6 @@ function makeIssue(input: IssueInput): IssueInput {
 function negativeBalanceIssues(state: HealthState): IssueInput[] {
   const issues: IssueInput[] = [];
   const btc = btcBalances(state);
-  if (btc.pendingVnd < -1) issues.push(balanceIssue("crypto-vnd-negative", "crypto", "VND Crypto âm", `VND chờ mua USDT đang âm ${Math.round(btc.pendingVnd).toLocaleString("vi-VN")}đ.`));
   if (btc.usdt < -0.000001) issues.push(balanceIssue("usdt-negative", "crypto", "USDT âm", `Số dư USDT đang âm ${btc.usdt.toFixed(6)}.`));
   if (btc.btc < -0.00000001) issues.push(balanceIssue("btc-negative", "crypto", "BTC âm", `Số dư BTC đang âm ${btc.btc.toFixed(8)}.`));
   const sol = solBalance(state);
@@ -103,33 +102,10 @@ function balanceIssue(fingerprint: string, scope: HealthIssue["scope"], title: s
 
 function overspendIssues(state: HealthState): IssueInput[] {
   return [
-    ...topupOverCapitalIssues(state),
     ...btcTimelineOverspendIssues(state),
     ...solTimelineOverspendIssues(state),
     ...stockTimelineOverspendIssues(state),
   ];
-}
-
-function topupOverCapitalIssues(state: HealthState): IssueInput[] {
-  const issues: IssueInput[] = [];
-  let cryptoCapital = fundBalance(state, "btc");
-  [...(state.btcUsdtTopups ?? [])].sort((a, b) => dateOf(a).localeCompare(dateOf(b))).forEach((topup) => {
-    cryptoCapital -= n(topup.vndAmount);
-    if (cryptoCapital < -1) {
-      issues.push(makeIssue({
-        ruleId: "overspend",
-        fingerprint: `topup-over-capital:${topup.id}`,
-        severity: "error",
-        scope: "crypto",
-        title: "Mua USDT vượt vốn Crypto",
-        description: `Lệnh mua USDT ${topup.id} làm VND Crypto âm tại thời điểm mua.`,
-        relatedEventIds: [topup.meta?.eventId].filter(Boolean) as string[],
-        relatedEntityIds: [String(topup.id ?? "")],
-        canAutoFix: false,
-      }));
-    }
-  });
-  return issues;
 }
 
 function btcTimelineOverspendIssues(state: HealthState): IssueInput[] {
