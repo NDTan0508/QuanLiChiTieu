@@ -10783,6 +10783,9 @@ function CryptoPage({
   const usdtPnlVnd = usdtValueVnd - btcCostBasis.usdtCostVnd;
   const formatCryptoPnlPercent = (pnl: number, cost: number) =>
     `${(cost ? (pnl / cost) * 100 : 0).toLocaleString("vi-VN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+  const formatCompactPnlUsdt = (value: number) =>
+    `${value.toLocaleString("vi-VN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}U`;
+  const formatCompactPnlVnd = (value: number) => `${Math.trunc(value / 1000)}k`;
   const formatBtcPlain = (value: number) =>
     value.toLocaleString("vi-VN", { minimumFractionDigits: 8, maximumFractionDigits: 8 });
   const formatCryptoPricePlain = (value: number, digits = 3) =>
@@ -10884,7 +10887,7 @@ function CryptoPage({
       marketPrice: state.market.btcUsdt ? formatCryptoPricePlain(state.market.btcUsdt) : "Đang chờ",
       averagePrice: btcStats.averageCostUsdt ? formatCryptoPricePlain(btcStats.averageCostUsdt) : "0",
       pnlValue: btcPnlUsdt,
-      pnlDisplay: `${formatUsdt(btcPnlUsdt)} · ${formatCryptoPnlPercent(btcPnlUsdt, btcStats.btcCostUsdt)}`,
+      pnlDisplay: `${formatCompactPnlUsdt(btcPnlUsdt)} · ${formatCryptoPnlPercent(btcPnlUsdt, btcStats.btcCostUsdt)}`,
       icon: <Bitcoin size={18} />,
     },
     {
@@ -10896,7 +10899,7 @@ function CryptoPage({
       marketPrice: state.market.solUsd ? formatCryptoPricePlain(state.market.solUsd, 2) : "Đang chờ",
       averagePrice: solAverageCost ? formatCryptoPricePlain(solAverageCost, 2) : "0",
       pnlValue: solPnlUsdt,
-      pnlDisplay: `${formatUsdt(solPnlUsdt)} · ${formatCryptoPnlPercent(solPnlUsdt, solStats.cost)}`,
+      pnlDisplay: `${formatCompactPnlUsdt(solPnlUsdt)} · ${formatCryptoPnlPercent(solPnlUsdt, solStats.cost)}`,
       icon: <Coins size={18} />,
     },
     {
@@ -10908,7 +10911,7 @@ function CryptoPage({
       marketPrice: state.market.usdtVnd ? formatVnd(state.market.usdtVnd) : "Đang chờ",
       averagePrice: usdtAverageCost ? formatVnd(usdtAverageCost) : "0đ",
       pnlValue: usdtPnlVnd,
-      pnlDisplay: `${formatVnd(usdtPnlVnd)} · ${formatCryptoPnlPercent(usdtPnlVnd, btcCostBasis.usdtCostVnd)}`,
+      pnlDisplay: `${formatCompactPnlVnd(usdtPnlVnd)} · ${formatCryptoPnlPercent(usdtPnlVnd, btcCostBasis.usdtCostVnd)}`,
       icon: <CircleDollarSign size={18} />,
     },
   ];
