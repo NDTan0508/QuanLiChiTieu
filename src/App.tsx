@@ -1230,9 +1230,12 @@ function nextDcaRunAt(plan: Pick<BtcDcaPlan, "startDate" | "time" | "frequency">
 }
 
 function normalizeDcaPlan(plan: BtcDcaPlan): BtcDcaPlan {
+  const paused = plan.status === "paused" || plan.isActive === false;
+  const isActive = !paused;
   return {
     ...plan,
-    status: plan.isActive ? plan.status ?? "active" : "paused",
+    isActive,
+    status: paused ? "paused" : plan.status === "insufficient-usdt" ? "insufficient-usdt" : "active",
     nextRunAt: plan.nextRunAt || nextDcaRunAt(plan),
   };
 }
@@ -2254,6 +2257,29 @@ function withTrashItem(state: AppState, trashItem: TrashItem) {
   };
 }
 
+function btcLedgerTrashIds(state: AppState) {
+  const topupIds = new Set<string>();
+  const dcaPlanIds = new Set<string>();
+  const tradeIds = new Set<string>();
+  const transferIds = new Set<string>();
+  const relatedRows = <T extends { id?: unknown }>(trashItem: TrashItem, key: string): T[] =>
+    Array.isArray(trashItem.relatedPayloads?.[key]) ? (trashItem.relatedPayloads[key] as T[]) : [];
+
+  (state.trashItems ?? []).forEach((trashItem) => {
+    if (trashItem.entityType === "btc-topup") topupIds.add(trashItem.entityId);
+    if (trashItem.entityType === "btc-dca") {
+      dcaPlanIds.add(trashItem.entityId);
+      relatedRows<BtcTrade>(trashItem, "btcTrades").forEach((trade) => {
+        if (typeof trade.id === "string") tradeIds.add(trade.id);
+      });
+    }
+    if (trashItem.entityType === "btc-trade") tradeIds.add(trashItem.entityId);
+    if (trashItem.entityType === "btc-transfer") transferIds.add(trashItem.entityId);
+  });
+
+  return { topupIds, dcaPlanIds, tradeIds, transferIds };
+}
+
 function restoreTrashPayload(state: AppState, trashItem: TrashItem): AppState {
   const addUnique = <T extends { id: string }>(rows: T[], item: T) =>
     rows.some((row) => row.id === item.id) ? rows.map((row) => (row.id === item.id ? item : row)) : [item, ...rows];
@@ -2443,8 +2469,8 @@ function exportCsvBundle(state: AppState) {
       currentValueUsdt,
       pnlUsdt,
       pnlPercent: investedUsdt ? (pnlUsdt / investedUsdt) * 100 : 0,
-      latestPriceUsdt: latestTrade.btcPriceUsdt ?? 0,
-      latestTradeAt: latestTrade.executedAt ?? "",
+      latestPriceUsdt: latestTrade?.btcPriceUsdt ?? 0,
+      latestTradeAt: latestTrade?.executedAt ?? "",
       tradeCount: trades.length,
     };
   };
@@ -6288,7 +6314,9 @@ function BtcPage({
 
   const deletePlan = (plan: BtcDcaPlan) => {
     const relatedTrades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
-    if (!window.confirm(`Xóa lệnh DCA này? ${relatedTrades.length} giao dịch DCA liên quan sẽ được xóa khỏi BTC và hoàn lại USDT vào số dư.`)) return;
+    const refundUsdt = relatedTrades.reduce((sum, trade) => sum + trade.usdtAmount, 0);
+    const removeBtc = relatedTrades.reduce((sum, trade) => sum + trade.btcAmount, 0);
+    if (!window.confirm(`Xóa lệnh DCA này? ${relatedTrades.length} giao dịch DCA liên quan sẽ được xóa khỏi BTC, trừ ${formatBtc(removeBtc)} và hoàn lại ${formatUsdt(refundUsdt)} vào số dư USDT.`)) return;
     commitWithUndo(
       "Đã xóa lệnh DCA.",
       (prev) =>
@@ -6309,13 +6337,11 @@ function BtcPage({
       setPlanForm({ amountUsdt: "2", frequency: "daily", time: "12:00", startDate: today(), note: "" });
     }
     if (!btcCloudAccountId) return;
-    void deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id).catch(() => {
-      // Local deletion still applies; cloud can be reconciled manually if offline.
-    });
-    relatedTrades.forEach((trade) => {
-      void deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id).catch(() => {
-        setBtcError("Đã xóa local, nhưng chưa xóa được toàn bộ giao dịch DCA trên cloud.");
-      });
+    void Promise.allSettled([
+      deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id),
+      ...relatedTrades.map((trade) => deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id)),
+    ]).then((results) => {
+      if (results.some((result) => result.status === "rejected")) setBtcError("Đã xóa local và hoàn số dư, nhưng chưa xóa được toàn bộ DCA trên cloud.");
     });
   };
 
@@ -6506,7 +6532,7 @@ function BtcPage({
       btcAmount,
       currentValueUsdt,
       investedUsdt,
-      latestPriceUsdt: latestTrade.btcPriceUsdt || 0,
+      latestPriceUsdt: latestTrade?.btcPriceUsdt || 0,
       pnlPercent,
       pnlUsdt,
       startAt,
@@ -6674,7 +6700,7 @@ function BtcPage({
                   <div className="btc-plan-actions">
                     <button className="ghost" onClick={() => togglePlanDetails(plan.id)} type="button">{isExpanded ? "Ẩn chi tiết" : "Xem chi tiết"}</button>
                     <button className="ghost" onClick={() => editPlan(plan)} type="button"><Pencil size={16} /> Sửa</button>
-                    <button className="ghost" onClick={() => togglePlan(plan)} type="button">{plan.isActive ? "Tạm dừng" : "Bật lại"}</button>
+                    <button className="ghost" onClick={() => togglePlan(plan)} type="button">{plan.isActive ? "Tạm dừng" : "Tiếp tục"}</button>
                   </div>
                 </div>
                 <div className="btc-plan-summary">
@@ -10855,7 +10881,10 @@ function CryptoPage({
     );
     closeBalanceAdjustment();
   };
-  const activeDcaPlans = state.btcDcaPlans.filter((plan) => plan.isActive);
+  const visibleDcaPlans = [...state.btcDcaPlans].sort((left, right) => {
+    if (left.isActive !== right.isActive) return left.isActive ? -1 : 1;
+    return left.nextRunAt.localeCompare(right.nextRunAt);
+  });
   const latestCryptoAllocationNotice = [...state.fundTransactions]
     .reverse()
     .find(
@@ -10866,6 +10895,18 @@ function CryptoPage({
         !state.settings.dismissedCryptoAllocationIds.includes(transaction.id)
     );
   const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
+  const dcaStatusLabel: Record<BtcDcaStatus, string> = {
+    active: "Đang chạy",
+    paused: "Tạm dừng",
+    "insufficient-usdt": "Thiếu USDT",
+  };
+  const dcaStatusTone = (plan: BtcDcaPlan) => {
+    if (!plan.isActive || plan.status === "paused") return "warning";
+    if (plan.status === "insufficient-usdt") return "danger";
+    return "success";
+  };
+  const dcaStatusText = (plan: BtcDcaPlan) =>
+    dcaStatusLabel[!plan.isActive ? "paused" : plan.status] ?? "Đang chạy";
   const destinationOptions = (asset: CryptoTransferAsset): Array<{ id: BtcTransferTarget | "btc-direct"; label: string }> => {
     if (asset === "btc") return [{ id: "usdt", label: "USDT" }];
     if (asset === "sol") return [{ id: "btc", label: "USDT" }];
@@ -11246,7 +11287,7 @@ function CryptoPage({
       btcAmount,
       currentValueUsdt,
       investedUsdt,
-      latestPriceUsdt: latestTrade.btcPriceUsdt || 0,
+      latestPriceUsdt: latestTrade?.btcPriceUsdt || 0,
       pnlPercent,
       pnlUsdt,
       startAt: new Date(`${plan.startDate}T${plan.time}:00`).toISOString(),
@@ -11269,19 +11310,28 @@ function CryptoPage({
 
   const deletePlan = (plan: BtcDcaPlan) => {
     const relatedTrades = state.btcTrades.filter((trade) => trade.type === "dca" && trade.planId === plan.id);
-    if (!window.confirm(`Xóa lệnh DCA này? ${relatedTrades.length} giao dịch DCA liên quan sẽ được xóa khỏi Crypto và hoàn lại USDT vào số dư.`)) return;
+    const refundUsdt = relatedTrades.reduce((sum, trade) => sum + trade.usdtAmount, 0);
+    const removeBtc = relatedTrades.reduce((sum, trade) => sum + trade.btcAmount, 0);
+    if (!window.confirm(`Xóa lệnh DCA này? ${relatedTrades.length} giao dịch DCA liên quan sẽ được xóa khỏi Crypto, trừ ${formatBtc(removeBtc)} và hoàn lại ${formatUsdt(refundUsdt)} vào số dư USDT.`)) return;
     commitWithUndo(
       "Đã xóa lệnh DCA.",
       (prev) =>
         withTrashItem(
           { ...prev, btcDcaPlans: prev.btcDcaPlans.filter((item) => item.id !== plan.id), btcTrades: prev.btcTrades.filter((trade) => !(trade.type === "dca" && trade.planId === plan.id)) },
           makeTrashItem("btc-dca", plan.id, `lệnh DCA ${formatUsdt(plan.amountUsdt)}`, plan, { btcTrades: relatedTrades })
-        ),
+      ),
       { action: "delete", entityType: "btc-dca", entityId: plan.id }
     );
+    setExpandedDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
+    setHistoryDcaPlanIds((prev) => prev.filter((id) => id !== plan.id));
+    if (editingPlanId === plan.id) setEditingPlanId(null);
     if (!btcCloudAccountId) return;
-    void deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được DCA trên cloud."));
-    relatedTrades.forEach((trade) => void deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id).catch(() => setCryptoError("Đã xóa local, nhưng chưa xóa được toàn bộ giao dịch DCA trên cloud.")));
+    void Promise.allSettled([
+      deleteCloudPayloadRow("btc_dca_plans", btcCloudAccountId, plan.id),
+      ...relatedTrades.map((trade) => deleteCloudPayloadRow("btc_trades", btcCloudAccountId, trade.id)),
+    ]).then((results) => {
+      if (results.some((result) => result.status === "rejected")) setCryptoError("Đã xóa local và hoàn số dư, nhưng chưa xóa được toàn bộ DCA trên cloud.");
+    });
   };
 
   const editDcaAsset = (plan: BtcDcaPlan) => {
@@ -11729,9 +11779,9 @@ function CryptoPage({
       )}
 
       <section className="panel">
-        <div className="panel-title"><h2>Lệnh DCA đang chạy</h2><small>{activeDcaPlans.length} kế hoạch</small></div>
+        <div className="panel-title"><h2>Lệnh DCA</h2><small>{visibleDcaPlans.length} kế hoạch</small></div>
         <div className="btc-plan-list">
-          {activeDcaPlans.length === 0 ? <p className="muted">Chưa có kế hoạch DCA đang chạy.</p> : activeDcaPlans.map((plan) => {
+          {visibleDcaPlans.length === 0 ? <p className="muted">Chưa có kế hoạch DCA.</p> : visibleDcaPlans.map((plan) => {
             const planStats = dcaPlanStats(plan);
             const isExpanded = expandedDcaPlanIds.includes(plan.id);
             const isHistoryOpen = historyDcaPlanIds.includes(plan.id);
@@ -11741,7 +11791,7 @@ function CryptoPage({
                 <div className="btc-plan-header">
                   <div>
                     <div className="btc-plan-top-row">
-                      <span className="status-badge btc-plan-status success">Đang chạy</span>
+                      <span className={`status-badge btc-plan-status ${dcaStatusTone(plan)}`}>{dcaStatusText(plan)}</span>
                       <div className="btc-plan-top-actions">
                         <button className={`btc-plan-icon-button ${isHistoryOpen ? "active" : ""}`} onClick={() => setHistoryDcaPlanIds((prev) => (prev.includes(plan.id) ? prev.filter((id) => id !== plan.id) : [...prev, plan.id]))} title="Lịch sử DCA" type="button"><History size={15} /></button>
                         <button className="btc-plan-delete-button danger-text" onClick={() => deletePlan(plan)} title="Xóa lệnh DCA" type="button"><X size={16} /></button>
@@ -11755,7 +11805,7 @@ function CryptoPage({
                   <div className="btc-plan-actions">
                     <button className="ghost" onClick={() => setExpandedDcaPlanIds((prev) => (prev.includes(plan.id) ? prev.filter((id) => id !== plan.id) : [...prev, plan.id]))} type="button">{isExpanded ? "Ẩn chi tiết" : "Xem chi tiết"}</button>
                     <button className="ghost" onClick={() => editPlan(plan)} type="button"><Pencil size={16} /> Sửa</button>
-                    <button className="ghost" onClick={() => togglePlan(plan)} type="button">Tạm dừng</button>
+                    <button className="ghost" onClick={() => togglePlan(plan)} type="button">{plan.isActive ? "Tạm dừng" : "Tiếp tục"}</button>
                   </div>
                 </div>
                 <div className="btc-plan-summary">
@@ -11768,7 +11818,7 @@ function CryptoPage({
                       <span>Số lượng nắm giữ <strong>{formatBtc(planStats.btcAmount)}</strong></span>
                       <span>Giá trị hiện tại <strong>{formatUsdt(planStats.currentValueUsdt)}</strong></span>
                       <span>Ngày bắt đầu <strong>{formatShortDateTime(planStats.startAt)}</strong></span>
-                      <span>Giao dịch tiếp theo <strong>{formatShortDateTime(plan.nextRunAt)}</strong></span>
+                      <span>Giao dịch tiếp theo <strong>{plan.isActive ? formatShortDateTime(plan.nextRunAt) : "Đã tạm dừng"}</strong></span>
                     </div>
                     <div className="btc-plan-asset">
                       <div className="btc-plan-asset-title"><span className="btc-token-mark"><Bitcoin size={16} /></span><strong>BTC</strong><button className="btc-plan-icon-button" onClick={() => editDcaAsset(plan)} title="Sửa số BTC và giá trung bình" type="button"><Pencil size={15} /></button></div>
@@ -14773,12 +14823,25 @@ export function App() {
     const ledger = await loadBtcCloudLedger(accountId);
     if (Date.now() < btcCloudMergePausedUntil.current) return;
     setState((prev) => {
+      const deleted = btcLedgerTrashIds(prev);
       const next = {
         ...prev,
-        btcUsdtTopups: mergeById(prev.btcUsdtTopups, ledger.topups),
-        btcDcaPlans: mergeById(prev.btcDcaPlans, ledger.dcaPlans).map(normalizeDcaPlan),
-        btcTrades: mergeById(prev.btcTrades, ledger.trades),
-        btcTransfers: mergeById(prev.btcTransfers, ledger.transfers),
+        btcUsdtTopups: mergeById(
+          prev.btcUsdtTopups.filter((item) => !deleted.topupIds.has(item.id)),
+          ledger.topups.filter((item) => !deleted.topupIds.has(item.id))
+        ),
+        btcDcaPlans: mergeById(
+          prev.btcDcaPlans.filter((item) => !deleted.dcaPlanIds.has(item.id)),
+          ledger.dcaPlans.filter((item) => !deleted.dcaPlanIds.has(item.id))
+        ).map(normalizeDcaPlan),
+        btcTrades: mergeById(
+          prev.btcTrades.filter((item) => !deleted.tradeIds.has(item.id)),
+          ledger.trades.filter((item) => !deleted.tradeIds.has(item.id))
+        ),
+        btcTransfers: mergeById(
+          prev.btcTransfers.filter((item) => !deleted.transferIds.has(item.id)),
+          ledger.transfers.filter((item) => !deleted.transferIds.has(item.id))
+        ),
       };
       const normalized = normalizeFinancialMetadata(next);
       return JSON.stringify(btcCloudLedgerFromState(normalized)) === JSON.stringify(btcCloudLedgerFromState(prev)) ? prev : normalized;

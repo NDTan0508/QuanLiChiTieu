@@ -255,11 +255,16 @@ export function buildCryptoLedger(input: CryptoLedgerInput): CryptoLedgerResult 
     if (event.kind === "adjustment") {
       const quantity = finite(event.adjustment.quantity);
       if (event.adjustment.asset === "BTC") {
-        if (quantity < 0 && btcBalance > BTC_EPSILON) {
-          const removed = Math.min(-quantity, btcBalance);
-          const ratio = removed / btcBalance;
-          btcCostUsdt = Math.max(btcCostUsdt * (1 - ratio), 0);
-          btcCostVnd = Math.max(btcCostVnd * (1 - ratio), 0);
+        if (btcBalance > BTC_EPSILON) {
+          if (quantity < 0) {
+            const removed = Math.min(-quantity, btcBalance);
+            const ratio = removed / btcBalance;
+            btcCostUsdt = Math.max(btcCostUsdt * (1 - ratio), 0);
+            btcCostVnd = Math.max(btcCostVnd * (1 - ratio), 0);
+          } else if (quantity > 0) {
+            btcCostUsdt += quantity * (btcCostUsdt / btcBalance);
+            btcCostVnd += quantity * (btcCostVnd / btcBalance);
+          }
         }
         btcBalance = Math.max(btcBalance + quantity, 0);
         if (btcBalance <= BTC_EPSILON) {
@@ -268,7 +273,10 @@ export function buildCryptoLedger(input: CryptoLedgerInput): CryptoLedgerResult 
           btcCostVnd = 0;
         }
       } else {
-        if (quantity < 0 && usdtBalance > USDT_EPSILON) {
+        if (quantity > 0) {
+          const averageCostVnd = usdtBalance > USDT_EPSILON ? usdtCostVnd / usdtBalance : nonNegative(input.fallbackUsdtVndRate);
+          usdtCostVnd += quantity * averageCostVnd;
+        } else if (quantity < 0 && usdtBalance > USDT_EPSILON) {
           const removed = Math.min(-quantity, usdtBalance);
           usdtCostVnd = Math.max(usdtCostVnd * (1 - removed / usdtBalance), 0);
         }
@@ -430,11 +438,16 @@ export function buildSolLedger(input: {
   events.forEach((event) => {
     if (event.kind === "adjustment") {
       const quantity = finite(event.item.quantity);
-      if (quantity < 0 && balance > BTC_EPSILON) {
-        const removed = Math.min(-quantity, balance);
-        const remainingRatio = 1 - removed / balance;
-        costUsdt = Math.max(costUsdt * remainingRatio, 0);
-        costVnd = Math.max(costVnd * remainingRatio, 0);
+      if (balance > BTC_EPSILON) {
+        if (quantity < 0) {
+          const removed = Math.min(-quantity, balance);
+          const remainingRatio = 1 - removed / balance;
+          costUsdt = Math.max(costUsdt * remainingRatio, 0);
+          costVnd = Math.max(costVnd * remainingRatio, 0);
+        } else if (quantity > 0) {
+          costUsdt += quantity * (costUsdt / balance);
+          costVnd += quantity * (costVnd / balance);
+        }
       }
       balance = Math.max(balance + quantity, 0);
       if (balance <= BTC_EPSILON) {

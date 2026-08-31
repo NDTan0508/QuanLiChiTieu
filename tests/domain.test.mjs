@@ -407,6 +407,51 @@ test("DCA overrides keep entered BTC quantity and average cost aligned", async (
   assert.equal(ledger.btcCostVnd, 500_000);
 });
 
+test("deleting a DCA plan removes its BTC and returns spent USDT", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const topups = [{ id: "topup", vndAmount: 500_000, usdtAmount: 20, date: "2026-08-01" }];
+  const dcaTrade = { id: "dca-1", type: "dca", planId: "plan", usdtAmount: 2, btcAmount: 0.00002561, executedAt: "2026-08-30T05:00:00.000Z" };
+  const withDca = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups,
+    plans: [{ id: "plan", startDate: "2026-08-30", btcAmountOverride: dcaTrade.btcAmount, averagePriceUsdtOverride: 78_109.74 }],
+    trades: [dcaTrade],
+    transfers: [],
+  });
+  const afterDelete = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups,
+    plans: [],
+    trades: [],
+    transfers: [],
+  });
+
+  assert.equal(withDca.usdtBalance, 18);
+  assert.equal(afterDelete.usdtBalance, 20);
+  assert.ok(Math.abs(withDca.btcBalance - dcaTrade.btcAmount) < 1e-12);
+  assert.equal(afterDelete.btcBalance, 0);
+  assert.equal(afterDelete.averageBtcCostUsdt, 0);
+});
+
+test("positive crypto adjustments preserve average cost instead of creating zero-cost assets", async () => {
+  const { buildCryptoLedger } = await loadDomain();
+  const ledger = buildCryptoLedger({
+    fallbackUsdtVndRate: 25_000,
+    topups: [{ id: "topup", vndAmount: 2_500_000, usdtAmount: 100, date: "2026-08-01" }],
+    trades: [{ id: "buy", type: "manual-buy", usdtAmount: 50, btcAmount: 0.001, executedAt: "2026-08-02T08:00:00.000Z" }],
+    transfers: [],
+    adjustments: [
+      { id: "btc-adjust", asset: "BTC", quantity: 0.001, date: "2026-08-03" },
+      { id: "usdt-adjust", asset: "USDT", quantity: 50, date: "2026-08-03" },
+    ],
+  });
+
+  assert.equal(ledger.btcBalance, 0.002);
+  assert.equal(ledger.usdtBalance, 100);
+  assert.equal(ledger.averageBtcCostUsdt, 50_000);
+  assert.equal(ledger.usdtCostVnd / ledger.usdtBalance, 25_000);
+});
+
 test("withdrawing the complete USDT balance clears active cost basis", async () => {
   const { buildCryptoLedger } = await loadDomain();
   const ledger = buildCryptoLedger({
@@ -450,6 +495,18 @@ test("SOL max withdrawal closes rounding dust at eight decimal places", async ()
   assert.equal(ledger.balance, 0);
   assert.equal(ledger.costUsdt, 0);
   assert.equal(ledger.costVnd, 0);
+});
+
+test("positive SOL adjustments preserve average cost", async () => {
+  const { buildSolLedger } = await loadDomain();
+  const ledger = buildSolLedger({
+    transactions: [{ id: "buy", type: "buy", solAmount: 2, priceUsdt: 100, costVnd: 5_000_000, date: "2026-08-25" }],
+    adjustments: [{ id: "sol-adjust", quantity: 1, date: "2026-08-26" }],
+  });
+
+  assert.equal(ledger.balance, 3);
+  assert.equal(ledger.costUsdt / ledger.balance, 100);
+  assert.equal(ledger.costVnd / ledger.balance, 2_500_000);
 });
 
 test("partial SOL sale records realized PnL and only releases proportional cost", async () => {
