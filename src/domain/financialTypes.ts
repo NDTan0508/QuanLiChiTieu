@@ -201,7 +201,7 @@ export type AllocationPlan = {
   createdAt: string;
 };
 
-export const FINANCIAL_SCHEMA_VERSION = 4;
+export const FINANCIAL_SCHEMA_VERSION = 6;
 
 export const DEFAULT_FINANCIAL_ACCOUNTS: FinancialAccount[] = [
   { id: "cash", name: "Tiền mặt", type: "cash", currency: "VND", isActive: true },

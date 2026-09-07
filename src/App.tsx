@@ -66,6 +66,7 @@ import { BreakdownPie } from "./components/BreakdownPie";
 import { MetricCard } from "./components/MetricCard";
 import { MonthPicker } from "./components/MonthPicker";
 import { SourceTraceModal } from "./components/SourceTraceModal";
+import { ExpenseManagerPage } from "./pages/ExpenseManagerPage";
 import { AdminPage, type AdminActionResult } from "./pages/AdminPage";
 import { PinGate } from "./pages/PinGate";
 import {
@@ -99,6 +100,16 @@ import {
 } from "./domain/bankDepositSettlement";
 import { buildCryptoLedger, buildSolLedger, findSolDerivedTopupCostEventIndex } from "./domain/cryptoLedger";
 import { realizedStockSalePnl, stockOpenPositionSnapshot } from "./domain/stockPnl";
+import {
+  EXPENSE_CATEGORY_SEEDS,
+  expenseFingerprint,
+  isCountedExpense,
+  normalizedExpenseStatus,
+  type ExpenseCategoryDetails,
+  type ExpenseImportSession,
+  type ExpenseTransaction,
+} from "./domain/expenseLedger";
+import type { ExpenseColumnMapping, ParsedExpenseRow } from "./domain/expenseXlsx";
 
 type Page = AppNavPage;
 
@@ -118,7 +129,7 @@ type IncomeTransaction = {
   meta?: TransactionMeta;
 };
 
-type ExpenseCategory = {
+type ExpenseCategory = ExpenseCategoryDetails & {
   id: string;
   name: string;
   kind: "fixed" | "variable";
@@ -156,15 +167,7 @@ type AccumulationGoal = {
   meta?: TransactionMeta;
 };
 
-type ExpenseEntry = {
-  id: string;
-  categoryId: string;
-  month: string;
-  amount: number;
-  date: string;
-  note: string;
-  meta?: TransactionMeta;
-};
+type ExpenseEntry = Omit<ExpenseTransaction, "meta"> & { meta?: TransactionMeta };
 
 type Allocation = {
   month: string;
@@ -469,6 +472,7 @@ type SettingsState = {
   pinLoginDisabledUntil?: string | "manual";
   dismissedCryptoAllocationIds: string[];
   dismissedStockAllocationIds: string[];
+  expenseXlsxMappings?: Record<string, ExpenseColumnMapping>;
 };
 
 type AuditEntityType =
@@ -534,6 +538,7 @@ type AppState = {
   monthlyExpenses: MonthlyExpense[];
   accumulationGoals: AccumulationGoal[];
   expenseEntries: ExpenseEntry[];
+  expenseImportSessions: ExpenseImportSession[];
   allocations: Allocation[];
   fundTransactions: FundTransaction[];
   stockPurchases: StockPurchase[];
@@ -2820,17 +2825,54 @@ function normalizeState(state: AppState): AppState {
   const incomingSchema = Number(state.schemaVersion ?? 1);
   const settings = { ...initialState.settings, ...(state.settings ?? {}) };
   const market = { ...initialState.market, ...(state.market ?? {}) };
-  const expenseCategoriesMapped = arrayOr<ExpenseCategory & { kind: string }>(state.expenseCategories as Array<ExpenseCategory & { kind: string }> | null | undefined).map((category) => {
-    const migratedKind: ExpenseCategory["kind"] = category.kind === "variable" ? "variable" : "fixed";
-    if (category.id === "chi-tieu") {
-      return { ...category, kind: "fixed" as const, defaultAmount: category.defaultAmount || 3_000_000 };
-    }
-    if (category.id === "phat-sinh") {
-      return { ...category, kind: "variable" as const, defaultAmount: 0 };
-    }
-    return { ...category, kind: migratedKind, defaultAmount: category.defaultAmount ?? 0 };
-  });
-  const expenseCategories = expenseCategoriesMapped.length ? expenseCategoriesMapped : initialState.expenseCategories;
+  const expenseCategoriesMapped = arrayOr<ExpenseCategory & { kind: string }>(state.expenseCategories as Array<ExpenseCategory & { kind: string }> | null | undefined)
+    .filter((category) => category.id !== "chi-tieu")
+    .map((category) => {
+      const migratedKind: ExpenseCategory["kind"] = category.kind === "variable" ? "variable" : "fixed";
+      if (category.id === "phat-sinh") {
+        return { ...category, kind: "variable" as const, defaultAmount: 0 };
+      }
+      return { ...category, kind: migratedKind, defaultAmount: category.defaultAmount ?? 0 };
+    });
+  const baseExpenseCategories = expenseCategoriesMapped.length ? expenseCategoriesMapped : initialState.expenseCategories;
+  const existingCategoryIds = new Set(baseExpenseCategories.map((category) => category.id));
+  const expenseCategories = [
+    ...baseExpenseCategories.map((category) => ({ ...category, isActive: category.isActive ?? true, keywords: category.keywords ?? [] })),
+    ...EXPENSE_CATEGORY_SEEDS.filter((seed) => !existingCategoryIds.has(seed.id)).map(({ id, name, icon, color, keywords, isActive }) => ({ id, name, icon, color, keywords, isActive, kind: "variable" as const, defaultAmount: 0, accumulationGoalId: "" })),
+  ];
+  const expenseEntries = arrayOr<ExpenseEntry>(state.expenseEntries)
+    .filter((entry) => !(entry.categoryId === "chi-tieu" && entry.id.startsWith("fixed:")))
+    .map((entry) => {
+      const categoryId = entry.categoryId === "chi-tieu" ? "khac" : entry.categoryId;
+      const source = entry.source ?? "manual";
+      const paymentMethod = entry.paymentMethod ?? "other";
+      const status = entry.status ?? (categoryId ? "classified" : "unclassified");
+      const fingerprint = entry.fingerprint ?? expenseFingerprint({ date: entry.date, amount: entry.amount, description: entry.note, bankReference: entry.bankReference });
+      return { ...entry, categoryId, amount: Math.abs(entry.amount), source, paymentMethod, status, fingerprint, createdAt: entry.createdAt ?? entry.meta?.createdAt ?? `${entry.date}T00:00:00.000Z`, updatedAt: entry.updatedAt ?? entry.meta?.updatedAt ?? `${entry.date}T00:00:00.000Z` };
+    });
+  const monthlyExpenses = arrayOr(state.monthlyExpenses).filter((record) => record.categoryId !== "chi-tieu");
+  const fixedLedgerEntries = monthlyExpenses
+    .filter((record) => record.checked && record.amount > 0)
+    .filter((record) => !expenseEntries.some((entry) => entry.id === `fixed:${record.id}`))
+    .map((record) => {
+      const category = expenseCategories.find((item) => item.id === record.categoryId);
+      const date = `${record.month}-01`;
+      const note = `${category?.name ?? record.categoryId}`;
+      return {
+        id: `fixed:${record.id}`,
+        categoryId: record.categoryId,
+        month: record.month,
+        amount: record.amount,
+        date,
+        note,
+        source: "manual" as const,
+        paymentMethod: "other" as const,
+        status: "classified" as const,
+        fingerprint: expenseFingerprint({ date, amount: record.amount, description: note, bankReference: record.id }),
+        createdAt: record.meta?.createdAt ?? `${date}T00:00:00.000Z`,
+        updatedAt: record.meta?.updatedAt ?? `${date}T00:00:00.000Z`,
+      };
+    });
   const rawIncomeCategories = arrayOr(state.incomeCategories);
   let incomeCategories = rawIncomeCategories.length ? rawIncomeCategories : initialState.incomeCategories;
   let incomeTransactions = arrayOr(state.incomeTransactions);
@@ -2917,13 +2959,15 @@ function normalizeState(state: AppState): AppState {
       pinLoginDisabledUntil: settings.pinLoginDisabledUntil,
       dismissedCryptoAllocationIds: settings.dismissedCryptoAllocationIds ?? [],
       dismissedStockAllocationIds: settings.dismissedStockAllocationIds ?? [],
+      expenseXlsxMappings: settings.expenseXlsxMappings ?? {},
     },
     incomeCategories,
     incomeTransactions,
     expenseCategories,
-    monthlyExpenses: arrayOr(state.monthlyExpenses),
+    monthlyExpenses,
     accumulationGoals: arrayOr(state.accumulationGoals),
-    expenseEntries: arrayOr(state.expenseEntries),
+    expenseEntries: [...expenseEntries, ...fixedLedgerEntries],
+    expenseImportSessions: arrayOr(state.expenseImportSessions),
     allocations: arrayOr(state.allocations, initialState.allocations),
     fundTransactions: arrayOr(state.fundTransactions),
     bankDeposits,
@@ -3106,15 +3150,16 @@ const initialState: AppState = {
   ],
   incomeTransactions: [],
   expenseCategories: [
-    { id: "chi-tieu", name: "Chi tiêu", kind: "fixed", defaultAmount: 3000000, accumulationGoalId: "" },
-    { id: "phat-sinh", name: "Phát sinh", kind: "variable", defaultAmount: 0, accumulationGoalId: "" },
-    { id: "me", name: "Mẹ", kind: "fixed", defaultAmount: 3000000, accumulationGoalId: "" },
-    { id: "du-lich", name: "Du lịch", kind: "fixed", defaultAmount: 1500000, accumulationGoalId: "" },
-    { id: "hoc-phi", name: "Học phí", kind: "fixed", defaultAmount: 2000000, accumulationGoalId: "" },
+    { id: "phat-sinh", name: "Phát sinh", kind: "variable", defaultAmount: 0, accumulationGoalId: "", isActive: true },
+    { id: "me", name: "Mẹ", kind: "fixed", defaultAmount: 3000000, accumulationGoalId: "", isActive: true },
+    { id: "du-lich", name: "Du lịch", kind: "fixed", defaultAmount: 1500000, accumulationGoalId: "", isActive: true },
+    { id: "hoc-phi", name: "Học phí", kind: "fixed", defaultAmount: 2000000, accumulationGoalId: "", isActive: true },
+    ...EXPENSE_CATEGORY_SEEDS.map(({ id, name, icon, color, keywords, isActive }) => ({ id, name, icon, color, keywords, isActive, kind: "variable" as const, defaultAmount: 0, accumulationGoalId: "" })),
   ],
   monthlyExpenses: [],
   accumulationGoals: [],
   expenseEntries: [],
+  expenseImportSessions: [],
   allocations: [
     {
       month: DEFAULT_START_MONTH,
@@ -3148,6 +3193,7 @@ const initialState: AppState = {
     pinLoginDisabledUntil: undefined,
     dismissedCryptoAllocationIds: [],
     dismissedStockAllocationIds: [],
+    expenseXlsxMappings: {},
   },
   auditLogs: [],
   trashItems: [],
@@ -3226,16 +3272,14 @@ function monthlySummary(state: AppState, month: string) {
   });
 
   const expenseRows: ExpenseSummaryRow[] = state.expenseCategories.map((category) => {
-    const record = getMonthlyExpense(state, category, month);
     const transactions = state.expenseEntries
-      .filter((item) => item.month === month && item.categoryId === category.id)
+      .filter((item) => item.month === month && item.categoryId === category.id && isCountedExpense(item))
       .sort((left, right) => right.date.localeCompare(left.date));
     const entries = transactions.reduce((sum, item) => sum + item.amount, 0);
-    const base = category.kind === "fixed" && record?.checked ? record?.amount : 0;
     return {
       id: category.id,
       name: category.name,
-      value: base + entries,
+      value: entries,
       transactions,
       kind: category.kind,
     };
@@ -3456,6 +3500,18 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
   const btcStats = btcPortfolioStats(state);
   const stockStats = stockPortfolioStats(state);
   const summary = monthlySummary(state, month);
+  const unclassifiedExpenses = state.expenseEntries.filter((entry) => entry.month === month && isCountedExpense(entry) && normalizedExpenseStatus(entry) === "unclassified");
+  if (unclassifiedExpenses.length) {
+    tasks.push({
+      id: "expense-unclassified",
+      title: `${unclassifiedExpenses.length} khoản chi chưa phân loại`,
+      detail: formatVnd(unclassifiedExpenses.reduce((sum, entry) => sum + entry.amount, 0)),
+      action: "Phân loại",
+      badge: "Chi tiêu",
+      tone: "warning",
+      page: "expense-manager",
+    });
+  }
 
   if (summary.saving > 0 && !summary.allocation.confirmedAt && isAllocationReminderDue(month)) {
     tasks.push({ id: "allocation", title: "Tháng này chưa chia quỹ", detail: `Có thể chia ${formatVnd(summary.saving)}`, action: "Chia quỹ", badge: "Chia quỹ", page: "dashboard" });
@@ -3598,7 +3654,7 @@ function DashboardPage({
         <div>
           <p className="dashboard-month-title">Tháng {formatMonth(month)}</p>
         </div>
-        <MonthPicker month={month} setMonth={setMonth} />
+        <div className="dashboard-header-actions"><MonthPicker month={month} setMonth={setMonth} /><button className="ghost" type="button" onClick={() => setPage("expense-manager")}>Quản lý khoản chi</button></div>
       </header>
 
       <section className="metrics-grid">
@@ -3921,9 +3977,31 @@ function UnifiedDashboardPage({
     commitWithUndo("Đã cập nhật chi cố định.", (prev) => {
       const existing = prev.monthlyExpenses.find((item) => item.categoryId === category.id && item.month === month);
       const next = existing ? { ...existing, ...patch } : { ...getMonthlyExpense(prev, category, month), ...patch };
+      const fixedLedgerId = `fixed:${next.id}`;
+      const date = `${next.month}-01`;
+      const note = `${category.name}`;
+      const fixedLedgerEntry: ExpenseEntry = {
+        id: fixedLedgerId,
+        categoryId: category.id,
+        month: next.month,
+        amount: next.amount,
+        date,
+        note,
+        source: "manual",
+        paymentMethod: "other",
+        status: "classified",
+        fingerprint: expenseFingerprint({ date, amount: next.amount, description: note, bankReference: next.id }),
+        createdAt: prev.expenseEntries.find((entry) => entry.id === fixedLedgerId)?.createdAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
       return {
         ...prev,
         monthlyExpenses: existing ? prev.monthlyExpenses.map((item) => (item.id === existing.id ? next : item)) : [...prev.monthlyExpenses, next],
+        expenseEntries: next.checked && next.amount > 0
+          ? prev.expenseEntries.some((entry) => entry.id === fixedLedgerId)
+            ? prev.expenseEntries.map((entry) => entry.id === fixedLedgerId ? { ...entry, ...fixedLedgerEntry } : entry)
+            : [...prev.expenseEntries, fixedLedgerEntry]
+          : prev.expenseEntries.filter((entry) => entry.id !== fixedLedgerId),
       };
     }, { action: "update", entityType: "expense", entityId: category.id });
   };
@@ -4229,7 +4307,10 @@ function UnifiedDashboardPage({
         <div>
           <p className="dashboard-month-title">Tháng {formatMonth(month)}</p>
         </div>
-        <MonthPicker month={month} setMonth={setMonth} />
+        <div className="dashboard-header-actions">
+          <button className="ghost dashboard-expense-link" type="button" title="Quản lý chi tiêu" aria-label="Quản lý chi tiêu" onClick={() => setPage("expense-manager")}><ListFilter size={16} /><span>Quản lý</span></button>
+          <MonthPicker month={month} setMonth={setMonth} />
+        </div>
       </header>
 
       <section className="metrics-grid dashboard-metrics-grid">
@@ -4399,19 +4480,6 @@ function UnifiedDashboardPage({
                 onEdit={(item) => moneyDetail === "income" ? openIncomeEdit(item as IncomeTransaction) : openExpenseEdit(item as ExpenseEntry)}
                 onDelete={(item) => moneyDetail === "income" ? deleteIncomeTransaction(item) : deleteExpenseTransaction(item)}
                 onTrace={(item) => openMoneyTrace(moneyDetail, item)}
-                fixedItem={
-                  moneyDetail === "expense" && selectedFixedExpenseCategory && selectedFixedExpenseRecord?.checked
-                    ? {
-                        amount: selectedFixedExpenseRecord?.amount,
-                        note: "Khoản cố định",
-                        dateLabel: formatMonth(month),
-                        canDelete: selectedFixedExpenseCanDelete,
-                        onEdit: () => setEditingFixed({ categoryId: selectedFixedExpenseCategory.id, amount: selectedFixedExpenseRecord?.amount.toLocaleString("vi-VN") ?? "" }),
-                        onDelete: () => deleteExpenseCategory(selectedFixedExpenseCategory),
-                        onTrace: () => selectedFixedExpenseRecord && setTraceEventIds([selectedFixedExpenseRecord.meta?.eventId ?? stableEventId("monthly-expense", selectedFixedExpenseRecord.id)]),
-                      }
-                    : undefined
-                }
               />
             </div>
           </section>
@@ -14649,7 +14717,6 @@ export function App() {
   const navigateToPage = (nextPage: Page) => {
     if (page === "investment" && nextPage !== "investment" && assetTab === "mbb") setAssetTab("crypto");
     setPage(nextPage);
-    if (nextPage === "dashboard") setMonth(currentMonth());
   };
   const normalizeCloudStateForActivePin = (cloudState: AppState) =>
     normalizeStateWithMigrationSafety({
@@ -15464,6 +15531,118 @@ export function App() {
     );
   }
 
+  const addLedgerExpense = (entry: Omit<ExpenseTransaction, "id" | "month" | "fingerprint">) => {
+    const { meta: _meta, ...cleanEntry } = entry;
+    const amount = Math.abs(entry.amount);
+    const fingerprint = expenseFingerprint({ date: entry.date, amount, description: entry.note, bankReference: entry.bankReference });
+    commitWithUndo("Đã thêm khoản chi.", (prev) => ({
+      ...prev,
+      expenseEntries: [...prev.expenseEntries, { ...cleanEntry, id: uid(), amount, month: monthFromDate(entry.date), fingerprint }],
+    }), { action: "create", entityType: "expense" });
+  };
+
+  const updateLedgerExpense = (id: string, patch: Partial<ExpenseTransaction>) => {
+    const { meta: _meta, ...cleanPatch } = patch;
+    commitWithUndo("Đã cập nhật khoản chi.", (prev) => ({
+      ...prev,
+      expenseEntries: prev.expenseEntries.map((entry) => {
+        if (entry.id !== id) return entry;
+        const next = { ...entry, ...cleanPatch, updatedAt: new Date().toISOString() };
+        return { ...next, month: monthFromDate(next.date), amount: Math.abs(next.amount), fingerprint: expenseFingerprint({ date: next.date, amount: next.amount, description: next.note, bankReference: next.bankReference }) };
+      }),
+    }), { action: "update", entityType: "expense", entityId: id });
+  };
+
+  const deleteLedgerExpense = (id: string) => {
+    const entry = stateRef.current.expenseEntries.find((item) => item.id === id);
+    if (!entry || !window.confirm("Xóa khoản chi này?")) return;
+    commitWithUndo("Đã xóa khoản chi.", (prev) => withTrashItem(
+      { ...prev, expenseEntries: prev.expenseEntries.filter((item) => item.id !== id) },
+      makeTrashItem("expense", entry.id, `khoản chi ${formatVnd(entry.amount)}`, entry)
+    ), { action: "delete", entityType: "expense", entityId: id });
+  };
+
+  const bulkDeleteLedgerExpenses = (ids: string[]) => {
+    const selectedEntries = stateRef.current.expenseEntries.filter((entry) => ids.includes(entry.id));
+    if (!selectedEntries.length) return false;
+    if (!window.confirm(`Xóa ${selectedEntries.length} khoản chi đã chọn?`)) return false;
+    const fixedRecordIds = new Set(
+      selectedEntries
+        .filter((entry) => entry.id.startsWith("fixed:"))
+        .map((entry) => entry.id.slice("fixed:".length))
+    );
+    commitWithUndo(`Đã xóa ${selectedEntries.length} khoản chi.`, (prev) => {
+      let next: AppState = {
+        ...prev,
+        expenseEntries: prev.expenseEntries.filter((entry) => !ids.includes(entry.id)),
+        monthlyExpenses: prev.monthlyExpenses.map((record) => fixedRecordIds.has(record.id) ? { ...record, checked: false } : record),
+      };
+      selectedEntries
+        .filter((entry) => !entry.id.startsWith("fixed:"))
+        .forEach((entry) => {
+          next = withTrashItem(next, makeTrashItem("expense", entry.id, `khoản chi ${formatVnd(entry.amount)}`, entry));
+        });
+      return next;
+    }, { action: "delete", entityType: "expense" });
+    return true;
+  };
+
+  const bulkClassifyLedgerExpenses = (ids: string[], categoryId: string) => {
+    if (!categoryId || !ids.length) return;
+    commitWithUndo("Đã phân loại khoản chi.", (prev) => ({
+      ...prev,
+      expenseEntries: prev.expenseEntries.map((entry) => ids.includes(entry.id) ? { ...entry, categoryId, status: "classified", updatedAt: new Date().toISOString() } : entry),
+    }), { action: "update", entityType: "expense" });
+  };
+
+  const addExpenseLedgerCategory = (name: string, icon: string, color: string) => {
+    if (stateRef.current.expenseCategories.some((category) => category.name.localeCompare(name, "vi", { sensitivity: "accent" }) === 0)) return;
+    commitWithUndo("Đã thêm danh mục chi.", (prev) => ({
+      ...prev,
+      expenseCategories: [...prev.expenseCategories, { id: uid(), name, kind: "variable", defaultAmount: 0, accumulationGoalId: "", keywords: [], isActive: true, color, icon }],
+    }), { action: "create", entityType: "expense-category" });
+  };
+
+  const deleteExpenseLedgerCategory = (categoryId: string) => {
+    const category = stateRef.current.expenseCategories.find((item) => item.id === categoryId);
+    if (!category) return;
+    const affectedCount = stateRef.current.expenseEntries.filter((entry) => entry.categoryId === categoryId).length;
+    if (!window.confirm(`Xóa danh mục ${category.name}?${affectedCount ? ` ${affectedCount} khoản chi sẽ trở thành chưa phân loại.` : ""}`)) return;
+    commitWithUndo("Đã xóa danh mục chi.", (prev) => ({
+      ...prev,
+      expenseCategories: prev.expenseCategories.filter((item) => item.id !== categoryId),
+      expenseEntries: prev.expenseEntries.map((entry) => entry.categoryId === categoryId ? { ...entry, categoryId: "", status: "unclassified", updatedAt: new Date().toISOString() } : entry),
+    }), { action: "delete", entityType: "expense-category", entityId: categoryId });
+  };
+
+  const importExpenseWorkbook = (rows: ParsedExpenseRow[], fileName: string, mappingKey: string, mapping: ExpenseColumnMapping, totalDetected: number, source: "xlsx" | "image") => {
+    const importedAt = new Date().toISOString();
+    const sessionId = uid();
+    const existingFingerprints = new Set(stateRef.current.expenseEntries.map((entry) => entry.fingerprint).filter(Boolean));
+    const uniqueRows = rows.filter((row) => {
+      if (existingFingerprints.has(row.fingerprint)) return false;
+      existingFingerprints.add(row.fingerprint);
+      return true;
+    });
+    const session: ExpenseImportSession = { id: sessionId, source, fileName, importedAt, totalDetected, totalImported: uniqueRows.length, totalSkipped: totalDetected - rows.length, totalDuplicate: rows.length - uniqueRows.length, status: "completed" };
+    commitWithUndo(`Đã import ${uniqueRows.length} khoản chi.`, (prev) => ({
+      ...prev,
+      settings: { ...prev.settings, expenseXlsxMappings: { ...(prev.settings.expenseXlsxMappings ?? {}), [mappingKey]: mapping } },
+      expenseImportSessions: [session, ...prev.expenseImportSessions],
+      expenseEntries: [...prev.expenseEntries, ...uniqueRows.map((row) => ({ id: uid(), categoryId: "", month: monthFromDate(row.date), amount: row.amount, date: row.date, note: row.description, source, paymentMethod: "bank" as const, status: "unclassified" as const, bankReference: row.bankReference, fingerprint: row.fingerprint, importSessionId: sessionId, createdAt: importedAt, updatedAt: importedAt }))],
+    }), { action: "create", entityType: "expense", entityId: sessionId });
+  };
+
+  const undoExpenseImport = (sessionId: string) => {
+    const session = stateRef.current.expenseImportSessions.find((item) => item.id === sessionId);
+    if (!session || !window.confirm(`Hoàn tác lần nhập “${session.fileName}”?`)) return;
+    commitWithUndo("Đã hoàn tác lần nhập khoản chi.", (prev) => ({
+      ...prev,
+      expenseEntries: prev.expenseEntries.filter((entry) => entry.importSessionId !== sessionId),
+      expenseImportSessions: prev.expenseImportSessions.map((item) => item.id === sessionId ? { ...item, status: "undone" } : item),
+    }), { action: "delete", entityType: "expense", entityId: sessionId });
+  };
+
   if (!unlocked) return <PinGate hasPin={state.settings.hasPin} cloudConfigured={cloudConfigured} onUnlock={unlockWithPin} />;
 
   return (
@@ -15471,6 +15650,7 @@ export function App() {
       <AppNav page={page} setPage={navigateToPage} />
       <main className="content">
         {page === "dashboard" && <UnifiedDashboardPage state={state} setState={setState} commitWithUndo={commitWithUndo} month={month} setMonth={setMonth} setPage={navigateToPage} setAssetTab={setAssetTab} setInvestmentAction={setInvestmentAction} onRefreshMarket={refreshMarket} />}
+        {page === "expense-manager" && <ExpenseManagerPage entries={state.expenseEntries} categories={state.expenseCategories} sessions={state.expenseImportSessions} savedMappings={state.settings.expenseXlsxMappings ?? {}} month={month} setMonth={setMonth} onBack={() => navigateToPage("dashboard")} onAdd={addLedgerExpense} onUpdate={updateLedgerExpense} onDelete={deleteLedgerExpense} onBulkDelete={bulkDeleteLedgerExpenses} onBulkCategory={bulkClassifyLedgerExpenses} onAddCategory={addExpenseLedgerCategory} onDeleteCategory={deleteExpenseLedgerCategory} onImport={importExpenseWorkbook} onUndoImport={undoExpenseImport} />}
         {page === "accumulation" && <AccumulationPage state={state} setState={setState} commitWithUndo={commitWithUndo} onOpenMbbDeposits={openAccumulationMbbDeposits} />}
         {page === "investment" && <InvestmentPage state={state} setState={setState} commitWithUndo={commitWithUndo} activeTab={assetTab} setActiveTab={setAssetTab} mbbDepositIntent={mbbDepositIntent} onMbbDepositIntentHandled={() => setMbbDepositIntent(null)} investmentAction={investmentAction} onInvestmentActionHandled={() => setInvestmentAction(null)} onRefreshMarket={refreshMarket} marketStatus={marketStatus} btcCloudAccountId={btcCloudAccountId} />}
         {page === "reports" && <ReportsPage state={state} setState={setState} onRefreshMarket={refreshMarket} onOpenAccumulation={() => navigateToPage("accumulation")} onOpenInvestment={(target) => {

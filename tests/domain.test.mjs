@@ -23,6 +23,9 @@ async function loadDomain() {
         export { appendMbbSettlementIncome, isIncomeGeneratingMbbSettlement, migrateMbbSettlementIncome, realizedMbbDepositInterest, mbbSettlementIncomeId, MBB_SETTLEMENT_INCOME_CATEGORY_ID } from "../../src/domain/bankDepositSettlement.ts";
         export { buildCryptoLedger, buildSolLedger, findSolDerivedTopupCostEventIndex } from "../../src/domain/cryptoLedger.ts";
         export { realizedStockSalePnl, stockOpenPositionSnapshot } from "../../src/domain/stockPnl.ts";
+        export { expenseFingerprint, isCountedExpense, normalizedExpenseStatus, suggestExpenseCategory } from "../../src/domain/expenseLedger.ts";
+        export { autoMapExpenseColumns, findExpenseTransactionHeaderRow, parseExpenseRows, toExpenseDate } from "../../src/domain/expenseXlsx.ts";
+        export { extractExpenseOcrRows } from "../../src/domain/expenseOcr.ts";
       `
     );
     await build({
@@ -45,9 +48,77 @@ test("migration metadata adds stable event ids and default accounts", async () =
     financialAccounts: [],
   });
 
-  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.schemaVersion, 6);
   assert.equal(migrated.incomeTransactions[0].meta.eventId, stableEventId("income", "income-1"));
   assert.equal(migrated.financialAccounts.length, DEFAULT_FINANCIAL_ACCOUNTS.length);
+});
+
+test("expense ledger normalizes legacy status and excludes ignored or duplicate rows", async () => {
+  const { expenseFingerprint, isCountedExpense, normalizedExpenseStatus } = await loadDomain();
+  const legacy = { categoryId: "food" };
+  assert.equal(normalizedExpenseStatus(legacy), "classified");
+  assert.equal(isCountedExpense({ categoryId: "", status: "ignored" }), false);
+  assert.equal(isCountedExpense({ categoryId: "", status: "duplicate" }), false);
+  assert.equal(isCountedExpense({ categoryId: "", status: "unclassified" }), true);
+  assert.equal(expenseFingerprint({ date: "2026-09-06", amount: -139000, description: "  Mã giao dịch  ", bankReference: "FT1" }), "2026-09-06|139000|MA GIAO DICH|FT1");
+});
+
+test("MB Bank parser maps debit rows and ignores credit rows", async () => {
+  const { autoMapExpenseColumns, findExpenseTransactionHeaderRow, parseExpenseRows, toExpenseDate } = await loadDomain();
+  const headers = ["Ngày giao dịch", "Số bút toán", "Phát sinh nợ", "Phát sinh có", "Nội dung"];
+  const mapping = autoMapExpenseColumns(headers);
+  const expenses = parseExpenseRows([
+    ["06/09/2026 10:00:00", "FT-DEBIT", "139,000", "", "Thanh toán"],
+    ["06/09/2026 11:00:00", "FT-CREDIT", "", "1,000,000", "Tiền vào"],
+  ], mapping);
+  assert.equal(toExpenseDate("06/09/2026 10:00:00"), "2026-09-06");
+  assert.equal(expenses.length, 1);
+  assert.equal(expenses[0].amount, 139000);
+  assert.equal(expenses[0].bankReference, "FT-DEBIT");
+
+  const transactionHeader = [
+    "Ng\u00e0y giao d\u1ecbch", "Ng\u00e0y h\u1ea1ch to\u00e1n", "S\u1ed1 b\u00fat to\u00e1n", "Ph\u00e1t sinh n\u1ee3", "Ph\u00e1t sinh c\u00f3", "S\u1ed1 d\u01b0 l\u0169y k\u1ebf", "N\u1ed9i dung",
+  ];
+  assert.equal(findExpenseTransactionHeaderRow([
+    ["Account Statement/Debit/Credit transaction"],
+    ["Military Commercial Joint Stock Bank"],
+    transactionHeader,
+    ["Transaction date", "Posting date", "Transaction no", "Debit", "Credit", "Balance", "Description"],
+  ]), 2);
+  assert.deepEqual(autoMapExpenseColumns(transactionHeader), {
+    date: 0,
+    debit: 3,
+    credit: 4,
+    amount: undefined,
+    description: 6,
+    reference: 2,
+  });
+});
+
+test("signed amount parser accepts negative expense but skips positive income", async () => {
+  const { parseExpenseRows } = await loadDomain();
+  const expenses = parseExpenseRows([
+    ["2026-09-06", "-30,000", "QR payment", "REF-1"],
+    ["2026-09-06", "1,255,000", "Income", "REF-2"],
+  ], { date: 0, amount: 1, description: 2, reference: 3 });
+  assert.equal(expenses.length, 1);
+  assert.equal(expenses[0].amount, 30000);
+});
+
+test("OCR parser keeps every money-out block as a separate expense", async () => {
+  const { extractExpenseOcrRows } = await loadDomain();
+  const rows = extractExpenseOcrRows(`06/09/2026\nTIỀN RA\n-30,000 VND\nPHAN THI MEN\n22:14\nTIỀN RA\n-139,000 VND\nVNPAY Trace 429446\n20:54`);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.amount), [30000, 139000]);
+  assert.equal(rows[0].date, "2026-09-06");
+});
+
+test("OCR parser retains money-out rows when the screenshot has no date", async () => {
+  const { extractExpenseOcrRows } = await loadDomain();
+  const rows = extractExpenseOcrRows("TIEN RA\n-30,000 VND\nAEON MALL\n21:33");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].amount, 30000);
+  assert.equal(rows[0].date, "");
 });
 
 test("early MBB settlement creates principal income with zero realized interest", async () => {

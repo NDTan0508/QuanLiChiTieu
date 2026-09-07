@@ -11,7 +11,8 @@ export type AppNavPage =
   | "accumulation"
   | "investment"
   | "reports"
-  | "settings";
+  | "settings"
+  | "expense-manager";
 
 export function AppNav({
   page,
