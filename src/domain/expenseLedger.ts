@@ -42,15 +42,6 @@ export type ExpenseImportSession = {
 
 export const EXPENSE_CATEGORY_SEEDS: Array<Required<ExpenseCategoryDetails> & { id: string; name: string }> = [
   { id: "an-uong", name: "Ăn uống", icon: "🍜", color: "#fb923c", keywords: ["FOOD", "CAFE", "RESTAURANT"], isActive: true },
-  { id: "xang", name: "Xăng", icon: "⛽", color: "#f59e0b", keywords: ["XANG", "XĂNG", "PETROL", "PVOIL"], isActive: true },
-  { id: "bao-duong", name: "Nhớt / Bảo dưỡng", icon: "🔧", color: "#a78bfa", keywords: ["NHOT", "NHỚT", "GARA"], isActive: true },
-  { id: "ao-quan", name: "Áo quần", icon: "👕", color: "#ec4899", keywords: ["FASHION", "QUAN", "AO"], isActive: true },
-  { id: "mua-sam", name: "Mua sắm", icon: "🛍️", color: "#34d399", keywords: ["LOTTE", "SHOPEE", "MART"], isActive: true },
-  { id: "di-lai", name: "Đi lại", icon: "🚌", color: "#60a5fa", keywords: ["GRAB", "BE", "TAXI"], isActive: true },
-  { id: "hoc-tap", name: "Học tập", icon: "📚", color: "#38bdf8", keywords: ["HOC", "SACH", "KHÓA HỌC"], isActive: true },
-  { id: "hoa-don", name: "Hóa đơn", icon: "🧾", color: "#8b5cf6", keywords: ["DIEN", "NUOC", "INTERNET"], isActive: true },
-  { id: "suc-khoe", name: "Sức khỏe", icon: "💚", color: "#22c55e", keywords: ["THUOC", "BENH", "NHA THUOC"], isActive: true },
-  { id: "khac", name: "Khác", icon: "◌", color: "#94a3b8", keywords: [], isActive: true },
 ];
 
 export function normalizedExpenseStatus(entry: Pick<ExpenseTransaction, "categoryId" | "status">): ExpenseStatus {
