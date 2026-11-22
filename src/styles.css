@@ -815,6 +815,11 @@ label strong {
 .dashboard-money-list {
   display: grid;
   gap: 8px;
+  /* Show at most 5 items (5 × 56px row + 4 × 8px gap = 312px), then scroll */
+  max-height: 312px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(249, 115, 22, 0.35) transparent;
 }
 
 .dashboard-money-list > button,
@@ -911,6 +916,14 @@ label strong {
 
 .dashboard-money-modal .category-history {
   margin-top: 0;
+}
+
+/* Limit detail-list (category list) in the money modal to 5 rows, then scroll */
+.dashboard-money-modal .detail-list {
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(249, 115, 22, 0.35) transparent;
 }
 
 .dashboard-money-modal .timeline > div,
@@ -5506,6 +5519,13 @@ label strong {
   color: var(--danger);
 }
 
+.metric em.metric-sub {
+  font-style: normal;
+  font-weight: 900;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
 .metric em.metric-sub.success {
   color: #34d399;
 }
@@ -7670,6 +7690,11 @@ option,
   grid-row: 3;
 }
 
+.dashboard-metrics-grid .metric em.metric-sub {
+  grid-column: 1 / -1;
+  grid-row: 4;
+}
+
 .dashboard-metrics-grid .metric-progress-meta {
   display: flex;
   min-width: 0;
@@ -7773,7 +7798,7 @@ option,
   .dashboard-metrics-grid .metric {
     display: grid !important;
     grid-template-columns: 18px minmax(0, 1fr);
-    grid-template-rows: 18px auto auto;
+    grid-template-rows: 18px auto auto auto;
     align-content: start;
     align-items: center;
     min-height: 76px !important;
@@ -7819,6 +7844,14 @@ option,
     grid-column: 1 / -1;
     grid-row: 3;
     margin-top: 2px !important;
+    font-size: 0.56rem !important;
+    line-height: 1 !important;
+  }
+
+  .dashboard-metrics-grid .metric em.metric-sub {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    margin-top: 1px !important;
     font-size: 0.56rem !important;
     line-height: 1 !important;
   }
@@ -8639,4 +8672,33 @@ option,
   .import-history > div { min-width: 0; gap: 7px; }
   .import-history > div > span { min-width: 0; overflow: hidden; }
   .import-history > div > button { flex: 0 0 auto; min-height: 30px; padding: 0 7px; font-size: .58rem !important; white-space: nowrap; }
+}
+
+/* ── Partial settle popup ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 4, 3, 0.72);
+  padding: 18px;
+}
+
+.modal-panel {
+  width: min(380px, 100%);
+  border: 1px solid #3a332d;
+  border-radius: 10px;
+  background: #12100e;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.modal-panel .panel-title {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #221e1a;
+}
+
+.modal-panel .form-grid {
+  gap: 10px;
 }

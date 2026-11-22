@@ -200,7 +200,7 @@ type TransferDepositFund = "saving" | "emergency";
 type DepositFund = TransferDepositFund | "accumulation";
 type DepositFilter = "all" | DepositFund;
 type SolDestination = FundKey | TransferDepositFund | "cash" | "btc-direct";
-type StockCashWithdrawDestination = Exclude<SolDestination, "stock" | "btc-direct">;
+type StockCashWithdrawDestination = Exclude<SolDestination, "stock" | "btc-direct"> | "ck";
 type ReportChartKey = "current-assets" | "net-accumulation" | FundKey | TransferDepositFund;
 
 type ReportMonthlySnapshot = {
@@ -3519,15 +3519,18 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
 
   const pendingAllocationDeposits = state.allocations
     .filter((allocation) => allocation.confirmedAt)
-    .flatMap((allocation) =>
-      (["saving", "emergency"] as TransferDepositFund[]).map((fund) => ({
-        fund,
-        month: allocation.month,
-        amount: fund === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
-        requestedAt: allocation[depositRequestedField(fund)],
-        createdAt: allocation[depositCreatedField(fund)],
-      }))
-    )
+    .flatMap((allocation) => {
+      const locked = new Set(allocation.lockedFunds ?? []);
+      return (["saving", "emergency"] as TransferDepositFund[])
+        .filter((fund) => !locked.has(fund))
+        .map((fund) => ({
+          fund,
+          month: allocation.month,
+          amount: fund === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
+          requestedAt: allocation[depositRequestedField(fund)],
+          createdAt: allocation[depositCreatedField(fund)],
+        }));
+    })
     .filter(
       (item) =>
         item.amount > 0 &&
@@ -3573,7 +3576,16 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
     });
   }
 
-  if (btcStats.pendingVnd > 0) {
+  const hasActiveCryptoAllocationNotice = state.fundTransactions.some((transaction) => {
+    if (transaction.fund !== "btc") return false;
+    if (transaction.type !== "deposit") return false;
+    if (transaction.note !== "Chia quỹ cuối tháng") return false;
+    if ((state.settings.dismissedCryptoAllocationIds ?? []).includes(transaction.id)) return false;
+    const allocation = state.allocations.find((item) => item.month === transaction.month);
+    return !allocation?.lockedFunds?.includes("btc");
+  });
+
+  if (btcStats.pendingVnd > 0 && hasActiveCryptoAllocationNotice) {
     tasks.push({ id: "btc-pending", title: "Có VND dư trong Crypto", detail: `Còn ${formatVnd(btcStats.pendingVnd)} chưa dùng`, action: "Mua USDT", badge: "BTC", page: "investment", tab: "crypto", investmentAction: "btc-topup" });
   }
 
@@ -3587,8 +3599,17 @@ function dashboardTasks(state: AppState, month: string): DashboardTask[] {
     tasks.push({ id: "btc-stock-cash", title: "Tiền từ BTC/USDT chuyển về chưa mua cổ", detail: `Còn ${formatVnd(pendingBtcStockCash)} trong số dư CK`, action: "Mua CK", badge: "BTC", page: "investment", tab: "stock", investmentAction: "stock-purchase" });
   }
 
+  const hasActiveStockAllocationNotice = state.fundTransactions.some((transaction) => {
+    if (transaction.fund !== "stock") return false;
+    if (transaction.type !== "deposit") return false;
+    if (transaction.note !== "Chia quỹ cuối tháng") return false;
+    if ((state.settings.dismissedStockAllocationIds ?? []).includes(transaction.id)) return false;
+    const allocation = state.allocations.find((item) => item.month === transaction.month);
+    return !allocation?.lockedFunds?.includes("stock");
+  });
+
   const pendingAllocationStockCash = Math.max(stockStats.cash - pendingSolStockCash - pendingBtcStockCash, 0);
-  if (pendingAllocationStockCash >= 100_000) {
+  if (pendingAllocationStockCash >= 100_000 && hasActiveStockAllocationNotice) {
     tasks.push({ id: "stock-cash", title: "Tiền chia quỹ chưa mua cổ", detail: `Còn ${formatVnd(pendingAllocationStockCash)} trong số dư CK`, action: "Mua CK", badge: "CK", page: "investment", tab: "stock", investmentAction: "stock-purchase" });
   }
 
@@ -3803,6 +3824,13 @@ function UnifiedDashboardPage({
   const savingTrend = metricTrend(summary.saving, previousSummary.saving, "up");
   const expenseIncomeShare = incomeSharePercent(summary.expense);
   const savingIncomeShare = incomeSharePercent(summary.saving);
+  const lockedFundSet = new Set(summary.allocation.lockedFunds ?? []);
+  const totalAllocated =
+    (lockedFundSet.has("btc") ? summary.allocationAmounts.btc : 0) +
+    (lockedFundSet.has("stock") ? summary.allocationAmounts.stock : 0) +
+    (lockedFundSet.has("saving") ? summary.allocationAmounts.saving : 0) +
+    (lockedFundSet.has("emergency") ? summary.allocationAmounts.emergency : 0);
+  const spendable = summary.income - summary.expense - totalAllocated;
   const preferredMoneyRowId = (rows: Array<{ id: string; value: number }>) =>
     [...rows].filter((row) => row.value > 0).sort((a, b) => b.value - a.value)[0]?.id ?? rows[0]?.id ?? null;
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(() => preferredMoneyRowId(summary.incomeRows));
@@ -4278,6 +4306,7 @@ function UnifiedDashboardPage({
   const confirmAllocation = () => {
     const existingAllocation = state.allocations.find((item) => item.month === month);
     if (existingAllocation?.confirmedAt || !percentTotalOk || !amountTotalMatchesSaving || summary.saving <= 0) return;
+    const lockedFunds = new Set(summary.allocation.lockedFunds ?? []);
     const confirmedAllocation: Allocation = {
       ...summary.allocation,
       confirmedAt: new Date().toISOString(),
@@ -4287,15 +4316,23 @@ function UnifiedDashboardPage({
       emergencyAmount: Math.round(summary.allocationAmounts.emergency),
       totalSavingAtConfirm: Math.round(summary.saving),
     };
-    if ((confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
-    if ((confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
+    // Only trigger deposit requests for funds that are NOT manually locked.
+    // Locked funds were already handled manually by the user this month.
+    if (!lockedFunds.has("saving") && (confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
+    if (!lockedFunds.has("emergency") && (confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
+    // Only create fund transactions for unlocked funds (BTC and CK).
+    const newFundTransactions = ([
+      { fund: "btc" as const, amount: confirmedAllocation.btcAmount ?? 0 },
+      { fund: "stock" as const, amount: confirmedAllocation.stockAmount ?? 0 },
+    ] as const)
+      .filter((item) => !lockedFunds.has(item.fund) && item.amount > 0)
+      .map((item) => ({ id: uid(), fund: item.fund, type: "deposit" as const, amount: item.amount, date: `${depositForm.month}-01`, month, note: "Chia quỹ cuối tháng" }));
     commitWithUndo("Đã chia quỹ.", (prev) => ({
       ...prev,
       allocations: prev.allocations.some((item) => item.month === month) ? prev.allocations.map((item) => (item.month === month ? confirmedAllocation : item)) : [...prev.allocations, confirmedAllocation],
       fundTransactions: [
         ...prev.fundTransactions,
-        { id: uid(), fund: "btc", type: "deposit", amount: confirmedAllocation.btcAmount ?? 0, date: `${depositForm.month}-01`, month, note: "Chia quỹ cuối tháng" },
-        { id: uid(), fund: "stock", type: "deposit", amount: confirmedAllocation.stockAmount ?? 0, date: `${depositForm.month}-01`, month, note: "Chia quỹ cuối tháng" },
+        ...newFundTransactions,
       ],
     }));
     setConfirmOpen(false);
@@ -4314,7 +4351,14 @@ function UnifiedDashboardPage({
       </header>
 
       <section className="metrics-grid dashboard-metrics-grid">
-        <MetricCard label="Thu nhập" value={formatVnd(summary.income)} trend={incomeTrend} icon={<BadgeDollarSign size={20} />} />
+        <MetricCard
+          label="Thu nhập"
+          value={formatVnd(summary.income)}
+          trend={incomeTrend}
+          icon={<BadgeDollarSign size={20} />}
+          subValue={spendable >= 0 ? formatVnd(spendable) : `-${formatVnd(-spendable)}`}
+          subTone={spendable >= 0 ? "success" : "danger"}
+        />
         <MetricCard
           label="Chi tiêu"
           value={formatVnd(summary.expense)}
@@ -5611,6 +5655,7 @@ function MoneyPage({
       summary.allocation.emergencyPercent;
     if (totalPercent !== 100 || !amountTotalMatchesSaving || summary.saving <= 0) return;
 
+    const lockedFunds = new Set(summary.allocation.lockedFunds ?? []);
     const confirmedAllocation: Allocation = {
       ...summary.allocation,
       confirmedAt: new Date().toISOString(),
@@ -5620,8 +5665,23 @@ function MoneyPage({
       emergencyAmount: Math.round(summary.allocationAmounts.emergency),
       totalSavingAtConfirm: Math.round(summary.saving),
     };
-    if ((confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
-    if ((confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
+    if (!lockedFunds.has("saving") && (confirmedAllocation.savingAmount ?? 0) > 0) confirmedAllocation.savingDepositRequestedAt = confirmedAllocation.confirmedAt;
+    if (!lockedFunds.has("emergency") && (confirmedAllocation.emergencyAmount ?? 0) > 0) confirmedAllocation.emergencyDepositRequestedAt = confirmedAllocation.confirmedAt;
+
+    const newFundTransactions = ([
+      { fund: "btc" as const, amount: confirmedAllocation.btcAmount ?? 0 },
+      { fund: "stock" as const, amount: confirmedAllocation.stockAmount ?? 0 },
+    ] as const)
+      .filter((item) => !lockedFunds.has(item.fund) && item.amount > 0)
+      .map((item) => ({
+        id: uid(),
+        fund: item.fund,
+        type: "deposit" as const,
+        amount: item.amount,
+        date: `${depositForm.month}-01`,
+        month,
+        note: "Chia quỹ cuối tháng",
+      }));
 
     setState((prev) => ({
       ...prev,
@@ -5630,24 +5690,7 @@ function MoneyPage({
         : [...prev.allocations, confirmedAllocation],
       fundTransactions: [
         ...prev.fundTransactions,
-        {
-          id: uid(),
-          fund: "btc",
-          type: "deposit",
-          amount: confirmedAllocation.btcAmount ?? 0,
-          date: `${depositForm.month}-01`,
-          month,
-          note: "Chia quỹ cuối tháng",
-        },
-        {
-          id: uid(),
-          fund: "stock",
-          type: "deposit",
-          amount: confirmedAllocation.stockAmount ?? 0,
-          date: `${depositForm.month}-01`,
-          month,
-          note: "Chia quỹ cuối tháng",
-        },
+        ...newFundTransactions,
       ],
     }));
     setConfirmOpen(false);
@@ -7098,6 +7141,12 @@ function StockPage({
     date: today(),
     note: "",
   });
+  const [stockCashDepositOpen, setStockCashDepositOpen] = useState(false);
+  const [stockCashDepositForm, setStockCashDepositForm] = useState({
+    amount: "",
+    date: today(),
+    note: "",
+  });
   const [saleForm, setSaleForm] = useState({
     shares: "",
     price: "",
@@ -7157,11 +7206,18 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
   const latestStockAllocationNotice = [...state.fundTransactions]
     .reverse()
     .find(
-      (transaction) =>
-        transaction.fund === "stock" &&
-        transaction.type === "deposit" &&
-        transaction.note === "Chia quỹ cuối tháng" &&
-        !state.settings.dismissedStockAllocationIds.includes(transaction.id)
+      (transaction) => {
+        if (
+          transaction.fund !== "stock" ||
+          transaction.type !== "deposit" ||
+          transaction.note !== "Chia quỹ cuối tháng" ||
+          state.settings.dismissedStockAllocationIds.includes(transaction.id)
+        ) {
+          return false;
+        }
+        const allocation = state.allocations.find((item) => item.month === transaction.month);
+        return !allocation?.lockedFunds?.includes("stock");
+      }
     );
   const latestStockPriceUpdatedAt = stats.holdings
     .map((holding) => holding.updatedAt)
@@ -7559,8 +7615,44 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
     setPurchaseFormOpen(false);
     setSellingSymbol(null);
     setCorporateFormOpen(false);
+    setStockCashDepositOpen(false);
     setStockCashWithdrawOpen(true);
     setStockCashWithdrawForm({ amount: "", destination: "btc", date: today(), note: "" });
+    setStockError("");
+  };
+
+  const openStockCashDepositPanel = () => {
+    setPurchaseFormOpen(false);
+    setSellingSymbol(null);
+    setCorporateFormOpen(false);
+    setStockCashWithdrawOpen(false);
+    setStockCashDepositOpen(true);
+    setStockCashDepositForm({ amount: "", date: today(), note: "" });
+    setStockError("");
+  };
+
+  const saveStockCashDeposit = () => {
+    const amount = parseMoney(stockCashDepositForm.amount);
+    if (!amount) return setStockError("Nhập số tiền cần nạp.");
+    const date = stockCashDepositForm.date;
+    const month = monthFromDate(date);
+    const note = stockCashDepositForm.note.trim();
+    const depositNote = note ? `Nạp tiền CK · ${note}` : "Nạp tiền CK";
+    const depositTx: FundTransaction = {
+      id: uid(),
+      fund: "stock",
+      type: "deposit",
+      amount,
+      date,
+      month,
+      note: depositNote,
+    };
+    commitWithUndo("Đã nạp tiền vào CK.", (prev) => ({
+      ...prev,
+      fundTransactions: [...prev.fundTransactions, depositTx],
+    }), { action: "create", entityType: "adjustment", entityId: depositTx.id });
+    setStockCashDepositOpen(false);
+    setStockCashDepositForm({ amount: "", date: today(), note: "" });
     setStockError("");
   };
 
@@ -7569,6 +7661,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
     setSellingSymbol(null);
     setCorporateFormOpen(true);
     setStockCashWithdrawOpen(false);
+    setStockCashDepositOpen(false);
     setStockError("");
   };
 
@@ -7577,6 +7670,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
     setPurchaseFormOpen(false);
     setSellingSymbol(null);
     setStockCashWithdrawOpen(false);
+    setStockCashDepositOpen(false);
     resetCorporateForm();
     setCorporateFormOpen(false);
     setStockError("");
@@ -7645,13 +7739,38 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
 
   const saveStockCashWithdraw = () => {
     const amount = stockCashWithdrawAmount;
-    if (!amount) return setStockError("Nhập số tiền dư cần rút.");
-    if (amount > stats.cash) return setStockError(`Số tiền rút vượt tiền dư CK ${formatVnd(stats.cash)}.`);
-    const id = uid();
     const destination = stockCashWithdrawForm.destination;
     const date = stockCashWithdrawForm.date;
     const month = monthFromDate(date);
     const note = stockCashWithdrawForm.note.trim();
+
+    // Nạp tiền vào CK
+    if (destination === "ck") {
+      if (!amount) return setStockError("Nhập số tiền cần nạp.");
+      const depositNote = note ? `Nạp tiền CK · ${note}` : "Nạp tiền CK";
+      const depositTx: FundTransaction = {
+        id: uid(),
+        fund: "stock",
+        type: "deposit",
+        amount,
+        date,
+        month,
+        note: depositNote,
+      };
+      commitWithUndo("Đã nạp tiền vào CK.", (prev) => ({
+        ...prev,
+        fundTransactions: [...prev.fundTransactions, depositTx],
+      }), { action: "create", entityType: "adjustment", entityId: depositTx.id });
+      setStockCashWithdrawOpen(false);
+      setStockCashWithdrawForm({ amount: "", destination: "btc", date: today(), note: "" });
+      setStockError("");
+      return;
+    }
+
+    // Rút tiền dư (logic gốc)
+    if (!amount) return setStockError("Nhập số tiền dư cần rút.");
+    if (amount > stats.cash) return setStockError(`Số tiền rút vượt tiền dư CK ${formatVnd(stats.cash)}.`);
+    const id = uid();
     const destinationLabel =
       destination === "btc" ? "BTC" : destination === "saving" ? "Tiết kiệm" : destination === "emergency" ? "Dự phòng" : "Tiền mặt";
     const depositAmount = stockCashWithdrawDepositAmount;
@@ -8186,7 +8305,7 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
             </button>
             <button className={stockCashWithdrawOpen ? "active" : ""} onClick={openStockCashWithdrawPanel} type="button">
               <BadgeDollarSign size={20} />
-              <span>Rút tiền dư</span>
+              <span>Rút/Nạp</span>
             </button>
             <button className={corporateFormOpen ? "active" : ""} onClick={openCorporatePanel} type="button">
               <CalendarClock size={20} />
@@ -8308,12 +8427,13 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
         {stockCashWithdrawOpen && (
           <article className="panel stock-buy-panel crypto-form-panel">
             <div className="panel-title">
-              <h2>Rút tiền dư</h2>
+              <h2>{stockCashWithdrawForm.destination === "ck" ? "Nạp tiền vào CK" : "Rút tiền dư"}</h2>
               <button className="icon-button" onClick={() => setStockCashWithdrawOpen(false)} title="Đóng" aria-label="Đóng" type="button"><X size={17} /></button>
             </div>
             <div className="form-grid btc-form-grid stock-cash-withdraw-form">
-              <label>Số tiền rút<InputWithMax value={stockCashWithdrawForm.amount} onChange={(event) => setStockCashWithdrawForm({ ...stockCashWithdrawForm, amount: formatMoneyChange(event) })} onMax={() => setStockCashWithdrawForm({ ...stockCashWithdrawForm, amount: formatMoneyInput(String(Math.round(stats.cash))) })} placeholder="2.141.826" inputMode="numeric" /></label>
+              <label>{stockCashWithdrawForm.destination === "ck" ? "Số tiền nạp" : "Số tiền rút"}<InputWithMax value={stockCashWithdrawForm.amount} onChange={(event) => setStockCashWithdrawForm({ ...stockCashWithdrawForm, amount: formatMoneyChange(event) })} onMax={() => setStockCashWithdrawForm({ ...stockCashWithdrawForm, amount: formatMoneyInput(String(Math.round(stats.cash))) })} placeholder="2.141.826" inputMode="numeric" /></label>
               <label>Nơi nhận<select value={stockCashWithdrawForm.destination} onChange={(event) => setStockCashWithdrawForm({ ...stockCashWithdrawForm, destination: event.target.value as StockCashWithdrawDestination })}>
+                <option value="ck">CK (Nạp)</option>
                 <option value="btc">BTC</option>
                 <option value="saving">Tiết kiệm</option>
                 <option value="emergency">Dự phòng</option>
@@ -8321,8 +8441,8 @@ const effectiveBuyPrice = (row: StockBuyRow) =>
               </select></label>
               <label>Ngày<input type="date" value={stockCashWithdrawForm.date} onChange={(event) => setStockCashWithdrawForm({ ...stockCashWithdrawForm, date: event.target.value })} /></label>
               <div className="stock-cash-withdraw-note-action">
-                <label>Ghi chú<input value={stockCashWithdrawForm.note} onChange={(event) => setStockCashWithdrawForm({ ...stockCashWithdrawForm, note: event.target.value })} placeholder="Rút tiền dư" /></label>
-                <button className="primary icon-only stock-sale-submit-button" onClick={saveStockCashWithdraw} title="Rút tiền dư" aria-label="Rút tiền dư" type="button"><ArrowDownCircle size={17} /></button>
+                <label>Ghi chú<input value={stockCashWithdrawForm.note} onChange={(event) => setStockCashWithdrawForm({ ...stockCashWithdrawForm, note: event.target.value })} placeholder={stockCashWithdrawForm.destination === "ck" ? "Nạp thêm vốn" : "Rút tiền dư"} /></label>
+                <button className="primary icon-only stock-sale-submit-button" onClick={saveStockCashWithdraw} title={stockCashWithdrawForm.destination === "ck" ? "Nạp tiền" : "Rút tiền dư"} aria-label={stockCashWithdrawForm.destination === "ck" ? "Nạp tiền" : "Rút tiền dư"} type="button">{stockCashWithdrawForm.destination === "ck" ? <Upload size={17} /> : <ArrowDownCircle size={17} />}</button>
               </div>
             </div>
             {(stockCashWithdrawForm.destination === "saving" || stockCashWithdrawForm.destination === "emergency") && (
@@ -9344,6 +9464,7 @@ function BankDepositPage({
   const [earlySettlementDates, setEarlySettlementDates] = useState<Record<string, string>>({});
   const [traceEventIds, setTraceEventIds] = useState<string[] | null>(null);
   const [activePlanLink, setActivePlanLink] = useState<PlanActionLink | null>(null);
+  const [partialSettlePopup, setPartialSettlePopup] = useState<{ id: string; maxAmount: number; amount: string } | null>(null);
   const fundLabel = (fund: DepositFund) => {
     const labels: Record<DepositFund, string> = {
       saving: "Tiết kiệm",
@@ -9404,18 +9525,21 @@ function BankDepositPage({
   };
   const pendingAllocations = state.allocations
     .filter((allocation) => allocation.confirmedAt)
-    .flatMap((allocation) =>
-      transferFundOptions.map(({ id }) => ({
-        source: "allocation" as const,
-        fund: id,
-        month: allocation.month,
-        amount: id === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
-        title: `${fundLabel(id)} · Tháng ${formatMonth(allocation.month)} chưa tạo sổ`,
-        note: `Tạo sổ từ chia quỹ ${formatMonth(allocation.month)}`,
-        depositRequestedAt: allocation[depositRequestedField(id)],
-        depositCreatedAt: allocation[depositCreatedField(id)],
-      }))
-    )
+    .flatMap((allocation) => {
+      const locked = new Set(allocation.lockedFunds ?? []);
+      return transferFundOptions
+        .filter(({ id }) => !locked.has(id as AllocationFundKey))
+        .map(({ id }) => ({
+          source: "allocation" as const,
+          fund: id,
+          month: allocation.month,
+          amount: id === "saving" ? allocation.savingAmount ?? 0 : allocation.emergencyAmount ?? 0,
+          title: `${fundLabel(id)} · Tháng ${formatMonth(allocation.month)} chưa tạo sổ`,
+          note: `Tạo sổ từ chia quỹ ${formatMonth(allocation.month)}`,
+          depositRequestedAt: allocation[depositRequestedField(id)],
+          depositCreatedAt: allocation[depositCreatedField(id)],
+        }));
+    })
     .filter(
       (allocation) =>
         allocation.amount > 0 &&
@@ -9800,6 +9924,50 @@ function BankDepositPage({
         bankDeposits: prev.bankDeposits.map((item) => item.id === id ? settledDeposit : item),
       };
     }, { action: "update", entityType: "deposit", entityId: id });
+    setEarlySettlementDates((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const settlePartial = (id: string, partialAmount: number, settlementDate: string) => {
+    commitWithUndo("Đã tất toán 1 phần.", (prev) => {
+      const source = prev.bankDeposits.find((item) => item.id === id && item.status === "active");
+      if (!source) return prev;
+      const remaining = source.principal - partialAmount;
+      // Sổ gốc: đánh dấu early-settled với số tiền tất toán 1 phần
+      const settledDeposit: BankDeposit = {
+        ...source,
+        status: "early-settled",
+        settledAt: settlementDate || today(),
+        settledAmount: partialAmount,
+      };
+      // Sổ mới: giữ nguyên kỳ hạn/lãi suất, principal = phần còn lại
+      const newDepositId = uid();
+      const newDeposit: BankDeposit = {
+        ...source,
+        id: newDepositId,
+        principal: remaining,
+        parentId: source.id,
+        note: source.note ? `Tất toán 1 phần từ sổ ${source.code} · ${source.note}` : `Tất toán 1 phần từ sổ ${source.code}`,
+      };
+      const updatedSource: BankDeposit = { ...settledDeposit, childId: newDepositId };
+      const settlementIncome = appendMbbSettlementIncome(
+        prev.incomeCategories,
+        prev.incomeTransactions,
+        updatedSource
+      );
+      return {
+        ...prev,
+        ...settlementIncome,
+        bankDeposits: [
+          ...prev.bankDeposits.map((item) => item.id === id ? updatedSource : item),
+          newDeposit,
+        ],
+      };
+    }, { action: "update", entityType: "deposit", entityId: id });
+    setPartialSettlePopup(null);
     setEarlySettlementDates((prev) => {
       const next = { ...prev };
       delete next[id];
@@ -10227,7 +10395,7 @@ function BankDepositPage({
                     onChange={(event) => setEarlySettlementDates((prev) => ({ ...prev, [item.id]: event.target.value }))}
                     aria-label={`Ngày tất toán trước hạn ${item.code}`}
                   />
-                  <button className="ghost" onClick={() => settleEarly(item.id, earlySettlementDates[item.id] ?? today())}>
+                  <button className="ghost" onClick={() => setPartialSettlePopup({ id: item.id, maxAmount: item.principal, amount: "" })}>
                     Tất toán
                   </button>
                 </div>
@@ -10238,6 +10406,63 @@ function BankDepositPage({
           );
         })}
       </section>
+      {partialSettlePopup && (() => {
+        const popupItem = state.bankDeposits.find((d) => d.id === partialSettlePopup.id);
+        const settlementDate = earlySettlementDates[partialSettlePopup.id] ?? today();
+        const partialAmount = parseMoney(partialSettlePopup.amount);
+        const isFullSettle = partialAmount >= partialSettlePopup.maxAmount;
+        return (
+          <div className="modal-overlay" onClick={() => setPartialSettlePopup(null)}>
+            <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+              <div className="panel-title">
+                <h2>Tất toán{popupItem ? ` sổ ${popupItem.code}` : ""}</h2>
+                <button className="icon-button" onClick={() => setPartialSettlePopup(null)} type="button"><X size={17} /></button>
+              </div>
+              <div style={{ padding: "0 1rem 1rem", display: "flex", flexDirection: "column", gap: "8px" }}>
+                {partialAmount > 0 && !isFullSettle && (
+                  <p className="muted" style={{ margin: "0", fontSize: "0.85em" }}>
+                    Còn lại: <strong>{formatVnd(partialSettlePopup.maxAmount - partialAmount)}</strong> — sẽ tạo sổ mới kế thừa
+                  </p>
+                )}
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <div className="input-with-max" style={{ flex: 1 }}>
+                    <input
+                      value={partialSettlePopup.amount}
+                      onChange={(e) => {
+                        const val = formatMoneyChange(e);
+                        setPartialSettlePopup((prev) => prev ? { ...prev, amount: val } : prev);
+                      }}
+                      placeholder={formatMoneyInput(String(partialSettlePopup.maxAmount))}
+                      inputMode="numeric"
+                      autoFocus
+                    />
+                    <button
+                      className="input-max-button"
+                      type="button"
+                      onClick={() => setPartialSettlePopup((prev) => prev ? { ...prev, amount: formatMoneyInput(String(prev.maxAmount)) } : prev)}
+                    >Max</button>
+                  </div>
+                  <button
+                    className="primary"
+                    onClick={() => {
+                      if (!partialAmount) return;
+                      if (isFullSettle) {
+                        settleEarly(partialSettlePopup.id, settlementDate);
+                        setPartialSettlePopup(null);
+                      } else {
+                        settlePartial(partialSettlePopup.id, partialAmount, settlementDate);
+                      }
+                    }}
+                    type="button"
+                  >
+                    Tất toán
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {traceEventIds && (
         <SourceTraceModal
           state={state}
@@ -10956,11 +11181,18 @@ function CryptoPage({
   const latestCryptoAllocationNotice = [...state.fundTransactions]
     .reverse()
     .find(
-      (transaction) =>
-        transaction.fund === "btc" &&
-        transaction.type === "deposit" &&
-        transaction.note === "Chia quỹ cuối tháng" &&
-        !state.settings.dismissedCryptoAllocationIds.includes(transaction.id)
+      (transaction) => {
+        if (
+          transaction.fund !== "btc" ||
+          transaction.type !== "deposit" ||
+          transaction.note !== "Chia quỹ cuối tháng" ||
+          (state.settings.dismissedCryptoAllocationIds ?? []).includes(transaction.id)
+        ) {
+          return false;
+        }
+        const allocation = state.allocations.find((item) => item.month === transaction.month);
+        return !allocation?.lockedFunds?.includes("btc");
+      }
     );
   const dcaFrequencyLabel: Record<BtcDcaFrequency, string> = { daily: "Hàng ngày", weekly: "Hàng tuần", monthly: "Hàng tháng" };
   const dcaStatusLabel: Record<BtcDcaStatus, string> = {

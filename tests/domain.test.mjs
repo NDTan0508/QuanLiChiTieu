@@ -121,6 +121,18 @@ test("OCR parser retains money-out rows when the screenshot has no date", async 
   assert.equal(rows[0].date, "");
 });
 
+test("OCR parser maps expenses to their respective dates in multi-day screenshots", async () => {
+  const { extractExpenseOcrRows } = await loadDomain();
+  const rows = extractExpenseOcrRows(`06/11/2026\nTIỀN RA\n-49,000 VND\nCUSTOMER MBCT\n20:07\nTIỀN VÀO\n+500,000 VND\n05/11/2026\nTIỀN RA\n-24,500 VND\nNGO DUC TAN\n20:46\nTIỀN RA\n-44,000 VND\nCAFE`);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].date, "2026-11-06");
+  assert.equal(rows[0].amount, 49000);
+  assert.equal(rows[1].date, "2026-11-05");
+  assert.equal(rows[1].amount, 24500);
+  assert.equal(rows[2].date, "2026-11-05");
+  assert.equal(rows[2].amount, 44000);
+});
+
 test("early MBB settlement creates principal income with zero realized interest", async () => {
   const {
     appendMbbSettlementIncome,
